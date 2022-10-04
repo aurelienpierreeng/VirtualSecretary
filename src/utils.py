@@ -59,12 +59,17 @@ def find_filters(path:str, filters:dict, mode:str) -> dict:
 
 
 def lock_subfolder(lockfile):
+  pid = str(os.getpid())
+  abort = False
   if os.path.exists(lockfile):
     with open(lockfile, "r") as f:
-      print("The folder %s is already captured by another running instance with PID %s. We discard it here." % (dir, f.read().strip()))
+      pid = f.read().strip()
+    abort = True
   else:
     with open(lockfile, "w") as f:
       f.write(str(os.getpid()))
+
+  return [abort, pid]
 
 
 def unlock_subfolder(lockfile):

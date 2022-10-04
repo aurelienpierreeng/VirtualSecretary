@@ -32,7 +32,11 @@ subfolders.remove("common")
 for dir in subfolders:
   # Manage concurrence by disabling editing over a captured folder
   lockfile = os.path.join(os.path.join(path, dir), ".lock")
-  utils.lock_subfolder(lockfile)
+  abort, pid = utils.lock_subfolder(lockfile)
+
+  if abort:
+    print("The folder %s is already captured by another running instance with PID %s. We discard it here." % (dir, pid))
+    continue
 
   # Get the local filters if any
   local_filters = utils.find_filters(os.path.join(path, dir), filters, mode)
