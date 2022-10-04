@@ -76,10 +76,8 @@ class EMail(object):
                  "X-Spam-Status", "X-Spam-Score", "X-Spam-Bar", "X-Ham-Report", "X-Spam-Flag",        # SpamAssassin headers
                  ]:
 
-      try:
+      if elem in self.msg:
         self.header[elem] = str(email.header.make_header(email.header.decode_header(self.msg.get(elem))))
-      except:
-        pass
 
     # Sanitize things for those weird malformed spam emails
     if "Message-ID" not in self.header:
@@ -111,9 +109,9 @@ class EMail(object):
       else:
         print("Warning : email content type ", self.msg.get_content_type(), "is not supported")
 
-    try:
+    if self.body["text/plain"] != "":
       self.body["text/plain"] = self.body["text/plain"].decode()
-    except:
+    else:
       # For HTML emails that don't provide a plain text version,
       # we parse HTML ourselves.
       self.body["text/plain"] = self.body["text/html"].decode()
@@ -129,9 +127,9 @@ class EMail(object):
       # Collapse multiple whitespaces
       self.body["text/plain"] = re.sub(multiple_spaces, '\n', self.body["text/plain"])
 
-    try:
+    if self.body["text/html"] != "":
       self.body["text/html"] = self.body["text/html"].decode()
-    except:
+    else:
       # For plain-text-only emails, duplicate the plain text to HTML
       self.body["text/html"] = self.body["text/plain"]
 
@@ -349,8 +347,9 @@ Attachments : %s
     self.mailserver = mailserver
 
     # Raw message as fetched by IMAP
-    self.parse_uid(raw_message[0][0].decode())
-    self.parse_flags(raw_message[0][0].decode())
+    email_content = raw_message[0][0].decode()
+    self.parse_uid(email_content)
+    self.parse_flags(email_content)
 
     # Decoded message
     self.msg = email.message_from_bytes(raw_message[0][1])
