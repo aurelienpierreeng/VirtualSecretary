@@ -3,11 +3,13 @@
 import argparse
 import configparser
 import os
-from xml.etree.ElementPath import find
 import utils
 import re
+import time
 
 from mailserver import MailServer
+
+ts = time.time()
 
 # Unpack the program args
 parser = argparse.ArgumentParser(description='')
@@ -54,3 +56,6 @@ for dir in sorted(os.listdir(PATH)):
 
     imap.logout()
     logfile.close()
+
+
+print("\nGlobal execution took %.2f s. Mind this if you use cron jobs." % (time.time() - ts))
