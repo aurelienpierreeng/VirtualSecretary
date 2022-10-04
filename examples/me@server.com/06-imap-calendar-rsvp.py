@@ -14,7 +14,7 @@ GLOBAL_VARS = globals()
 mailserver = GLOBAL_VARS["mailserver"]
 filtername = GLOBAL_VARS["filtername"]
 
-calendar_pattern = re.compile(r"\S+\.ics")
+calendar_pattern = re.compile(r"\S+\.ics", re.IGNORECASE)
 
 def filter(email) -> bool:
   # Find any attachment file with extension .ics

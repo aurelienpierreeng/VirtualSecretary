@@ -418,7 +418,7 @@ class MailServer(imaplib.IMAP4_SSL):
 
       # Network loop
       ts = time.time()
-      for i in range(max(num_messages - n_messages, 0), num_messages):
+      for i in range(max(num_messages - n_messages + 1, 1), num_messages + 1):
         try:
           res, msg = self.fetch(str(i), "(FLAGS RFC822 UID)")
           messages_queue.append(msg)
