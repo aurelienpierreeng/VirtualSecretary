@@ -140,7 +140,7 @@ class EMail(object):
   ## IMAP ACTIONS
   ##
 
-  def tag(self, keyword):
+  def tag(self, keyword:str):
     # Add a tag.
     result = self.mailserver.uid('STORE', self.uid, '+FLAGS', keyword)
 
@@ -203,15 +203,17 @@ class EMail(object):
 
     self.mailserver.std_out = result
 
-  def move(self, folder):
+  def move(self, folder:str):
+    # create the folder and update the list of folders
     if folder not in self.mailserver.folders:
-      # create the folder and update the list of folders
       result = self.mailserver.create(folder)
-      result = self.mailserver.subscribe(folder)
 
-      if result[0] == "OK":
-        self.mailserver.logfile.write("%s : Folder`%s` created in INBOX\n" % (utils.now(), folder))
-      self.mailserver.get_imap_folders()
+    result = self.mailserver.subscribe(folder)
+
+    if result[0] == "OK":
+      self.mailserver.logfile.write("%s : Folder`%s` created in INBOX\n" % (utils.now(), folder))
+
+    self.mailserver.get_imap_folders()
 
     result = self.mailserver.uid('COPY', self.uid, folder)
 
@@ -378,15 +380,26 @@ class MailServer(imaplib.IMAP4_SSL):
 
     if(mail_list[0] == "OK"):
       for elem in mail_list[1]:
-        # Remove IMAP metadata and grab only the folder name
-        self.folders.append(str(elem).split('"."')[1].strip("' "))
+        entry = elem.decode().split('"."')
+        flags = entry[0].strip("' ")
+        folder = entry[1].strip("' ")
+
+        if "\\Archive" in flags:
+          self.archive = folder
+        if "\\Sent" in flags:
+          self.sent = folder
+        if "\\Trash" in flags:
+          self.trash = folder
+        if "\\Junk" in flags:
+          self.junk = folder
+
+        self.folders.append(folder)
 
       self.logfile.write("%s : Found %i inbox subfolders : %s\n" % (utils.now(), len(self.folders), ", ".join(self.folders)))
     else:
       self.logfile.write("%s : Impossible to get the list of inbox folders\n" % (utils.now()))
 
     self.std_out = mail_list
-
 
   def get_mailbox_emails(self, mailbox:str, n_messages=-1):
     # List the n-th first emails in mailbox

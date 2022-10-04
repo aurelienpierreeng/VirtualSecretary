@@ -73,7 +73,7 @@ def filter(email) -> bool:
   return False
 
 def action(email):
-  email.spam("INBOX.spam")
+  email.spam(email.mailserver.spam)
 
 mailserver.get_mailbox_emails("INBOX")
 mailserver.filters(filter, action, filtername, runs=-1)
