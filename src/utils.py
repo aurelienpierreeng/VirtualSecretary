@@ -56,3 +56,22 @@ def find_filters(path:str, filters:dict, mode:str) -> dict:
                                    "protocol": protocol }
 
   return local_filters
+
+
+def lock_subfolder(lockfile):
+  if os.path.exists(lockfile):
+    with open(lockfile, "r") as f:
+      print("The folder %s is already captured by another running instance with PID %s. We discard it here." % (dir, f.read().strip()))
+  else:
+    with open(lockfile, "w") as f:
+      f.write(str(os.getpid()))
+
+
+def unlock_subfolder(lockfile):
+  if os.path.exists(lockfile):
+    delete = False
+    with open(lockfile, "r") as f:
+      delete = (f.read() == str(os.getpid()))
+
+    if delete:
+      os.remove(lockfile)

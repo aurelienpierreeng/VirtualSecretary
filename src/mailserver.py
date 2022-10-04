@@ -401,7 +401,7 @@ class MailServer(imaplib.IMAP4_SSL):
     self.std_out = mail_list
 
   def get_mailbox_emails(self, mailbox:str, n_messages=-1):
-    # List the n-th first emails in mailbox
+    # List the n-th last emails in mailbox
 
     # If no explicit number of messages is passed, use the one from `settings.ini`
     if n_messages == -1:
@@ -459,19 +459,19 @@ class MailServer(imaplib.IMAP4_SSL):
         log[self.server][self.user][email.hash] = { field : 1 }
 
 
-  def filters(self, filter, action, logfile, runs=1):
+  def filters(self, filter, action, filter_file:str, runs=1):
     # Run the function `filter` and execute the function `action` if the filtering condition is met
     # * `filter` needs to return a boolean encoding the success of the filter.
     # * `action` needs to return a list where the [0] element contains "OK" if the operation succeeded,
     #    and the [1] element is user-defined stuff.
-    # * `filter` and `outputaction` take an `mailserver.EMail` instance as input
+    # * `filter` and `action` take an `mailserver.EMail` instance as input
     # * `runs` defines how many times the emails need to be processed. -1 means no limit.
-    #
+    # * `filter_file` is the full path to the filter Python script
 
     # Define the log file as an hidden file inheriting the filter filename
-    directory = os.path.dirname(logfile)
-    basename = os.path.basename(logfile)
-    logfile = os.path.join(directory, "." + basename + ".log")
+    directory = os.path.dirname(filter_file)
+    basename = os.path.basename(filter_file)
+    filter_logfile = os.path.join(directory, "." + basename + ".log")
 
     # Init a brand-new log dict
     log = { self.server : # server
@@ -486,8 +486,8 @@ class MailServer(imaplib.IMAP4_SSL):
     enable_logging = (runs != -1) and isinstance(runs, int)
 
     # Open the logfile if any
-    if enable_logging and os.path.exists(logfile):
-      with open(logfile, "rb") as f:
+    if enable_logging and os.path.exists(filter_logfile):
+      with open(filter_logfile, "rb") as f:
         log = dict(pickle.load(f))
 
     self.__init_log_dict(log)
@@ -543,31 +543,53 @@ class MailServer(imaplib.IMAP4_SSL):
     # We only need to run it once per email loop/mailbox.
     self.expunge()
 
+    # Close the current mailbox.
+    # We need it here in case a filter starts more than one loop over different mailboxes
+    self.close()
+
     print("  - Filtering\ttook %.3f s\tto filter\t%i emails" % (time.time() - ts, len(self.emails)))
 
 
     # Dump the log dict to a byte file for efficiency
-    with open(logfile, "wb") as f:
+    with open(filter_logfile, "wb") as f:
       log = pickle.dump(log, f)
 
 
-  def __init__(self, server, user, password, n_messages, logfile) -> None:
-    self.logfile = logfile
+  def init_connection(self, server:str, user:str, password:str, n_messages:int):
+    # High-level method to login to a server in one shot
+
     self.n_messages = n_messages
     self.server = server
     self.user = user
+
+    # Init the SSL connection to the server
+    self.logfile.write("%s : Trying to login to %s with username %s\n" % (utils.now(), server, user))
+
+    imaplib.IMAP4_SSL.__init__(self, host=server)
+
+    out_code = self.login(user, password)
+
+    self.logfile.write("%s : Connection to %s : %s\n" % (utils.now(), server, out_code[0]))
+
+    self.get_imap_folders()
+
+    self.connection_inited = True
+
+
+  def close_connection(self):
+    # High-level method to logout from a server
+    self.logout()
+    self.connection_inited = False
+
+
+  def __init__(self, logfile) -> None:
+    # This is the global logfile, `sync.log`
+    # Not to be confused with the local filter file.
+    self.logfile = logfile
 
     # Init an output pipe to globally fetch IMAP commands output
     # Each internal IMAP method will post its output on it, so
     # users don't have to return the out code in the filters
     self.std_out = [ ]
 
-    # Init the SSL connection to the server
-    self.logfile.write("%s : Trying to login to %s with username %s\n" % (utils.now(), server, user))
-
-    imaplib.IMAP4_SSL.__init__(self, host=server)
-    out_code = self.login(user, password)
-
-    self.logfile.write("%s : Connection to %s : %s\n" % (utils.now(), server, out_code[0]))
-
-    self.get_imap_folders()
+    self.connection_inited = False
