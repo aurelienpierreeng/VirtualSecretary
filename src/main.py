@@ -12,17 +12,20 @@ from mailserver import MailServer
 ts = time.time()
 
 # Unpack the program args
-parser = argparse.ArgumentParser(description='')
-parser.add_argument('path', metavar='url', type=str,
+parser = argparse.ArgumentParser(description='Run the whole stack of filters defined in a config directory')
+parser.add_argument('path', metavar='path', type=str,
                     help='path of the config directory')
+parser.add_argument('mode', metavar='mode', type=str,
+                    help='`process` to run only the processing filters (prefixed with 2 digits), \n`learn` to run the learning filters (prefixed with LEARN)')
 args = parser.parse_args()
 PATH = os.path.abspath(args.path)
+MODE = args.mode
 
 # Find filter scripts
 filters = { }
 
 # Get the common filters if any
-filters = utils.find_filters(os.path.join(PATH, "common"), filters)
+filters = utils.find_filters(os.path.join(PATH, "common"), filters, MODE)
 
 # For each email directory in the config folder,
 # process the filters
@@ -51,7 +54,7 @@ for dir in sorted(os.listdir(PATH)):
                       logfile)
 
     # Get the local filters if any
-    local_filters = utils.find_filters(os.path.join(PATH, dir), filters)
+    local_filters = utils.find_filters(os.path.join(PATH, dir), filters, MODE)
 
     for key in sorted(local_filters.keys()):
       filter = local_filters[key]["filter"]

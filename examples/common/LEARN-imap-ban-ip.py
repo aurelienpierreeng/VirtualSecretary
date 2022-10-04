@@ -61,7 +61,7 @@ def filter(email) -> bool:
 def action(email):
   return
 
-mailserver.get_mailbox_emails(email.mailserver.spam)
+mailserver.get_mailbox_emails(mailserver.junk)
 mailserver.filters(filter, action, filtername, runs=-1)
 
 
@@ -108,7 +108,7 @@ def filter(email) -> bool:
 def action(email):
   return
 
-mailserver.get_mailbox_emails(email.mailserver.spam)
+mailserver.get_mailbox_emails(mailserver.junk)
 mailserver.filters(filter, action, filtername, runs=-1)
 
 
