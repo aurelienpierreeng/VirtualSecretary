@@ -28,6 +28,16 @@ filters = utils.find_filters(os.path.join(PATH, "common"), filters)
 # process the filters
 for dir in sorted(os.listdir(PATH)):
   if dir != "common":
+    # Manage concurrence by disabling editing over a captured folder
+    lockfile = os.path.join(os.path.join(PATH, dir), ".lock")
+    if os.path.exists(lockfile):
+      with open(lockfile, "r") as f:
+        print("The folder %s is already captured by another running instance with PID %s. We discard it here." % (dir, f.read().strip()))
+      continue
+    else:
+      with open(lockfile, "w") as f:
+        f.write(str(os.getpid()))
+
     # Unpack the servers credentials
     config_file = configparser.ConfigParser()
     config_file.read(os.path.join(PATH, dir + "/settings.ini"))
@@ -56,6 +66,15 @@ for dir in sorted(os.listdir(PATH)):
 
     imap.logout()
     logfile.close()
+
+    # Release the lock only if current instance captured it
+    if os.path.exists(lockfile):
+      delete = False
+      with open(lockfile, "r") as f:
+        delete = (f.read() == str(os.getpid()))
+
+      if delete:
+        os.remove(lockfile)
 
 
 print("\nGlobal execution took %.2f s. Mind this if you use cron jobs." % (time.time() - ts))
