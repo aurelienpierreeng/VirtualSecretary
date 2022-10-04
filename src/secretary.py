@@ -26,7 +26,7 @@ class Secretary(object):
       protocol = filters[key]["protocol"]
 
       # Check that we have a server and an active connection for this protocol
-      server_instance = self.protocols[protocol]
+      server_instance = self.protocols[protocol] if protocol in self.protocols else None
       if not (server_instance and server_instance.connection_inited):
         print("We have no active connector for the protocol %s, check that you defined your credentials in `settings.ini` for it." % protocol)
         return
