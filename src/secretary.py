@@ -1,4 +1,3 @@
-from asyncio import protocols
 import mailserver
 import utils
 
@@ -9,14 +8,14 @@ class Secretary(object):
   def load_connectors(self):
     for key in self.protocols:
       if key in self.config_file and key in self.protocols:
-        self.protocols[key].init_connection(self.config_file[key]["server"],
-                                            self.config_file[key]["user"],
-                                            self.config_file[key]["password"],
-                                            int(self.config_file[key]["entries"]))
+        self.protocols[key].init_connection(self.config_file[key])
+
   def close_connectors(self):
     for key in self.protocols:
       if key in self.config_file:
         self.protocols[key].close_connection()
+
+    self.logfile.close()
 
   def filters(self, filters:dict):
     # Launch the method that processes the filter loop for this server
@@ -32,10 +31,12 @@ class Secretary(object):
         return
 
       with open(filter_path) as f:
+        self.filtername = filter_path
         print("\nExecuting filter %s :" % filter)
         self.logfile.write("%s : Executing filter %s\n" % (utils.now(), filter))
         code = compile(f.read(), filter_path, 'exec')
-        exec(code, {"mailserver": server_instance, "filtername": filter_path})
+        exec(code, self.protocols, self.__dict__)
+
 
   def __init__(self, subfolder_path:str):
     # Unpack the servers credentials
@@ -45,11 +46,14 @@ class Secretary(object):
     # Start the logile
     self.logfile = open(os.path.join(subfolder_path, "sync.log"), 'a')
 
+    # Store the filtername currently processed, to be reused by logging
+    self.filtername = ""
+
     ## Open all servers for which we have credentials in config file
     # Declare the list of all supported protocols and instanciate their server classes here.
     # Keys should match the sections of config files and the protocol prefix in filter filenames.
     self.protocols = {}
-    self.protocols["imap"] = mailserver.MailServer(self.logfile)
+    self.protocols["imap"] = mailserver.MailServer(self.logfile, self)
 
     # Load all implemented connectors
     self.load_connectors()

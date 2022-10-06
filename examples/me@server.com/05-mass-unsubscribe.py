@@ -13,9 +13,8 @@ confirm you want to unsubscribe by hitting a button).
 import requests
 
 GLOBAL_VARS = globals()
-LOCAL_VARS = locals()
-
-mailserver = GLOBAL_VARS["mailserver"]
+secretary = GLOBAL_VARS["secretary"]
+imap = secretary.protocols["imap"]
 
 
 def filter(email) -> bool:
@@ -23,8 +22,7 @@ def filter(email) -> bool:
 
   if "Precedence" in email.header:
     if email.header["Precedence"] == "bulk":
-      if "List-Unsubscribe" in email.header:
-        result = True
+      result = "List-Unsubscribe" in email.header
 
   return result
 
@@ -37,13 +35,10 @@ def action(email):
     try:
       link = link.strip("<>")
       result = requests.get(link)
-      mailserver.logfile.write("Tried to unsubscribe from %s with no guaranty\n" % link)
+      imap.logfile.write("Tried to unsubscribe from %s with no guaranty\n" % link)
     except:
       pass
 
 
-MAILBOX = "INBOX.spam"
-N = 1
-
-mailserver.get_mailbox_emails(MAILBOX, N)
-mailserver.filters(filter, action)
+imap.get_mailbox_emails(imap.junk, N)
+imap.run_filters(filter, action)

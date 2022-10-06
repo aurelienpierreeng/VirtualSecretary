@@ -9,18 +9,19 @@ Detect spam using SpamAssasin headers and other smells
 """
 
 import os
-import requests
 
-GLOBAL_VARS = globals()
-mailserver = GLOBAL_VARS["mailserver"]
-filtername = GLOBAL_VARS["filtername"]
+protocols = globals()
+secretary = locals()
+imap = protocols["imap"]
+filtername = secretary["filtername"]
 
+dirname = os.path.dirname(filtername)
 
-ip_blacklist_file = os.path.join(os.path.dirname(filtername), 'ip-blacklist.txt')
-ip_whitelist_file = os.path.join(os.path.dirname(filtername), 'ip-whitelist.txt')
+ip_blacklist_file = os.path.join(dirname, 'ip-blacklist.txt')
+ip_whitelist_file = os.path.join(dirname, 'ip-whitelist.txt')
 
-email_blacklist_file = os.path.join(os.path.dirname(filtername), 'email-blacklist.txt')
-email_whitelist_file = os.path.join(os.path.dirname(filtername), 'email-whitelist.txt')
+email_blacklist_file = os.path.join(dirname, 'email-blacklist.txt')
+email_whitelist_file = os.path.join(dirname, 'email-whitelist.txt')
 
 
 def load_lists(file:str) -> list:
@@ -39,6 +40,8 @@ email_whitelist = load_lists(email_whitelist_file)
 
 
 def filter(email) -> bool:
+  global ip_whitelist, ip_blacklist, email_whitelist, email_blacklist
+
   # IP is known and whitelisted : exit early
   for ip in email.ip:
     if ip in ip_whitelist:
@@ -73,7 +76,7 @@ def filter(email) -> bool:
   return False
 
 def action(email):
-  email.spam(email.mailserver.spam)
+  email.spam(imap.junk)
 
-mailserver.get_mailbox_emails("INBOX")
-mailserver.filters(filter, action, filtername, runs=-1)
+imap.get_mailbox_emails("INBOX")
+imap.run_filters(filter, action)

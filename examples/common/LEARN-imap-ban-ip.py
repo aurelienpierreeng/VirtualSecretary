@@ -10,17 +10,20 @@ Run this only if you manually checked spam and inbox folders.
 """
 
 import os
-import re
 
-GLOBAL_VARS = globals()
-mailserver = GLOBAL_VARS["mailserver"]
-filtername = GLOBAL_VARS["filtername"]
 
-ip_blacklist_file = os.path.join(os.path.dirname(filtername), 'ip-blacklist.txt')
-ip_whitelist_file = os.path.join(os.path.dirname(filtername), 'ip-whitelist.txt')
+protocols = globals()
+secretary = locals()
+imap = protocols["imap"]
+filtername = secretary["filtername"]
 
-email_blacklist_file = os.path.join(os.path.dirname(filtername), 'email-blacklist.txt')
-email_whitelist_file = os.path.join(os.path.dirname(filtername), 'email-whitelist.txt')
+dirname = os.path.dirname(filtername)
+
+ip_blacklist_file = os.path.join(dirname, 'ip-blacklist.txt')
+ip_whitelist_file = os.path.join(dirname, 'ip-whitelist.txt')
+
+email_blacklist_file = os.path.join(dirname, 'email-blacklist.txt')
+email_whitelist_file = os.path.join(dirname, 'email-whitelist.txt')
 
 
 def load_lists(file:str) -> list:
@@ -48,6 +51,8 @@ email_whitelist = load_lists(email_whitelist_file)
 
 # Fetch the IPs from emails in spam box and add them to the blacklist
 def filter(email) -> bool:
+  global ip_whitelist, ip_blacklist, email_whitelist, email_blacklist
+
   for ip in email.ip:
     if ip not in ip_blacklist:
       ip_blacklist.append(ip)
@@ -58,17 +63,17 @@ def filter(email) -> bool:
 
   return False
 
-def action(email):
-  return
 
-mailserver.get_mailbox_emails(mailserver.junk)
-mailserver.filters(filter, action, filtername, runs=-1)
+imap.get_mailbox_emails(imap.junk)
+imap.run_filters(filter, None, runs=-1)
 
 
 # Fetch the IPs from emails in main inbox and remove them from the blacklist.
 # This is to account for possible false-positives and give a second chance to IPs
 # that are deemed OK, provided the main inbox is manually checked.
 def filter(email) -> bool:
+  global ip_whitelist, ip_blacklist, email_whitelist, email_blacklist
+
   for ip in email.ip:
     if ip in ip_blacklist:
       ip_blacklist.remove(ip)
@@ -83,11 +88,9 @@ def filter(email) -> bool:
 
   return False
 
-def action(email):
-  return
 
-mailserver.get_mailbox_emails("INBOX")
-mailserver.filters(filter, action, filtername, runs=-1)
+imap.get_mailbox_emails("INBOX")
+imap.run_filters(filter, None, runs=-1)
 
 
 # Fetch again IPs from spam folder and remove anything we find
@@ -95,6 +98,8 @@ mailserver.filters(filter, action, filtername, runs=-1)
 # This ensures that IPs/emails that are both in inbox and spam folders
 # are recorded neither in black or white lists.
 def filter(email) -> bool:
+  global ip_whitelist, ip_blacklist, email_whitelist, email_blacklist
+
   for ip in email.ip:
     if ip in ip_whitelist:
       ip_whitelist.remove(ip)
@@ -105,11 +110,8 @@ def filter(email) -> bool:
 
   return False
 
-def action(email):
-  return
-
-mailserver.get_mailbox_emails(mailserver.junk)
-mailserver.filters(filter, action, filtername, runs=-1)
+imap.get_mailbox_emails(imap.junk)
+imap.run_filters(filter, None, runs=-1)
 
 
 # Save the updated list files

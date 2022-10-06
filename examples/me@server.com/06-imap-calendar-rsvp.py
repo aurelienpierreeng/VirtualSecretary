@@ -10,19 +10,18 @@ Tag the emails attached to .ICS calendar invites with an RSVP label
 
 import re
 
-GLOBAL_VARS = globals()
-mailserver = GLOBAL_VARS["mailserver"]
-filtername = GLOBAL_VARS["filtername"]
+protocols = globals()
+imap = protocols["imap"]
 
-calendar_pattern = re.compile(r"\S+\.ics", re.IGNORECASE)
 
 def filter(email) -> bool:
   # Find any attachment file with extension .ics
+  calendar_pattern = re.compile(r"\S+\.ics", re.IGNORECASE)
   attachments = ", ".join(email.attachments)
   return re.match(calendar_pattern, attachments) != None
 
 def action(email):
   email.tag("RSVP")
 
-mailserver.get_mailbox_emails("INBOX")
-mailserver.filters(filter, action, filtername)
+imap.get_mailbox_emails("INBOX")
+imap.run_filters(filter, action)

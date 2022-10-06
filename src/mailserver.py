@@ -52,12 +52,13 @@ class EMail(object):
     try:
       self.urls.append(url_pattern.findall(self.body["text/plain"]))
     except:
-      print("Could not parse urls in email body (plain text)")
+      print("Could not parse urls in email body (plain text) for %s :" % self.header["Subject"])
+      print(self.body["text/plain"])
 
     try:
       self.urls.append(url_pattern.findall(self.body["text/html"]))
     except:
-      print("Could not parse urls in email body (HTML)")
+      print("Could not parse urls in email body (HTML) for %s" % self.header["Subject"])
 
     # Flatten the list 2D list
     self.urls = [item for sublist in self.urls for item in sublist]
@@ -90,6 +91,7 @@ class EMail(object):
   def parse_body(self):
     # Extract email body
     self.body = { "text/plain": "", "text/html" : "" }
+    charset = "utf-8"
 
     if self.msg.is_multipart():
       # Emails with attachments have multiple parts, we iterate over them to find the body
@@ -102,19 +104,45 @@ class EMail(object):
         body_type = part.get_content_type()
         if body_type in ["text/plain", "text/html"] and not is_attachment:
             self.body[body_type] = part.get_payload(decode=True)
+            charset = part.get_content_charset()
     else:
       body_type = self.msg.get_content_type()
       if body_type in ["text/plain", "text/html"]:
         self.body[body_type] = self.msg.get_payload(decode=True)
+        charset = self.msg.get_content_charset()
       else:
         print("Warning : email content type ", self.msg.get_content_type(), "is not supported")
 
-    if self.body["text/plain"] != "":
-      self.body["text/plain"] = self.body["text/plain"].decode()
-    else:
-      # For HTML emails that don't provide a plain text version,
-      # we parse HTML ourselves.
-      self.body["text/plain"] = self.body["text/html"].decode()
+    charset = "utf-8" if not charset else charset
+
+    # Decode plain text
+    try:
+      self.body["text/plain"] = self.body["text/plain"].decode(charset)
+    except:
+      try:
+        # If charset is not specified or detected and UTF-8 failed, next best guess is Windows BS
+        self.body["text/plain"] = self.body["text/plain"].decode("windows-1251")
+      except:
+        pass
+
+    # Decode HTML
+    try:
+      self.body["text/html"] = self.body["text/html"].decode(charset)
+    except:
+      try:
+        # If charset is not specified or detected and UTF-8 failed, next best guess is Windows BS
+        self.body["text/html"] = self.body["text/html"].decode("windows-1251")
+      except:
+        pass
+
+    # Manage fallbacks if one version of the email is absent
+
+    if self.body["text/html"] == "" and isinstance(self.body["text/plain"], str):
+      self.body["text/html"] = self.body["text/plain"]
+
+    if self.body["text/plain"] == "" and isinstance(self.body["text/html"], str):
+      # For HTML emails not providing plain-text version, remove markup
+      self.body["text/plain"] = self.body["text/html"]
 
       # Remove HTML/XML markup
       self.body["text/plain"] = re.sub(style_pattern, '', self.body["text/plain"])
@@ -126,12 +154,6 @@ class EMail(object):
 
       # Collapse multiple whitespaces
       self.body["text/plain"] = re.sub(multiple_spaces, '\n', self.body["text/plain"])
-
-    if self.body["text/html"] != "":
-      self.body["text/html"] = self.body["text/html"].decode()
-    else:
-      # For plain-text-only emails, duplicate the plain text to HTML
-      self.body["text/html"] = self.body["text/plain"]
 
 
   ##
@@ -185,8 +207,8 @@ class EMail(object):
 
   def spam(self, spam_folder="INBOX.spam"):
     # Mark an email as spam using Thunderbird tags and move it to the spam/junk folder
-    self.mailserver.uid('STORE', self.uid, '+FLAGS', 'Junk')
     self.mailserver.uid('STORE', self.uid, '-FLAGS', 'NonJunk')
+    self.mailserver.uid('STORE', self.uid, '-FLAGS', '(\\Seen)')
 
     result = self.mailserver.uid('COPY', self.uid, spam_folder)
 
@@ -341,7 +363,7 @@ Attachments : %s
     # Our final hash is the Unix timestamp for easy finding and Received hash
     self.hash = timestamp + "-" + hash.hexdigest()
 
-  def __init__(self, raw_message, index:int, mailserver) -> None:
+  def __init__(self, raw_message:list, index:int, mailserver) -> None:
     # Position of the email in the mailserver list
     self.index = index
     self.mailserver = mailserver
@@ -402,6 +424,9 @@ class MailServer(imaplib.IMAP4_SSL):
 
   def get_mailbox_emails(self, mailbox:str, n_messages=-1):
     # List the n-th last emails in mailbox
+    if not self.connection_inited:
+      print("We do not have an active IMAP connection. Ensure your IMAP credentials are defined in `settings.ini`")
+      return
 
     # If no explicit number of messages is passed, use the one from `settings.ini`
     if n_messages == -1:
@@ -449,8 +474,8 @@ class MailServer(imaplib.IMAP4_SSL):
       log[self.server][self.user] = { }
 
 
-  def __update_log_dict(self, email:EMail, log:dict, field:str, enable_logging:bool):
-    if(enable_logging):
+  def __update_log_dict(self, email:EMail, log:dict, field:str, enable_logging:bool, action_run=True):
+    if(enable_logging and action_run):
       try:
         # Update existing log entry for the current uid
         log[self.server][self.user][email.hash][field] += 1
@@ -458,8 +483,17 @@ class MailServer(imaplib.IMAP4_SSL):
         # Create a new log entry for the current uid
         log[self.server][self.user][email.hash] = { field : 1 }
 
+    if(not action_run):
+      try:
+        # Update existing log entry for the current uid
+        log[self.server][self.user][email.hash][field] += 0
+      except:
+        # Create a new log entry for the current uid
+        log[self.server][self.user][email.hash] = { field : 0 }
 
-  def filters(self, filter, action, filter_file:str, runs=1):
+
+
+  def run_filters(self, filter, action, runs=1):
     # Run the function `filter` and execute the function `action` if the filtering condition is met
     # * `filter` needs to return a boolean encoding the success of the filter.
     # * `action` needs to return a list where the [0] element contains "OK" if the operation succeeded,
@@ -469,8 +503,8 @@ class MailServer(imaplib.IMAP4_SSL):
     # * `filter_file` is the full path to the filter Python script
 
     # Define the log file as an hidden file inheriting the filter filename
-    directory = os.path.dirname(filter_file)
-    basename = os.path.basename(filter_file)
+    directory = os.path.dirname(self.secretary.filtername)
+    basename = os.path.basename(self.secretary.filtername)
     filter_logfile = os.path.join(directory, "." + basename + ".log")
 
     # Init a brand-new log dict
@@ -489,6 +523,11 @@ class MailServer(imaplib.IMAP4_SSL):
     if enable_logging and os.path.exists(filter_logfile):
       with open(filter_logfile, "rb") as f:
         log = dict(pickle.load(f))
+        #print("DB found : %s" % f)
+        #print(log)
+    else:
+      #print("%s not found" % log)
+      pass
 
     self.__init_log_dict(log)
 
@@ -498,16 +537,20 @@ class MailServer(imaplib.IMAP4_SSL):
       # Disable the filters if the number of allowed runs is already exceeded
       if enable_logging and email.hash in log[self.server][self.user]:
         # We have a log entry for this hash.
+        #print("%s found in DB" % email.hash)
         filter_on = (log[self.server][self.user][email.hash]["processed"] < runs)
       else:
         # We don't have a log entry for this hash or we don't limit runs
+        #print("%s not found in DB" % email.hash)
         filter_on = True
 
       # Run the actual filter
-      if filter_on:
+      if filter_on and filter:
         try:
           # User wrote good filters.
+          self.std_out = [ "", ]
           filter_on = filter(email)
+          #print(filter_on)
 
           if not isinstance(filter_on, bool):
             filter_on = False
@@ -522,7 +565,7 @@ class MailServer(imaplib.IMAP4_SSL):
         try:
           # The action should update self.std_out internally. If not, init here as a success.
           # Success and errors matter only for email write operations
-          self.std_out = [ "OK", ]
+          self.std_out = [ "", ]
           action(email)
 
           if self.std_out[0] == "OK":
@@ -538,6 +581,9 @@ class MailServer(imaplib.IMAP4_SSL):
           # Log error
           print("Filter application failed on", email.header["Subject"], "from", email.header["From"])
           self.__update_log_dict(email, log, "errored", enable_logging)
+      else:
+        # No action run but we still store email ID in DB
+        self.__update_log_dict(email, log, "processed", enable_logging, action_run=False)
 
     # Actually delete with IMAP the emails marked with the tag `\DELETED`
     # We only need to run it once per email loop/mailbox.
@@ -552,24 +598,29 @@ class MailServer(imaplib.IMAP4_SSL):
 
     # Dump the log dict to a byte file for efficiency
     with open(filter_logfile, "wb") as f:
-      log = pickle.dump(log, f)
+      pickle.dump(log, f)
+      #print(log)
+      #print("%s written" % filter_logfile)
 
 
-  def init_connection(self, server:str, user:str, password:str, n_messages:int):
+  def init_connection(self, params:dict):
     # High-level method to login to a server in one shot
-
-    self.n_messages = n_messages
-    self.server = server
-    self.user = user
+    self.n_messages = int(params["entries"])
+    self.server = params["server"]
+    self.user = params["user"]
 
     # Init the SSL connection to the server
-    self.logfile.write("%s : Trying to login to %s with username %s\n" % (utils.now(), server, user))
+    self.logfile.write("%s : Trying to login to %s with username %s\n" % (utils.now(), self.server, self.user))
+    try:
+      imaplib.IMAP4_SSL.__init__(self, host=self.server)
+    except:
+      print("We can't reach the server %s. Check your network connection." % self.server)
 
-    imaplib.IMAP4_SSL.__init__(self, host=server)
-
-    out_code = self.login(user, password)
-
-    self.logfile.write("%s : Connection to %s : %s\n" % (utils.now(), server, out_code[0]))
+    try:
+      self.std_out = self.login(self.user, params["password"])
+      self.logfile.write("%s : Connection to %s : %s\n" % (utils.now(), self.server, self.std_out[0]))
+    except:
+      print("We can't login to %s with username %s. Check your credentials" % (self.server, self.user))
 
     self.get_imap_folders()
 
@@ -582,7 +633,7 @@ class MailServer(imaplib.IMAP4_SSL):
     self.connection_inited = False
 
 
-  def __init__(self, logfile) -> None:
+  def __init__(self, logfile, secretary) -> None:
     # This is the global logfile, `sync.log`
     # Not to be confused with the local filter file.
     self.logfile = logfile
@@ -591,5 +642,8 @@ class MailServer(imaplib.IMAP4_SSL):
     # Each internal IMAP method will post its output on it, so
     # users don't have to return the out code in the filters
     self.std_out = [ ]
+
+    # Store a link to the secretary connectors
+    self.secretary = secretary
 
     self.connection_inited = False

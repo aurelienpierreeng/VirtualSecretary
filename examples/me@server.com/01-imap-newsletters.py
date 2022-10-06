@@ -8,17 +8,19 @@ Detect the typical email headers of newsletters.
 
 """
 
-GLOBAL_VARS = globals()
-mailserver = GLOBAL_VARS["mailserver"]
-filtername = GLOBAL_VARS["filtername"]
+protocols = globals()
+imap = protocols["imap"]
 
 def filter(email) -> bool:
-  if "Precedence" in email.header:
-    return (email.header["Precedence"] == "bulk")
+  result = False
 
+  if "Precedence" in email.header and "List-Unsubscribe" in email.header:
+    result = (email.header["Precedence"] == "bulk")
+
+  return result
 
 def action(email) -> list:
   email.move("INBOX.Newsletters")
 
-mailserver.get_mailbox_emails("INBOX")
-mailserver.filters(filter, action, filtername)
+imap.get_mailbox_emails("INBOX")
+imap.run_filters(filter, action)
