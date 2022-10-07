@@ -23,5 +23,5 @@ def filter(email) -> bool:
 def action(email):
   email.tag("RSVP")
 
-imap.get_mailbox_emails("INBOX")
+imap.get_objects("INBOX")
 imap.run_filters(filter, action)

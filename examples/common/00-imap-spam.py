@@ -76,7 +76,7 @@ def filter(email) -> bool:
   return False
 
 def action(email):
-  email.spam(imap.junk)
+  email.spam(email.server.junk)
 
-imap.get_mailbox_emails("INBOX")
+imap.get_objects("INBOX")
 imap.run_filters(filter, action)

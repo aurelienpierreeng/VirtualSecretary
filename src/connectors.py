@@ -33,8 +33,14 @@ _ContentType = typing.TypeVar("Content", bound=Content)
 
 
 class Server(ABC, typing.Generic[_ContentType]):
+  # Set to True after a successful login
   connection_inited: bool = False
+
+  # Cast status/success messages under the form
+  # ["OK", "details/data"]
   std_out: list
+
+  # List
   objects: list[_ContentType]
 
   def calling_file(self):
@@ -58,10 +64,5 @@ class Server(ABC, typing.Generic[_ContentType]):
 
   def __init__(self, logfile) -> None:
     # This is the global logfile, `sync.log`
-    # Not to be confused with the local filter file.
+    # Not to be confused with the local filter DB.
     self.logfile = logfile
-
-    # Init an output pipe to globally fetch IMAP commands output
-    # Each internal IMAP method will post its output on it, so
-    # users don't have to return the out code in the filters
-    self.std_out = [ ]

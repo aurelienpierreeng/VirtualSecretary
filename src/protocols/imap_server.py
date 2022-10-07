@@ -39,7 +39,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         self.std_out = mail_list
 
-    def get_mailbox_emails(self, mailbox: str, n_messages=-1):
+    def get_objects(self, mailbox: str, n_messages=-1):
         # List the n-th last emails in mailbox
         if not self.connection_inited:
             print("We do not have an active IMAP connection. Ensure your IMAP credentials are defined in `settings.ini`")

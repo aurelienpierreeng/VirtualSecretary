@@ -75,17 +75,15 @@ Filters are defined like such: in a `01-imap-invoice.py` file, write :
 #!/usr/bin/env python3
 
 protocols = globals()
-secretary = locals()
 imap = protocols["imap"]
-filtername = secretary["filtername"]
 
 def filter(email) -> bool:
-  return "invoice" in [email.body["text/plain"].lower(), email.header["Subject"].lower()]
+  return "invoice" in email.body["text/plain"].lower() or "invoice" in email.header["Subject"].lower()
 
-def action(email):
+def action(email) -> None:
   email.move("INBOX.Invoices")
 
-imap.get_mailbox_emails("INBOX", n_messages=20)
+imap.get_objects("INBOX", n_messages=20)
 imap.run_filters(filter, action, runs=1)
 ```
 

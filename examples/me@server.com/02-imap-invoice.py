@@ -8,15 +8,14 @@ Find invoices in emails and move them to a dedicated folders.py
 
 """
 
-GLOBAL_VARS = globals()
-secretary = GLOBAL_VARS["secretary"]
-imap = secretary.protocols["imap"]
+protocols = globals()
+imap = protocols["imap"]
 
 def filter(email) -> bool:
-  return "invoice" in [email.body["text/plain"].lower(), email.header["Subject"].lower()]
+  return "invoice" in email.body["text/plain"].lower() or email.header["Subject"].lower()
 
 def action(email):
   email.move("INBOX.Invoices")
 
-imap.get_mailbox_emails("INBOX")
+imap.get_objects("INBOX")
 imap.run_filters(filter, action)

@@ -40,5 +40,5 @@ def action(email):
       pass
 
 
-imap.get_mailbox_emails(imap.junk, N)
+imap.get_objects(imap.junk, N)
 imap.run_filters(filter, action)

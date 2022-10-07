@@ -64,7 +64,7 @@ def filter(email) -> bool:
   return False
 
 
-imap.get_mailbox_emails(imap.junk)
+imap.get_objects(imap.junk)
 imap.run_filters(filter, None, runs=-1)
 
 
@@ -89,7 +89,7 @@ def filter(email) -> bool:
   return False
 
 
-imap.get_mailbox_emails("INBOX")
+imap.get_objects("INBOX")
 imap.run_filters(filter, None, runs=-1)
 
 
@@ -110,7 +110,7 @@ def filter(email) -> bool:
 
   return False
 
-imap.get_mailbox_emails(imap.junk)
+imap.get_objects(imap.junk)
 imap.run_filters(filter, None, runs=-1)
 
 
