@@ -86,7 +86,7 @@ def action(email):
   email.move("INBOX.Invoices")
 
 imap.get_mailbox_emails("INBOX", n_messages=20)
-imap.run_filters(filter, action, filternamer, runs=1)
+imap.run_filters(filter, action, runs=1)
 ```
 
 This very basic filter will fetch the 20 most recent emails (`n_messages=20`) from the mailbox `INBOX` (the base IMAP folder), look for the case-insensitive keyword "Invoice" in the email body and subject, and if found, will move the email to the "Invoices" IMAP folder. This folder will be automatically created if it does not exist already. The filter will be run at most one time (`runs=1`) for each email, which means that if you manually move the emails back to `INBOX` after the filter is applied, the next run will not move them again to "Invoices". The history of runs is stored in an hidden log file named `.01-imap-invoice.py.log` where emails are identified globally for all the folders in the email account, and the history is kept even if you change the content of the filter in the future.
