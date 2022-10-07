@@ -26,6 +26,9 @@ Aside of the simple filter use cases, it lets you use the full extend of Python 
 
 It comes with a large range of example filters that can be used as-is or as templates, including a ready-to-use anti-spam system using IP blacklist/whitelist and neural network AI that can be trained against your own spam box.
 
+The functionnal logic is very similar to the one of [IFTTT](https://ifttt.com/explore/new_to_ifttt), plus the whole Python ecosystem to extend actions, minus the toy GUI, without the anxiety of SaaS (shit as a software) owned by some company that may go out of business or extinct the product (wink wink [Yahoo! Pipes](https://en.wikipedia.org/wiki/Yahoo!_Pipes)).
+
+
 ## How it works
 
 The `main.py` scripts needs to be called with the path to a configuration directory, like `python main.py ~/secretary/config process`. Say you have 2 email addresses, `me@domain.com` and `pro@domain.com`, you need to create a folder for each email plus one `common` folder in your `config` directory. Then populate them with your filters, named like `00-protocol-filter.py` and your credentials into a `settings.ini` configuration file. This gives you :
@@ -118,10 +121,12 @@ To run the filters in background, for example on a server, you may use a cron jo
 
 1. Start the cron editor: `$ crontab -e`
 2. To execute the Virtual Secretary processing stage every 10 minutes (starting on flat hours), write the following rule:
-`$ */10 * * * * python /home/your_user/path/VirtualSecretary/src/main.py /home/your_user/path/VirtualSecretary/config process`
+`$ */10 * * * * python /home/your_user/path/VirtualSecretary/src/main.py /home/your_user/path/VirtualSecretary/config process &>> /home/your_user/path/VirtualSecretary/config/secretary.log`
 3. To execute the Virtual Secretary learning stage every day at 0h05 and 12h05, write the following rule:
-`$ 5 0,12 * * * python /home/your_user/path/VirtualSecretary/src/main.py /home/your_user/path/VirtualSecretary/config learn`
+`$ 5 0,12 * * * python /home/your_user/path/VirtualSecretary/src/main.py /home/your_user/path/VirtualSecretary/config learn &>> /home/your_user/path/VirtualSecretary/config/secretary.log`
 4. Save.
+
+The `&>> secretary.log` part will save the runtimes, errors and warnings of the program to a `secretary.log` file inside your config directory. This may contain useful information to troubleshoot your installation. The program will also create a `sync.log` file in each subfolder, containing the report of all operations performed on the triggers (like email moved where, tagged how, etc.).
 
 Note that a locking mechanism prevents 2 instances of the Virtual Secretary to process the same subfolder at the same time. If the previous run did not end before the next one starts, the next one will be aborted. When you run `$ python src/main.py` (with the proper arguments, see above), it will give you the global execution time at the end. Your delay between 2 cron jobs needs to be at least this time. This is also why we start the learning stage 5 minutes off the flat hour in the example above.
 
