@@ -1,10 +1,15 @@
-import mailserver
-import utils
-
 import configparser
 import os
+import typing
+import importlib
+
+import connectors
+import utils
+import protocols
 
 class Secretary(object):
+  protocols: typing.Dict[str, connectors.Server] = { }
+
   def load_connectors(self):
     for key in self.protocols:
       if key in self.config_file and key in self.protocols:
@@ -31,11 +36,10 @@ class Secretary(object):
         return
 
       with open(filter_path) as f:
-        self.filtername = filter_path
         print("\nExecuting filter %s :" % filter)
         self.logfile.write("%s : Executing filter %s\n" % (utils.now(), filter))
         code = compile(f.read(), filter_path, 'exec')
-        exec(code, self.protocols, self.__dict__)
+        exec(code, self.protocols, {"filtername": filter_path})
 
 
   def __init__(self, subfolder_path:str):
@@ -46,14 +50,12 @@ class Secretary(object):
     # Start the logile
     self.logfile = open(os.path.join(subfolder_path, "sync.log"), 'a')
 
-    # Store the filtername currently processed, to be reused by logging
-    self.filtername = ""
+    # Open all servers for which we have a connector implemented
+    for file in protocols.__all__:
+      if file.endswith("_server"):
+        protocol = file.replace("_server", "")
+        prot = importlib.import_module("." + file, package="protocols")
+        self.protocols[protocol] = prot.Server(self.logfile)
 
-    ## Open all servers for which we have credentials in config file
-    # Declare the list of all supported protocols and instanciate their server classes here.
-    # Keys should match the sections of config files and the protocol prefix in filter filenames.
-    self.protocols = {}
-    self.protocols["imap"] = mailserver.MailServer(self.logfile, self)
-
-    # Load all implemented connectors
+    # Connect to all servers for which we have credentials in settings.ini
     self.load_connectors()

@@ -7,7 +7,6 @@ import re
 import time
 
 from secretary import Secretary
-from mailserver import MailServer
 
 ts = time.time()
 
