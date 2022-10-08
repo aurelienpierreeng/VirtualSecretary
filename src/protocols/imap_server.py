@@ -61,15 +61,15 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             # Network loop
             ts = time.time()
 
-                try:
+            try:
                 # build a coma-separated list of IDs from start to end
                 ids = range(max(num_messages - n_messages + 1, 1), num_messages + 1)
                 ids = [str(x) for x in ids]
                 ids = ",".join(ids)
                 res, messages_queue = self.fetch(ids, "(FLAGS BODY.PEEK[] UID)")
-                except:
-                    print(
-                    "Could not get some emails, they may have been deleted on server by another application in the meantime.")
+            except:
+                print(
+                "Could not get some emails, they may have been deleted on server by another application in the meantime.")
 
             # When fetching emails in bulk, a weird "41" gets inserted between each record
             # so we need to keep one every next row.
@@ -203,20 +203,20 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                     if self.std_out[0] == "OK":
                         # Log success
                         print("Filter application successful on",
-                              email.header["Subject"], "from", email.header["From"])
+                              email["Subject"], "from", email["From"])
                         self.__update_log_dict(
                             email, log, "processed", enable_logging)
                     else:
                         # Log error
                         print("Filter application failed on",
-                              email.header["Subject"], "from", email.header["From"])
+                              email["Subject"], "from", email["From"])
                         self.__update_log_dict(
                             email, log, "errored", enable_logging)
 
                 except:
                     # Log error
                     print("Filter application failed on",
-                          email.header["Subject"], "from", email.header["From"])
+                          email["Subject"], "from", email["From"])
                     self.__update_log_dict(
                         email, log, "errored", enable_logging)
             else:

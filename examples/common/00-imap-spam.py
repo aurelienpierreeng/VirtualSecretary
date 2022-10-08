@@ -2,7 +2,7 @@
 
 """
 
-Detect spam using SpamAssasin headers and other smells
+Detect spam using SpamAssasins and other smells
 
 © Aurélien Pierre - 2022
 
@@ -48,8 +48,10 @@ def filter(email) -> bool:
       return False
 
   # Email is known and whitelisted : exit early
-  if email.sender_email in email_whitelist:
-    return False
+  names, addresses = email.get_sender()
+  for address in addresses:
+    if address in email_whitelist:
+      return False
 
   # IP is known and blacklisted : exit early
   for ip in email.ip:
@@ -57,21 +59,26 @@ def filter(email) -> bool:
       return True
 
   # Email is known and blacklisted : exist early
-  if email.sender_email in email_blacklist:
-    return True
+  for address in addresses:
+    if address in email_blacklist:
+      print("address found in blacklist")
+      return True
 
   # IP is unknown : check for smells
 
-  # SpamAssassin headers if any
-  if "X-Spam-Flag" in email.header:
-    if email.header["X-Spam-Flag"] == "YES":
+  # SpamAssassins if any
+  if "X-Spam-Flag" in email:
+    if email["X-Spam-Flag"] == "YES":
+      print("SpamAssassin found")
       return True
 
   # Bulk emails without unsubscribe link are usually good smells.
   # This is outright illegal in Europe by the way.
-  if "Precedence" in email.header:
-    if (email.header["Precedence"] == "bulk" and not ("List-Unsubscribe" in email.header)):
-      return True
+  if "Precedence" in email:
+    if email["Precedence"] == "bulk":
+      if "List-Unsubscribe" not in email:
+        print("bad bulk message detected")
+        return True
 
   return False
 

@@ -57,7 +57,9 @@ def filter(email) -> bool:
     if ip not in ip_blacklist:
       ip_blacklist.append(ip)
 
-  for address in email.sender_email:
+  names, addresses = email.get_sender()
+
+  for address in addresses:
     if address not in email_blacklist:
       email_blacklist.append(address)
 
@@ -80,7 +82,9 @@ def filter(email) -> bool:
     if ip not in ip_whitelist:
       ip_whitelist.append(ip)
 
-  for address in email.sender_email:
+  names, addresses = email.get_sender()
+
+  for address in addresses:
     if address in email_blacklist:
       email_blacklist.remove(address)
     if address not in email_whitelist:
@@ -104,7 +108,9 @@ def filter(email) -> bool:
     if ip in ip_whitelist:
       ip_whitelist.remove(ip)
 
-  for address in email.sender_email:
+  names, addresses = email.get_sender()
+
+  for address in addresses:
     if address in email_whitelist:
       email_whitelist.remove(address)
 

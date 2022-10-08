@@ -16,13 +16,7 @@ protocols = globals()
 imap = protocols["imap"]
 
 def filter(email) -> bool:
-  result = False
-
-  if "Precedence" in email:
-    if email["Precedence"] == "bulk":
-      result = "List-Unsubscribe" in email
-
-  return result
+  return "List-Unsubscribe" in email
 
 
 def action(email):
@@ -31,11 +25,11 @@ def action(email):
 
   for link in links:
     try:
-      link = link.strip("<>")
+      link = link.strip("<>\r\n")
       result = requests.get(link)
-      imap.logfile.write("Tried to unsubscribe from %s with no guaranty\n" % link)
+      email.mailserver.logfile.write("Tried to unsubscribe from %s with no guaranty\n" % link)
     except:
-      pass
+      print(result)
 
 
 imap.get_objects(imap.junk)

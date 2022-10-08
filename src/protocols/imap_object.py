@@ -1,4 +1,5 @@
 import imaplib
+import quopri
 import utils
 import email
 import re
@@ -9,18 +10,16 @@ import html
 import time
 import connectors
 
+from email import policy
+
 from datetime import datetime
 
-ip_pattern = re.compile(r"\[(\d{1,3}.\d{1,3}.\d{1,3}.\d{1,3})\]")
-email_pattern = re.compile(r"([0-9a-zA-Z\-\_\+]+?@[0-9a-zA-Z\-\_\+]+?\.[a-zA-Z]{2,})")
+ip_pattern = re.compile(r"\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]")
+email_pattern = re.compile(r"([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+?\.[a-zA-Z]{2,})")
 url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)")
 uid_pattern = re.compile(r"UID ([0-9]+) ")
 flags_pattern = re.compile(r"\(FLAGS \((.*)\)")
-xml_pattern = re.compile(r"<.*?>", re.DOTALL)
-style_pattern = re.compile(r"(<head.*?>)(.*?)(</head>)", re.DOTALL)
-img_pattern = re.compile(r"<img.*?\/?>", re.DOTALL)
-multiple_spaces = re.compile(r"\s{2,}", re.UNICODE)
-multiple_line_breaks = re.compile(r"\s{2,}")
+
 
 class EMail(connectors.Content):
 
@@ -35,127 +34,106 @@ class EMail(connectors.Content):
     self.flags = flags_pattern.search(raw).groups()[0]
 
   def parse_ips(self):
-    result = ip_pattern.search(self.msg.as_string())
-    self.ip = result.groups() if result is not None else None
+    # Get the whole network route taken by the email
+    network_route = self.msg.get_all("Received")
+    network_route = "; ".join(network_route)
+    self.ips = ip_pattern.findall(network_route)
 
-  def parse_email(self):
-    result = email_pattern.search(self.header["From"])
-    self.sender_email = result.groups() if result is not None else None
+    # Remove localhost
+    self.ips = [ip for ip in self.ips if not ip.startswith("127.")]
 
-  def parse_urls(self):
+  @property
+  def ip(self):
+    # Lazily parse IPs in email only when/if the property is used
+    if self.ips == []:
+      self.parse_ips()
+    return self.ips
+
+
+  def get_sender(self) -> list[list, list]:
+    emails = email_pattern.findall(self["From"])
+    names = re.findall(r"\"(.+)?\"", self["From"])
+    out = [names, emails]
+    return out
+
+
+  def parse_urls(self, input:str):
     # Output a list of all URLs found in email body.
     # Each result in the list is a tuple (domain, page), for example :
     # `google.com/index.php` is broken into `('google.com', '/index.php')`
     # `google.com/` is broken into `('google.com', '/')`
     # `google.com/login.php?id=xxx` is broken into `('google.com', '/login.php')`
-    self.urls = []
 
     try:
-      self.urls.append(url_pattern.findall(self.body["text/plain"]))
+      self.urls.append(url_pattern.findall(input))
     except:
-      print("Could not parse urls in email body (plain text) for %s :" % self.header["Subject"])
-      print(self.body["text/plain"])
-
-    try:
-      self.urls.append(url_pattern.findall(self.body["text/html"]))
-    except:
-      print("Could not parse urls in email body (HTML) for %s" % self.header["Subject"])
+      print("Could not parse urls in email body :")
+      print(input)
 
     # Flatten the list 2D list
     self.urls = [item for sublist in self.urls for item in sublist]
 
 
-  def parse_headers(self):
-    self.header = { }
+  def __getitem__(self, key):
+    # Getting key from the class is dispatched directly to email.EmailMessage properties
+    return self.msg.get(key)
 
-    for elem in ["Message-ID", "Subject", "Date", "From", "To",               # Mandatory fields
-                 "Return-Path", "Envelope-to", "Delivery-date", "Reply-To",   # Optional
-                 "MIME-Version", "Content-Type", "Content-Transfer-Encoding", # Content hints
-                 "DKIM-Signature",                                            # Mailbox authentification
-                 "Received",                                                  # Network route followed
-                 "List-Unsubscribe", "List-Unsubscribe-Post", "List-ID", "Feedback-ID", "Precedence", # Newsletter and bulk sendings
-                 "X-Mailer", "X-Csa-Complaints", "X-Mailin-Campaign", "X-Mailin-Client",              # Custom stuff from bulk sendings
-                 "X-Spam-Status", "X-Spam-Score", "X-Spam-Bar", "X-Ham-Report", "X-Spam-Flag",        # SpamAssassin headers
-                 ]:
+  xml_pattern = re.compile(r"<.*?>", re.DOTALL)
+  style_pattern = re.compile(r"(<style.*?>)(.*?)(</style>)", re.DOTALL)
+  img_pattern = re.compile(r"<img.*?\/?>", re.DOTALL)
+  multiple_spaces = re.compile(r"[\t ]{2,}", re.UNICODE)
+  multiple_lines = re.compile(r"\s{2,}", re.UNICODE)
 
-      if elem in self.msg:
-        self.header[elem] = str(email.header.make_header(email.header.decode_header(self.msg.get(elem))))
+  def remove_html(self, input:str):
+    # Fetch urls now because they will be removed with markup
+    self.parse_urls(input)
 
-    # Sanitize things for those weird malformed spam emails
-    if "Message-ID" not in self.header:
-      self.header["Message-ID"] = ""
+    # Remove HTML/XML markup
+    output = re.sub(self.style_pattern, '', input)
+    output = re.sub(self.img_pattern, '', output)
+    output = re.sub(self.xml_pattern, ' ', output)
 
-    if "Subject" not in self.header:
-      self.header["Subject"] = ""
+    # Decode HTML entities
+    output = html.unescape(output)
 
+    # Collapse multiple whitespaces
+    output = re.sub(self.multiple_spaces, ' ', output)
+    output = re.sub(self.multiple_lines, '\n', output)
 
-  def parse_body(self):
-    # Extract email body
-    self.body = { "text/plain": "", "text/html" : "" }
-    charset = "utf-8"
+    return output
 
-    if self.msg.is_multipart():
-      # Emails with attachments have multiple parts, we iterate over them to find the body
-      for part in self.msg.walk():
-        is_attachment = "attachment" in str(part.get("Content-Disposition"))
+  def get_body(self, preferencelist=('related', 'html', 'plain')):
+    body = self.msg.get_body(preferencelist)
 
-        if is_attachment:
-          self.attachments.append(part.get_filename())
+    # For emails providing HTML only, build a plain text version from
+    # the HTML one by removing markup
+    build_plain = False
+    if not body and preferencelist == "plain":
+      body = self.msg.get_body("html")
+      build_plain = True
 
-        body_type = part.get_content_type()
-        if body_type in ["text/plain", "text/html"] and not is_attachment:
-            self.body[body_type] = part.get_payload(decode=True)
-            charset = part.get_content_charset()
-    else:
-      body_type = self.msg.get_content_type()
-      if body_type in ["text/plain", "text/html"]:
-        self.body[body_type] = self.msg.get_payload(decode=True)
-        charset = self.msg.get_content_charset()
+    if body:
+      charset = body.get_content_charset()
+      encoding = body["Content-Transfer-Encoding"]
+      content = body.get_content()
+
+      if build_plain:
+        content = self.remove_html(content)
       else:
-        print("Warning : email content type ", self.msg.get_content_type(), "is not supported")
+        # Fetch urls now because they will be removed with markup
+        self.parse_urls(content)
 
-    charset = "utf-8" if not charset else charset
+        # Even if it's plain text, there might be html entities/markup in it
+        # so clean it.
+        content = re.sub(self.xml_pattern, "", content)
+        content = html.unescape(content)
 
-    # Decode plain text
-    try:
-      self.body["text/plain"] = self.body["text/plain"].decode(charset)
-    except:
-      try:
-        # If charset is not specified or detected and UTF-8 failed, next best guess is Windows BS
-        self.body["text/plain"] = self.body["text/plain"].decode("windows-1251")
-      except:
+      if encoding == "quoted-printable" and charset != "utf-8":
+        # That should be handled because it's prone to errors,
+        # but affects only spam messages thus low-priority.
         pass
 
-    # Decode HTML
-    try:
-      self.body["text/html"] = self.body["text/html"].decode(charset)
-    except:
-      try:
-        # If charset is not specified or detected and UTF-8 failed, next best guess is Windows BS
-        self.body["text/html"] = self.body["text/html"].decode("windows-1251")
-      except:
-        pass
-
-    # Manage fallbacks if one version of the email is absent
-
-    if self.body["text/html"] == "" and isinstance(self.body["text/plain"], str):
-      self.body["text/html"] = self.body["text/plain"]
-
-    if self.body["text/plain"] == "" and isinstance(self.body["text/html"], str):
-      # For HTML emails not providing plain-text version, remove markup
-      self.body["text/plain"] = self.body["text/html"]
-
-      # Remove HTML/XML markup
-      self.body["text/plain"] = re.sub(style_pattern, '', self.body["text/plain"])
-      self.body["text/plain"] = re.sub(img_pattern, '', self.body["text/plain"])
-      self.body["text/plain"] = re.sub(xml_pattern, '', self.body["text/plain"])
-
-      # Decode HTML entities
-      self.body["text/plain"] = html.unescape(self.body["text/plain"])
-
-      # Collapse multiple whitespaces
-      self.body["text/plain"] = re.sub(multiple_spaces, '\n', self.body["text/plain"])
-
+    return content
 
   ##
   ## IMAP ACTIONS
@@ -169,9 +147,9 @@ class EMail(connectors.Content):
       self.server.logfile.write("%s : Tag `%s` added to email (UID %s) `%s` from `%s` received on %s\n" % (utils.now(),
                                                                                     keyword,
                                                                                     self.uid,
-                                                                                    self.header["Subject"],
-                                                                                    self.header["From"],
-                                                                                    self.header["Date"]))
+                                                                                    self["Subject"],
+                                                                                    self["From"],
+                                                                                    self["Date"]))
 
     self.server.std_out = result
 
@@ -183,9 +161,9 @@ class EMail(connectors.Content):
       self.server.logfile.write("%s : Tag `%s` removed from email (UID %s) `%s` from `%s` received on %s\n" % (utils.now(),
                                                                                     keyword,
                                                                                     self.uid,
-                                                                                    self.header["Subject"],
-                                                                                    self.header["From"],
-                                                                                    self.header["Date"]))
+                                                                                    self["Subject"],
+                                                                                    self["From"],
+                                                                                    self["Date"]))
 
     self.server.std_out = result
 
@@ -197,9 +175,9 @@ class EMail(connectors.Content):
     if result[0] == "OK":
       self.server.logfile.write("%s : Deteled email (UID %s) `%s` from `%s` received on %s\n" % (utils.now(),
                                                                                     self.uid,
-                                                                                    self.header["Subject"],
-                                                                                    self.header["From"],
-                                                                                    self.header["Date"]))
+                                                                                    self["Subject"],
+                                                                                    self["From"],
+                                                                                    self["Date"]))
 
       # delete the email from the list of emails in the server object to avoid further manipulation
       self.server.emails.remove(self)
@@ -220,9 +198,9 @@ class EMail(connectors.Content):
       if result[0] == "OK":
         self.server.logfile.write("%s : Spam email (UID %s) `%s` from `%s` received on %s\n" % (utils.now(),
                                                                                           self.uid,
-                                                                                          self.header["Subject"],
-                                                                                          self.header["From"],
-                                                                                          self.header["Date"]))
+                                                                                          self["Subject"],
+                                                                                          self["From"],
+                                                                                          self["Date"]))
 
     self.server.std_out = result
 
@@ -245,9 +223,9 @@ class EMail(connectors.Content):
       if result[0] == "OK":
         self.server.logfile.write("%s : Moved email (UID %s) `%s` from `%s` received on %s to %s\n" % (utils.now(),
                                                                                                           self.uid,
-                                                                                                          self.header["Subject"],
-                                                                                                          self.header["From"],
-                                                                                                          self.header["Date"],
+                                                                                                          self["Subject"],
+                                                                                                          self["From"],
+                                                                                                          self["Date"],
                                                                                                           folder))
         # delete the email from the list of emails in the server object to avoid further manipulation
         # because the emails list is tied to a particular mailbox folder.
@@ -277,8 +255,8 @@ class EMail(connectors.Content):
   def mark_as_answered(self, mode:str):
     # Flag or unflag an email as answered
     # Note :
-    #   if you answer programmatically, you need to manually pass the Message-ID header of the original email
-    #   to the In-Reply-To and References headers of the answer to get threaded messages. In-Reply-To gets only
+    #   if you answer programmatically, you need to manually pass the Message-ID of the original email
+    #   to the In-Reply-To and Referencess of the answer to get threaded messages. In-Reply-To gets only
     #   the immediate previous email, References get the whole thread.
 
     tag = "(\\Answered)"
@@ -336,10 +314,10 @@ UID\t:\t%s
 FLAGS\t:\t%s
 Attachments : %s
 -------------------------------------------------------------------------------------
-%s""" % (self.header["Message-ID"],
-        self.header["Subject"],
-        self.header["From"],
-        self.header["Date"],
+%s""" % (self["Message-ID"],
+        self["Subject"],
+        self["From"],
+        self["Date"],
         self.uid,
         self.flags,
         self.attachments,
@@ -355,13 +333,13 @@ Attachments : %s
     # so we need to create our own hash.
 
     # Convert the email date to Unix timestamp
-    date_time = email.utils.parsedate_to_datetime(self.header["Date"])
+    date_time = email.utils.parsedate_to_datetime(self["Date"])
     timestamp = str(int(datetime.timestamp(date_time)))
 
-    # Hash the Received header, which is the most unique
+    # Hash the Received, which is the most unique
     # field as it contains the server route of the email along with
     # all the times.
-    hash = hashlib.md5(self.header["Received"].encode())
+    hash = hashlib.md5(self["Received"].encode())
 
     # Our final hash is the Unix timestamp for easy finding and Received hash
     self.hash = timestamp + "-" + hash.hexdigest()
@@ -370,25 +348,15 @@ Attachments : %s
     # Position of the email in the server list
     super().__init__(raw_message, server)
 
-    # Raw message as fetched by IMAP
+    self.urls = []
+    self.ips = []
+    self.attachments = []
+
+    # Raw message as fetched by IMAP, decode IMAP-specifics
     email_content = raw_message[0].decode()
     self.parse_uid(email_content)
     self.parse_flags(email_content)
 
-    # Decoded message
-    self.msg = email.message_from_bytes(raw_message[1])
-
-    # Extract and decode header fields in a dictionnary
-    self.parse_headers()
-    self.parse_ips()
-    self.parse_email()
+    # Decode RFC822 email body
+    self.msg = email.message_from_bytes(raw_message[1], policy=email.policy.default)
     self.create_hash()
-
-    # Extract and decode body
-    self.attachments = []
-    self.parse_body()
-    self.parse_urls()
-
-    # Post URL pattern for regex filtering
-    self.url_pattern = url_pattern
-    self.email_pattern = email_pattern
