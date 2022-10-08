@@ -366,17 +366,17 @@ Attachments : %s
     # Our final hash is the Unix timestamp for easy finding and Received hash
     self.hash = timestamp + "-" + hash.hexdigest()
 
-  def __init__(self, raw_message:list, index:int, server) -> None:
+  def __init__(self, raw_message:list, server) -> None:
     # Position of the email in the server list
-    super().__init__(raw_message, index, server)
+    super().__init__(raw_message, server)
 
     # Raw message as fetched by IMAP
-    email_content = raw_message[0][0].decode()
+    email_content = raw_message[0].decode()
     self.parse_uid(email_content)
     self.parse_flags(email_content)
 
     # Decoded message
-    self.msg = email.message_from_bytes(raw_message[0][1])
+    self.msg = email.message_from_bytes(raw_message[1])
 
     # Extract and decode header fields in a dictionnary
     self.parse_headers()

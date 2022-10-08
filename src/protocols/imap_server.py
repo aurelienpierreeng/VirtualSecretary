@@ -60,24 +60,34 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
             # Network loop
             ts = time.time()
-            for i in range(max(num_messages - n_messages + 1, 1), num_messages + 1):
+
                 try:
-                    res, msg = self.fetch(str(i), "(FLAGS BODY.PEEK[] UID)")
-                    messages_queue.append(msg)
+                # build a coma-separated list of IDs from start to end
+                ids = range(max(num_messages - n_messages + 1, 1), num_messages + 1)
+                ids = [str(x) for x in ids]
+                ids = ",".join(ids)
+                res, messages_queue = self.fetch(ids, "(FLAGS BODY.PEEK[] UID)")
                 except:
                     print(
-                        "Could not get email %i, it may have been deleted on server by another application in the meantime." % i)
+                    "Could not get some emails, they may have been deleted on server by another application in the meantime.")
+
+            # When fetching emails in bulk, a weird "41" gets inserted between each record
+            # so we need to keep one every next row.
+            cleaned_queue = []
+            i = 0
+            for message in messages_queue:
+                if i % 2 == 0:
+                    cleaned_queue.append(message)
+                i += 1
+
             print("  - IMAP\ttook %.3f s\tto query\t%i emails from %s" %
-                  (time.time() - ts, len(messages_queue), mailbox))
+                  (time.time() - ts, len(cleaned_queue), mailbox))
 
             # Process loop
             ts = time.time()
-            for msg in messages_queue:
-                self.objects.append(imap_object.EMail(msg, i, self))
+            self.objects = [imap_object.EMail(msg, self) for msg in cleaned_queue]
             print("  - Parsing\ttook %.3f s\tto parse\t%i emails" %
                   (time.time() - ts, len(self.objects)))
-
-            # TODO: split process and network loops in 2 threads ?
 
             self.std_out = [status, messages]
 
