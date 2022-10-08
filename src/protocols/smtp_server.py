@@ -1,12 +1,11 @@
 import smtplib
 
 import connectors
-from protocols import smtp_object
 
 from email import message
 from email.utils import formatdate, make_msgid
 
-class Server(connectors.Server[smtp_object.Content], smtplib.SMTP_SSL):
+class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
 
     def get_objects(self):
         pass
@@ -15,7 +14,7 @@ class Server(connectors.Server[smtp_object.Content], smtplib.SMTP_SSL):
         pass
 
     def write_message(self, subject: str, to: str, content: str):
-        # Prepare an email with the usual headers set
+        # Prepare an email with the usuals set
         self.msg = message.EmailMessage()
         self.msg['Subject'] = subject
         self.msg['From'] = self.user
