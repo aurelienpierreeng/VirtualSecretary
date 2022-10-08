@@ -24,6 +24,10 @@ def find_filters(path:str, filters:dict, mode:str) -> dict:
   # If 2 similar priorities are found, the first-defined one gets precedence, the other is discarded.
   local_filters = filters.copy()
 
+  # Dry run only test connection and login
+  if mode == "dryrun":
+    return local_filters
+
   # Get the base priority for this path as the highest priority in the previous stage
   # This is used only for learning filters which don't have a user-set priority
   keys = list(local_filters.keys())

@@ -15,7 +15,7 @@ parser = argparse.ArgumentParser(description='Run the whole stack of filters def
 parser.add_argument('path', metavar='path', type=str,
                     help='path of the config directory')
 parser.add_argument('mode', metavar='mode', type=str,
-                    help='`process` to run only the processing filters (prefixed with 2 digits), \n`learn` to run the learning filters (prefixed with LEARN)')
+                    help='`process` to run only the processing filters (prefixed with 2 digits), \n`learn` to run the learning filters (prefixed with LEARN), \n`dryrun` to only test server connections')
 args = parser.parse_args()
 path = os.path.abspath(args.path)
 mode = args.mode
