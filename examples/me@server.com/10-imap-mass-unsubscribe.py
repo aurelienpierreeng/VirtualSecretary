@@ -16,7 +16,7 @@ protocols = globals()
 imap = protocols["imap"]
 
 def filter(email) -> bool:
-  return "List-Unsubscribe" in email
+  return "List-Unsubscribe" in email.headers
 
 
 def action(email):

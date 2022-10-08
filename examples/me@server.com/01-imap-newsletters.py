@@ -12,15 +12,9 @@ protocols = globals()
 imap = protocols["imap"]
 
 def filter(email) -> bool:
-  print(email)
-  result = False
+  return "Precedence" in email.headers and "List-Unsubscribe" in email.headers and email["Precedence"] == "bulk"
 
-  if "Precedence" in email and "List-Unsubscribe" in email:
-    result = (email["Precedence"] == "bulk")
-
-  return result
-
-def action(email) -> list:
+def action(email):
   email.move("INBOX.Newsletters")
 
 imap.get_objects("INBOX")

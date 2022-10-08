@@ -176,7 +176,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
             # Run the actual filter
             if filter_on and filter:
-                try:
+                if True:
                     # User wrote good filters.
                     self.std_out = ["", ]
                     filter_on = filter(email)
@@ -188,7 +188,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                             "The filter does not return a boolean, the behaviour is ambiguous. Filtering is canceled.")
                         raise TypeError(
                             "The filter does not return a boolean, the behaviour is ambiguous. Filtering is canceled.")
-                except:
+                else:
                     # User tried to filter non-existing fields or messed-up somewhere.
                     filter_on = False
 

@@ -67,14 +67,14 @@ def filter(email) -> bool:
   # IP is unknown : check for smells
 
   # SpamAssassins if any
-  if "X-Spam-Flag" in email:
+  if "X-Spam-Flag" in email.headers:
     if email["X-Spam-Flag"] == "YES":
       print("SpamAssassin found")
       return True
 
   # Bulk emails without unsubscribe link are usually good smells.
   # This is outright illegal in Europe by the way.
-  if "Precedence" in email:
+  if "Precedence" in email.headers:
     if email["Precedence"] == "bulk":
       if "List-Unsubscribe" not in email:
         print("bad bulk message detected")

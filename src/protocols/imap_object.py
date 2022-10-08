@@ -50,6 +50,17 @@ class EMail(connectors.Content):
     return self.ips
 
 
+  @property
+  def attachments(self) -> list[str]:
+    # Just the filenames
+    return [attachment.get_filename() for attachment in self.msg.iter_attachments()]
+
+  @property
+  def headers(self) -> list[str]:
+    # Return the currently declared headers keys (not values)
+    return self.msg.keys()
+
+
   def get_sender(self) -> list[list, list]:
     emails = email_pattern.findall(self["From"])
     names = re.findall(r"\"(.+)?\"", self["From"])
@@ -350,7 +361,6 @@ Attachments : %s
 
     self.urls = []
     self.ips = []
-    self.attachments = []
 
     # Raw message as fetched by IMAP, decode IMAP-specifics
     email_content = raw_message[0].decode()

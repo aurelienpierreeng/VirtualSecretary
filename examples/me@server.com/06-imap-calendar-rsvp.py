@@ -8,17 +8,17 @@ Tag the emails attached to .ICS calendar invites with an RSVP label
 
 """
 
-import re
-
 protocols = globals()
 imap = protocols["imap"]
 
 
 def filter(email) -> bool:
   # Find any attachment file with extension .ics
-  calendar_pattern = re.compile(r"\S+\.ics", re.IGNORECASE)
-  attachments = ", ".join(email.attachments)
-  return re.match(calendar_pattern, attachments) != None
+  for attachment in email.attachments:
+    if attachment:
+      return attachment.endswith(".ics") or attachment.endswith(".ICS")
+
+  return False
 
 def action(email):
   email.tag("RSVP")
