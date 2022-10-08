@@ -23,9 +23,8 @@ from abc import ABC, abstractmethod
 class Content(ABC):
   server: 'Server'
 
-  def __init__(self, raw_content, index:int, server:'Server') -> None:
+  def __init__(self, raw_content, server:'Server') -> None:
     # Position of the email in the mailserver list
-    self.index = index
     self.server = server
 
 
