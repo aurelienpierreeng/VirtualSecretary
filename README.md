@@ -7,24 +7,29 @@ Imagine a world where :
 * emails get tagged "urgent" if your agenda records an appointment in less than 48h with the email sender,
 * terribly long emails get tagged "call me" if you have the phone number of their senders in your contact book,
 * emails with `.ics` calendar events invites get tagged "RSVP"
-* emails get sorted in folders by the CardDAV category in which their sender is, so your college alumni don't get mixed up with your family,
-* emails sent by people into your customer SQL database automatically get a "client" label,
-* emails sent by bulk-emailing systems get moved out of the way to their own folder, for you to read when you have time,
+* emails get sorted in folders by the vCard category in which their sender is, so your college alumni don't get mixed up with your family,
+* emails sent by people into your customer SQL database or CardDAV address book automatically get a "client" label,
+* emails sent by bulk-emailing systems (newsletters, services/products updates) get moved out of the way to their own folder, for you to read when you have time,
+* emails containing questions/inquiries are labelled "action requested" and automatically add a new task in your agenda, at your next available slot, with an email sent back to the sender notifying them when their question will be processed,
 * etc.
 
 The Virtual Secretary connects to :
 
-* your IMAP email server (incoming emails),
-* your SMTP email server (outgoing emails),
-* your CardDAV contacts server,
-* your CalDAV agendas server,
-* your MySQL/MariaDB databases server.
+* your IMAP email server (incoming emails), *[implemented]*
+* your SMTP email server (outgoing emails), *[implemented]*
+* your CardDAV contacts server, *[to do]*
+* your CalDAV agendas server, *[to do]*
+* your MySQL/MariaDB databases server. *[to do]*
 
-It then provides you with an high-level Python interface to write mail filters that can cross-check data from emails, contacts, agenda and databases and define actions like (un)tagging/moving/deleting emails, updating contacts or appointments data, etc. It can also define auto-responders, email digests, etc.
+It then provides you with an high-level Python interface to write email filters that can cross-check data through emails, contacts, agenda and databases and define actions like (un)tagging/moving/deleting emails, updating contacts or appointments data, etc. It can also define auto-responders, email digests, etc.
 
-Aside of the simple filter use cases, it lets you use the full extend of Python scripting to use machine-learning modules, regular expressions pattern matching, or even write your own data connectors.
+It provides high-level machine-learning NLP (*natural language processing*) methods to parse textual content that can be easily used in your filters and and can be re-trained yourself:
 
-It comes with a large range of example filters that can be used as-is or as templates, including a ready-to-use anti-spam system using IP blacklist/whitelist and neural network AI that can be trained against your own spam box.
+* a pre-trained sentences classifier that can identify questions, statements, etc. in English text, with a confidence of 77.7% (seems to work well for French too), *[work in progress]*
+
+Aside of the simple filter use cases, it lets you use the full extend of Python ecosystem and scripting to use machine-learning modules, regular expressions pattern matching, or even write your own server/data connectors.
+
+It comes with a large range of example filters that can be used as-is or as templates, including a ready-to-use anti-spam system using IP blacklist/whitelist.
 
 The functionnal logic is very similar to the one of [IFTTT](https://ifttt.com/explore/new_to_ifttt), plus the whole Python ecosystem to extend actions, minus the toy GUI, without the anxiety of SaaS (shit as a software) owned by some company that may go out of business or extinct the product (wink wink [Yahoo! Pipes](https://en.wikipedia.org/wiki/Yahoo!_Pipes)).
 
