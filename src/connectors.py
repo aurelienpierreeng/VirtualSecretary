@@ -65,3 +65,6 @@ class Server(ABC, typing.Generic[_ContentType]):
     # This is the global logfile, `sync.log`
     # Not to be confused with the local filter DB.
     self.logfile = logfile
+
+    # Reset objects
+    self.objects = []

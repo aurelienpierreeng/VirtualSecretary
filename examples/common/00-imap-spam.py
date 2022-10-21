@@ -76,7 +76,7 @@ def filter(email) -> bool:
   # This is outright illegal in Europe by the way.
   if "Precedence" in email.headers:
     if email["Precedence"] == "bulk":
-      if "List-Unsubscribe" not in email:
+      if "List-Unsubscribe" not in email.headers:
         print("bad bulk message detected")
         return True
 

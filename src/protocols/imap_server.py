@@ -167,8 +167,13 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             if enable_logging and email.hash in log[self.server][self.user]:
                 # We have a log entry for this hash.
                 #print("%s found in DB" % email.hash)
-                filter_on = (log[self.server][self.user]
-                             [email.hash]["processed"] < runs)
+                try:
+                    filter_on = (log[self.server][self.user]
+                                [email.hash]["processed"] < runs)
+                except:
+                    # We have a log entry but it's invalid. Reset it.
+                    log[self.server][self.user][email.hash]["processed"] = 0
+                    filter_on = True
             else:
                 # We don't have a log entry for this hash or we don't limit runs
                 #print("%s not found in DB" % email.hash)
