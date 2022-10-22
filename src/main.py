@@ -34,8 +34,10 @@ for dir in subfolders:
   abort, pid = utils.lock_subfolder(lockfile)
 
   if abort:
-    print("The folder %s is already captured by another running instance with PID %s. We discard it here." % (dir, pid))
+    print("\nThe folder %s is already captured by another running instance with PID %s. We discard it here." % (dir, pid))
     continue
+  else:
+    print("\nProcessing folder %s with PID %s..." % (dir, pid))
 
   # Get the local filters if any
   local_filters = utils.find_filters(os.path.join(path, dir), filters, mode)

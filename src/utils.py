@@ -1,6 +1,7 @@
 from datetime import datetime
 import os
 import re
+import errno
 
 filter_pattern = re.compile("^([0-9]{2})-(imap|caldav|carddav|mysql)-[a-zA-Z0-9\-\_]+.py$")
 learn_pattern = re.compile("^(LEARN)-(imap|caldav|carddav|mysql)-[a-zA-Z0-9\-\_]+.py$")
@@ -66,12 +67,38 @@ def lock_subfolder(lockfile):
   pid = str(os.getpid())
   abort = False
   if os.path.exists(lockfile):
+    # Read the PID saved into the lockfile
     with open(lockfile, "r") as f:
-      pid = f.read().strip()
-    abort = True
+        saved_pid = f.read().strip()
+
+    # Check if the PID is still running on the system.
+    # If not, the lockfile is most likely a leftover of a crashed run,
+    # so we ignore it and carry on.
+    try:
+        os.kill(int(saved_pid), 0)
+    except OSError as err:
+        if err.errno == errno.ESRCH:
+        # ESRCH == No such process
+        # Override lockfile and carry on
+            abort = False
+            with open(lockfile, "w") as f:
+                f.write(str(os.getpid()))
+        elif err.errno == errno.EPERM:
+            # EPERM clearly means there's a process to deny access to
+            abort = True
+            pid = saved_pid
+        else:
+            # According to "man 2 kill" possible error values are
+            # (EINVAL, EPERM, ESRCH)
+            raise
+    else:
+        # PID found running, we don't override it
+        abort = True
+        pid = saved_pid
   else:
-    with open(lockfile, "w") as f:
-      f.write(str(os.getpid()))
+      # No lock file, capture it
+      with open(lockfile, "w") as f:
+          f.write(str(os.getpid()))
 
   return [abort, pid]
 
