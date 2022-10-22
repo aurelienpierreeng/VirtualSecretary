@@ -186,8 +186,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 try:
                     filter_on = filter(email)
                 except:
-                    print("Filter failed on",
-                            email["Subject"], "from", email["From"])
+                    print("Filter failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
                     pass
 
                 if not isinstance(filter_on, bool):
@@ -196,7 +195,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                         "The filter does not return a boolean, the behaviour is ambiguous. Filtering is canceled.")
 
             # Run the action
-            if filter_on:
+            if filter_on and action:
                 # The action should update self.std_out internally. If not, init here as a success.
                 # Success and errors matter only for email write operations
                 self.std_out = ["OK", ]
@@ -206,25 +205,20 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
                     if self.std_out[0] == "OK":
                         # Log success
-                        print("Filter application successful on",
-                                email["Subject"], "from", email["From"])
-                        self.__update_log_dict(
-                            email, log, "processed", enable_logging)
+                        print("Filter application successful on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
+                        self.__update_log_dict(email, log, "processed", enable_logging)
                         success = True
                 except:
                     pass
 
                 if not success:
                     # Log error
-                    print("Filter application failed on",
-                            email["Subject"], "from", email["From"])
-                    self.__update_log_dict(
-                        email, log, "errored", enable_logging)
+                    print("Filter application failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
+                    self.__update_log_dict( email, log, "errored", enable_logging)
 
             else:
                 # No action run but we still store email ID in DB
-                self.__update_log_dict(
-                    email, log, "processed", enable_logging, action_run=False)
+                self.__update_log_dict(email, log, "processed", enable_logging, action_run=False)
 
         # Actually delete with IMAP the emails marked with the tag `\DELETED`
         # We only need to run it once per email loop/mailbox.
