@@ -35,12 +35,16 @@ class EMail(connectors.Content):
 
   def parse_ips(self):
     # Get the whole network route taken by the email
-    network_route = self.msg.get_all("Received")
-    network_route = "; ".join(network_route)
-    self.ips = ip_pattern.findall(network_route)
+    if "Received" in self.headers:
+      # There will be no "Received" header for emails sent by the current mailbox
+      network_route = self.msg.get_all("Received")
+      network_route = "; ".join(network_route)
+      self.ips = ip_pattern.findall(network_route)
 
-    # Remove localhost
-    self.ips = [ip for ip in self.ips if not ip.startswith("127.")]
+      # Remove localhost
+      self.ips = [ip for ip in self.ips if not ip.startswith("127.")]
+    else:
+      self.ips = []
 
   @property
   def ip(self):
@@ -215,18 +219,32 @@ class EMail(connectors.Content):
 
     self.server.std_out = result
 
-  def move(self, folder:str):
-    # create the folder and update the list of folders
-    if folder not in self.server.folders:
-      result = self.server.create(folder)
+  def create_folder(self, folder:str):
+    # create the folder, recursively if needed (create parent then children)
+    target = ""
+    for level in folder.split('.'):
+      target += level
 
-    result = self.server.subscribe(folder)
+      if target not in self.server.folders:
+        print(target)
+        result = self.server.create(target)
 
-    if result[0] == "OK":
-      self.server.logfile.write("%s : Folder`%s` created in INBOX\n" % (utils.now(), folder))
+        if result[0] == "OK":
+          print("Folder `%s` created\n" % target)
+          self.server.logfile.write("%s : Folder `%s` created\n" % (utils.now(), target))
+          self.server.subscribe(target)
+        else:
+          print("Failed to create folder `%s`\n" % target)
+          self.server.logfile.write("%s : Failed to create folder `%s`\n" % (utils.now(), target))
 
+      target += "."
+
+    # Update the list of server folders
     self.server.get_imap_folders()
 
+
+  def move(self, folder:str):
+    self.create_folder(folder)
     result = self.server.uid('COPY', self.uid, folder)
 
     if result[0] == "OK":
@@ -344,13 +362,30 @@ Attachments : %s
     # so we need to create our own hash.
 
     # Convert the email date to Unix timestamp
-    date_time = email.utils.parsedate_to_datetime(self["Date"])
-    timestamp = str(int(datetime.timestamp(date_time)))
+    try:
+      date_time = email.utils.parsedate_to_datetime(self["Date"])
+      timestamp = str(int(datetime.timestamp(date_time)))
+    except:
+      # Some poorly-encoded emails (spams) are not properly decoded by the email package
+      # and the date gets embedded in subject
+      timestamp = "0"
 
-    # Hash the Received, which is the most unique
+    # Hash the Received header, which is the most unique
     # field as it contains the server route of the email along with
     # all the times.
-    hash = hashlib.md5(self["Received"].encode())
+    # If no received header (for emails sent from the current mailbox),
+    # find other fields supposed to be unique.
+    hashable = ""
+    if "Received" in self.headers:
+      hashable = self["Received"]
+    elif "Message-ID" in self.headers:
+      hashable = self["Message-ID"]
+    else:
+      # Last chance for malformed emails. "Message-ID" is technically not mandatory,
+      # but it has become de-facto standard to thread emails.
+      hashable = self["Date"] + self["From"] + self["To"]
+
+    hash = hashlib.md5(hashable.encode())
 
     # Our final hash is the Unix timestamp for easy finding and Received hash
     self.hash = timestamp + "-" + hash.hexdigest()
@@ -362,11 +397,20 @@ Attachments : %s
     self.urls = []
     self.ips = []
 
-    # Raw message as fetched by IMAP, decode IMAP-specifics
-    email_content = raw_message[0].decode()
-    self.parse_uid(email_content)
-    self.parse_flags(email_content)
+    # Raw message as fetched by IMAP, decode IMAP headers
+    try:
+      email_content = raw_message[0].decode()
+      self.parse_uid(email_content)
+      self.parse_flags(email_content)
+    except:
+      self.flags = ""
+      self.uid = ""
+      print("Decoding headers failed for : %s" % raw_message[0])
 
     # Decode RFC822 email body
     self.msg = email.message_from_bytes(raw_message[1], policy=email.policy.default)
-    self.create_hash()
+
+    try:
+      self.create_hash()
+    except:
+      print("Can't hash the email", self["Subject"], "on", self["Date"], "from", self["From"], "to", self["To"])
