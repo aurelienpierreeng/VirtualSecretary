@@ -150,6 +150,31 @@ class EMail(connectors.Content):
 
     return content
 
+  def is_in(self, query_list, field:str, case_sensitive:bool=False, mode:str="any"):
+    # Check if any or all of the elements in the query_list is in the email field
+    # The field can by any RFC header or "Body".
+    value = None
+    if field == "Body":
+      value = self.get_body() if case_sensitive else self.get_body().lower()
+    elif field in self.headers:
+      value = self[field] if case_sensitive else self[field].lower()
+
+    if not value:
+      # Value is empty or None -> abort early
+      return False
+
+    if not isinstance(query_list, list):
+      # If a single query element is given, make it a list for uniform handling in the following
+      query_list = [query_list]
+
+    if mode == "any":
+      return any(query_item in value for query_item in query_list)
+    elif mode == "all":
+      return all(query_item in value for query_item in query_list)
+    else:
+      raise ValueError("Non-implementad mode `%s` used" % mode)
+
+
   ##
   ## IMAP ACTIONS
   ##
