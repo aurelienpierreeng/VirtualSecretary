@@ -83,7 +83,7 @@ protocols = globals()
 imap = protocols["imap"]
 
 def filter(email) -> bool:
-  return "invoice" in email.get_body("plain").lower() or "invoice" in email["Subject"].lower()
+  return email.is_in("invoice", "Subject") or email.is_in("invoice", "Body")
 
 def action(email) -> None:
   email.move("INBOX.Invoices")
