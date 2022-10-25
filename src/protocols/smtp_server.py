@@ -1,9 +1,11 @@
 import smtplib
+import imaplib
 
 import connectors
+import utils
 
 from email import message
-from email.utils import formatdate, make_msgid
+from email.utils import formatdate, make_msgid, parsedate_to_datetime
 
 class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
 
@@ -23,7 +25,7 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
         self.msg["From"] = self.user
         self.msg["To"] = to
         self.msg["Message-ID"] = make_msgid(domain=self.server)
-        self.msg["Date"] = formatdate()
+        self.msg["Date"] = formatdate(localtime=True)
         self.msg["X-Mailer"] = "Virtual Secretary"
 
         # Pass on the ID of the email being replied to, and previous emails in the thread if any.
@@ -42,8 +44,47 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
 
         self.msg.set_content(content)
 
-    def send_message(self):
+
+    def send_message(self, copy_to_sent=False):
+        # If copy_to_sent=True, the message is added to the "Sent" IMAP folder
+        # after being sent to receipient.
+        # A valid IMAP server connection needs to be open.
         super().send_message(self.msg)
+
+        if copy_to_sent and "imap" in self.secretary.protocols and self.secretary.protocols["imap"].connection_inited:
+            # Get the default "Sent" folder on this IMAP server
+            sentbox = self.secretary.protocols["imap"].sent
+
+            # Reformat the email date for IMAP
+            date = parsedate_to_datetime(self.msg["Date"])
+            date = imaplib.Time2Internaldate(date)
+
+            try:
+                result = self.secretary.protocols["imap"].append(sentbox, "(\\Seen Auto)", date, self.msg.as_bytes())
+
+                if result[0] == "OK":
+                    self.logfile.write("%s : Copied (UID %s) `%s` to `%s` sent on %s to %s\n" % (utils.now(),
+                                                                                                self.msg["Message-ID"],
+                                                                                                self.msg["Subject"],
+                                                                                                self.msg["To"],
+                                                                                                self.msg["Date"],
+                                                                                                sentbox))
+                else:
+                    self.logfile.write("%s : Failed to copy (UID %s) `%s` to `%s` sent on %s to %s\n" % (utils.now(),
+                                                                                                        self.msg["Message-ID"],
+                                                                                                        self.msg["Subject"],
+                                                                                                        self.msg["To"],
+                                                                                                        self.msg["Date"],
+                                                                                                        sentbox))
+            except:
+                self.logfile.write("%s : Failed to copy (UID %s) `%s` to `%s` sent on %s to %s\n" % (utils.now(),
+                                                                                                    self.msg["Message-ID"],
+                                                                                                    self.msg["Subject"],
+                                                                                                    self.msg["To"],
+                                                                                                    self.msg["Date"],
+                                                                                                    sentbox))
+
+
 
     def init_connection(self, params: dict):
         # High-level method to login to a server in one shot
