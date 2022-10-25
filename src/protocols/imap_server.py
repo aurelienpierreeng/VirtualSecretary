@@ -44,14 +44,24 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         self.std_out = mail_list
 
 
-    def get_email(self, uid: str) -> imap_object.EMail:
-        # Get an arbitrary email by UID
+    def get_email(self, uid: str, mailbox=None) -> imap_object.EMail:
+        # Get an arbitrary email by UID. If no mailbox is specified,
+        # use the one defined when we got objects in `self.set_objects()`.
+        # If a mailbox is specified, we select it temporarilly and we restore the original mailbox used
+        # to get objects.
+        if mailbox:
+            self.select(mailbox)
+
+        message = None
         result, msg = self.uid('FETCH', uid, '(FLAGS BODY.PEEK[] UID)', None)
 
-        if result == "OK":
-            return imap_object.EMail(msg[0], self)
-        else:
-            return None
+        if result == "OK" and msg[0]:
+            message = imap_object.EMail(msg[0], self)
+
+        if mailbox:
+            self.select(self.mailbox)
+
+        return message
 
 
     def get_objects(self, mailbox: str, n_messages=-1):
@@ -65,6 +75,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             n_messages = self.n_messages
 
         if mailbox in self.folders:
+            self.mailbox = mailbox
             status, messages = self.select(mailbox)
             num_messages = int(messages[0])
             self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
@@ -200,6 +211,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 self.std_out = ["OK", ]
                 try:
                     filter_on = filter(email)
+                    # print("Filter successful on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
                 except:
                     print("Filter failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
                     pass
@@ -215,15 +227,15 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 # Success and errors matter only for email write operations
                 self.std_out = ["OK", ]
                 success = False
-                try:
+                if True:
                     action(email)
 
                     if self.std_out[0] == "OK":
                         # Log success
-                        print("Filter application successful on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
+                        # print("Filter application successful on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
                         self.__update_log_dict(email, log, "processed", enable_logging)
                         success = True
-                except:
+                else:
                     pass
 
                 if not success:
