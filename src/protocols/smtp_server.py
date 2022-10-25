@@ -24,6 +24,7 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
         self.msg["To"] = to
         self.msg["Message-ID"] = make_msgid(domain=self.server)
         self.msg["Date"] = formatdate()
+        self.msg["X-Mailer"] = "Virtual Secretary"
 
         # Pass on the ID of the email being replied to, and previous emails in the thread if any.
         # This is to support email threads.
@@ -36,6 +37,8 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
 
                 if "References" in self.msg:
                     self.msg["References"] += " " + reply_to["Message-ID"]
+                else:
+                    self.msg["References"] = reply_to["Message-ID"]
 
         self.msg.set_content(content)
 
