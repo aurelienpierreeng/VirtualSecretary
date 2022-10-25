@@ -328,6 +328,10 @@ class EMail(connectors.Content):
     # Email has been opened and read
     return "\\Seen" in self.flags
 
+  def is_unread(self) -> bool:
+    # Email has not been opened and read
+    return "\\Seen" not in self.flags
+
   def is_recent(self) -> bool:
     # This session is the first one to get this email. Doesn't mean user read it.
     # Note : this flag cannot be set by client, only by server. It's read-only app-wise.
@@ -421,6 +425,78 @@ Attachments : %s
 
     # Our final hash is the Unix timestamp for easy finding and Received hash
     self.hash = timestamp + "-" + hash.hexdigest()
+
+
+  def query_referenced_emails(self) -> list:
+    # Fetch the list of all emails referenced in the present message,
+    # aka the whole email thread in wich the current email belongs.
+    # The list is sorted from newest to oldest.
+    thread = []
+    if "References" in self.headers:
+      for id in self["References"].split(" "):
+        # Query all emails having Message-ID header matching an item in references
+        data = [b'']
+        i = 0
+
+        while not data[0] and i < len(self.server.folders):
+          # Iterate over all mailboxes until we find the email
+          self.server.select(self.server.folders[i])
+          typ, data = self.server.uid('SEARCH', '(HEADER Message-ID "%s")' % id)
+          i += 1
+
+        if data[0]:
+          # We found something.
+          # data[0] usually contains one single UID but it may happen in broken mailboxes that we have several
+          for uid in data[0].decode().split(" "):
+            message = self.server.get_email(uid, mailbox=self.server.folders[i - 1])
+
+            # Double-check that we have the right email
+            if message.uid != uid or message["Message-ID"] != id:
+              raise Exception("The email fetched is not the one requested")
+            else:
+              thread.append(message)
+
+      # Select the original mailbox again for the next operations
+      self.server.select(self.server.mailbox)
+
+    # Output the list of emails from most recent to most ancient
+    thread.reverse()
+    return thread
+
+
+  def query_replied_email(self):
+    # Fetch the email being replied to by the current email.
+    replied = None
+
+    if "In-Reply-To" in self.headers:
+      id = self["In-Reply-To"]
+      data = [b'']
+      i = 0
+
+      while not data[0] and i < len(self.server.folders):
+        # Iterate over all mailboxes until we find the email
+        self.server.select(self.server.folders[i])
+        typ, data = self.server.uid('SEARCH', '(HEADER Message-ID "%s")' % id)
+        i += 1
+
+      # Select the original mailbox again for the next operations
+      self.server.select(self.server.mailbox)
+
+      if data[0]:
+        print(id, data)
+        # We found something.
+        # data[0] usually contains one single UID but it may happen that we have more
+        uids = data[0].decode().split(" ")
+
+        # returns only the most recent email if several
+        replied = self.server.get_email(uids[-1], mailbox=self.server.folders[i - 1])
+
+        # Double-check that we have the right email
+        if replied.uid != uids[-1] or replied["Message-ID"] != id:
+          raise Exception("The email fetched is not the one requested")
+
+    return replied
+
 
   def __init__(self, raw_message:list, server) -> None:
     # Position of the email in the server list
