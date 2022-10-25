@@ -12,13 +12,13 @@ import connectors
 
 from email import policy
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 ip_pattern = re.compile(r"\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]")
 email_pattern = re.compile(r"([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+?\.[a-zA-Z]{2,})")
 url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)")
 uid_pattern = re.compile(r"UID ([0-9]+) ")
-flags_pattern = re.compile(r"\(FLAGS \((.*)\)")
+flags_pattern = re.compile(r"FLAGS \((.*)?\)")
 
 
 class EMail(connectors.Content):
@@ -220,7 +220,7 @@ class EMail(connectors.Content):
                                                                                     self["Date"]))
 
       # delete the email from the list of emails in the server object to avoid further manipulation
-      self.server.emails.remove(self)
+      self.server.objects.remove(self)
 
     self.server.std_out = result
 
@@ -283,7 +283,7 @@ class EMail(connectors.Content):
                                                                                                           folder))
         # delete the email from the list of emails in the server object to avoid further manipulation
         # because the emails list is tied to a particular mailbox folder.
-        self.server.emails.remove(self)
+        self.server.objects.remove(self)
 
     self.server.std_out = result
 
@@ -349,6 +349,13 @@ class EMail(connectors.Content):
   ##
   ## Utils
   ##
+
+  def age(self):
+    # Compute the age of an email at the time of evaluration
+    sending_date = email.utils.parsedate_to_datetime(self["Date"])
+    current_date = datetime.now(timezone.utc)
+    delta = (current_date - sending_date)
+    return delta
 
 
   def now(self):
