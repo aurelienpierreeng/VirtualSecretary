@@ -61,10 +61,13 @@ class Server(ABC, typing.Generic[_ContentType]):
     # Loop over the list of content
     raise NotImplementedError
 
-  def __init__(self, logfile) -> None:
+  def __init__(self, logfile, secretary) -> None:
     # This is the global logfile, `sync.log`
     # Not to be confused with the local filter DB.
     self.logfile = logfile
 
     # Reset objects
     self.objects = []
+
+    # pass on manager
+    self.secretary = secretary
