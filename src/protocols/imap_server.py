@@ -28,6 +28,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                     self.trash = folder
                 if "\\Junk" in flags:
                     self.junk = folder
+                if "\\Drafts" in flags:
+                    self.drafts = folder
+                if "\\Flagged" in flags:
+                    self.flagged = folder
 
                 self.folders.append(folder)
 
@@ -38,6 +42,17 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 "%s : Impossible to get the list of inbox folders\n" % (utils.now()))
 
         self.std_out = mail_list
+
+
+    def get_email(self, uid: str) -> imap_object.EMail:
+        # Get an arbitrary email by UID
+        result, msg = self.uid('FETCH', uid, '(FLAGS BODY.PEEK[] UID)', None)
+
+        if result == "OK":
+            return imap_object.EMail(msg[0], self)
+        else:
+            return None
+
 
     def get_objects(self, mailbox: str, n_messages=-1):
         # List the n-th last emails in mailbox
@@ -236,6 +251,19 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             pickle.dump(log, f)
             # print(log)
             #print("%s written" % filter_logfile)
+
+
+    def count(self, method):
+        # Count the number of messages matching a criterion defined in the EMail.method()
+        # Criteria will typically the presence of some flags
+        number = 0
+        for email in self.objects:
+            func = getattr(email, method)
+            if func():
+                number += 1
+
+        return number
+
 
     def init_connection(self, params: dict):
         # High-level method to login to a server in one shot
