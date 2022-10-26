@@ -10,6 +10,7 @@ Notification of leave.
 
 protocols = globals()
 imap = protocols["imap"]
+smtp = protocols["smtp"]
 
 from datetime import datetime
 from dateutil import tz
