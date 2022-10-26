@@ -12,4 +12,4 @@ def action(email):
   email.move("INBOX.Money.Invoices")
 
 imap.get_objects("INBOX")
-imap.run_filters(filter, None, runs=-1)
+imap.run_filters(filter, action)

@@ -30,7 +30,7 @@ def filter(email) -> bool:
   global leave_end, leave_start
 
   # Email date is in-between leave bounds
-  return email.date > leave_start and email.date < leave_end and email.is_not_read()
+  return email.date > leave_start and email.date < leave_end and email.is_unread()
 
 
 def action(email):
