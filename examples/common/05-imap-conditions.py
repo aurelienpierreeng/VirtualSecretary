@@ -2,20 +2,21 @@
 
 """
 
-Find invoices in emails and move them to a dedicated folders.py
+Catch notifications for changes in conditions of usage for web services.
 
 © Aurélien Pierre - 2022
 
 """
 
+
 protocols = globals()
 imap = protocols["imap"]
 
 def filter(email) -> bool:
-  return email.is_in("invoice", "Subject") or email.is_in("invoice", "Body")
+  return email.is_in("conditions", "Subject")
 
-def action(email) -> None:
-  email.move("INBOX.Invoices")
+def action(email):
+  email.move("INBOX.Services.Conditions")
 
 imap.get_objects("INBOX")
 imap.run_filters(filter, action)

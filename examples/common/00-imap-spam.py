@@ -58,10 +58,9 @@ def filter(email) -> bool:
     if ip in ip_blacklist:
       return True
 
-  # Email is known and blacklisted : exist early
+  # Email is known and blacklisted : exit early
   for address in addresses:
     if address in email_blacklist:
-      print("address found in blacklist")
       return True
 
   # IP is unknown : check for smells
@@ -69,7 +68,6 @@ def filter(email) -> bool:
   # SpamAssassins if any
   if "X-Spam-Flag" in email.headers:
     if email["X-Spam-Flag"] == "YES":
-      print("SpamAssassin found")
       return True
 
   # Bulk emails without unsubscribe link are usually good smells.
@@ -77,7 +75,6 @@ def filter(email) -> bool:
   if "Precedence" in email.headers:
     if email["Precedence"] == "bulk":
       if "List-Unsubscribe" not in email.headers:
-        print("bad bulk message detected")
         return True
 
   return False

@@ -55,19 +55,46 @@ def filter(email) -> bool:
 
   for ip in email.ip:
     if ip not in ip_blacklist:
-      ip_blacklist.append(ip)
+      if ip not in ip_whitelist:
+        # IP is completely unknown, blacklist it
+        ip_blacklist.append(ip)
+      else:
+        # IP is known in whitelist, but now it's found in spam folder.
+        # It's either a false positive or the server got compromised.
+        # Remove it from all lists aka "greylist" it.
+        ip_whitelist.remove(ip)
+    else:
+      # IP is already known in blacklist, do nothing
+      pass
 
   names, addresses = email.get_sender()
 
   for address in addresses:
-    if address not in email_blacklist:
+    if address not in email_blacklist and address not in email_whitelist:
+      # Email is completely unknown, blacklist it
       email_blacklist.append(address)
+    elif address in email_blacklist and address in email_whitelist:
+      # Email is known in both lists, remove it from everywhere aka greylist it
+      email_blacklist.remove(address)
+      email_whitelist.remove(address)
+    else:
+      # Email is known either in whitelist, blacklist
+
+      # If email is whitelisted, it is a tricky case because valid email addresses
+      # can be impersonated by spammers, contrarily to server IPs.
+      # So the email address could still be valid and only used as a "tag" in email.
+      # To prevent this, SPF and DKIM should be provided and checked, but many self-hosted
+      # emails accounts don't properly implement those solutions.
+      # In that case, give them the benefit of doubt and do nothing.
+
+      # If email is blacklisted already, nothing to do.
+      pass
 
   return False
 
-
+print("Parsing %s for blacklisting" % imap.junk)
 imap.get_objects(imap.junk)
-imap.run_filters(filter, None, runs=-1)
+imap.run_filters(filter, None)
 
 
 # Fetch the IPs from emails in main inbox and remove them from the blacklist.
@@ -76,48 +103,50 @@ imap.run_filters(filter, None, runs=-1)
 def filter(email) -> bool:
   global ip_whitelist, ip_blacklist, email_whitelist, email_blacklist
 
+  names, addresses = email.get_sender()
+
+  if addresses[0] == email.server.user:
+    # This is an email sent by the current mailbox, discard it because it has
+    # no IP address and sender email is ourselves.
+    return False
+
   for ip in email.ip:
     if ip in ip_blacklist:
+      # IP is known in blacklist, remove it from there.
       ip_blacklist.remove(ip)
-    if ip not in ip_whitelist:
-      ip_whitelist.append(ip)
 
-  names, addresses = email.get_sender()
+      if ip in ip_whitelist:
+        # IP is known also in whitelist, remove it also from there,
+        # aka greylist it.
+        ip_whitelist.remove(ip)
+
+    elif ip not in ip_whitelist:
+      # IP is entirely unknown, whitelist it
+      ip_whitelist.append(ip)
 
   for address in addresses:
     if address in email_blacklist:
+      # Email is known in blacklist, remove it from there.
       email_blacklist.remove(address)
-    if address not in email_whitelist:
+
+      if address in email_whitelist:
+        # Email is also known in whitelist, remove it from there too,
+        # aka greylist it.
+        email_whitelist.remove(address)
+
+    elif address not in email_whitelist:
+      # Email is entirely unknown, whitelist it.
       email_whitelist.append(address)
 
   return False
 
-
-imap.get_objects("INBOX")
-imap.run_filters(filter, None, runs=-1)
-
-
-# Fetch again IPs from spam folder and remove anything we find
-# from the whitelist. This is to account for possible false-negatives.
-# This ensures that IPs/emails that are both in inbox and spam folders
-# are recorded neither in black or white lists.
-def filter(email) -> bool:
-  global ip_whitelist, ip_blacklist, email_whitelist, email_blacklist
-
-  for ip in email.ip:
-    if ip in ip_whitelist:
-      ip_whitelist.remove(ip)
-
-  names, addresses = email.get_sender()
-
-  for address in addresses:
-    if address in email_whitelist:
-      email_whitelist.remove(address)
-
-  return False
-
-imap.get_objects(imap.junk)
-imap.run_filters(filter, None, runs=-1)
+for folder in imap.folders:
+  if folder != imap.junk:
+    print("Parsing %s for whitelisting" % folder)
+    # Restore hidden folders, delete them if needed but don't hide them.
+    imap.subscribe(folder)
+    imap.get_objects(folder)
+    imap.run_filters(filter, None, runs=-1)
 
 
 # Save the updated list files
@@ -126,7 +155,6 @@ write_lists(ip_whitelist_file, ip_whitelist)
 
 write_lists(email_blacklist_file, email_blacklist)
 write_lists(email_whitelist_file, email_whitelist)
-
 
 
 # At this point, we have 2 lists :
