@@ -252,7 +252,7 @@ class EMail(connectors.Content):
 
       if target not in self.server.folders:
         print(target)
-        result = self.server.create(target)
+        result = self.server.create(target.encode("utf-7"))
 
         if result[0] == "OK":
           print("Folder `%s` created\n" % target)
@@ -270,7 +270,7 @@ class EMail(connectors.Content):
 
   def move(self, folder:str):
     self.create_folder(folder)
-    result = self.server.uid('COPY', self.uid, folder)
+    result = self.server.uid('COPY', self.uid, folder.encode("utf-7"))
 
     if result[0] == "OK":
       result = self.server.uid('STORE', self.uid, '+FLAGS', '(\\Deleted)')
@@ -517,6 +517,7 @@ Attachments : %s
       print("Decoding headers failed for : %s" % raw_message[0])
 
     # Decode RFC822 email body
+    # No exception handling here, let it fail. Email validity should be checked at server level
     self.msg = email.message_from_bytes(raw_message[1], policy=email.policy.default)
 
     try:

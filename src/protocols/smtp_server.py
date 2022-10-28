@@ -15,7 +15,7 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
     def run_filters(self, filter, action, runs=1):
         pass
 
-    def write_message(self, subject: str, to: str, content: str, reply_to=None):
+    def write_message(self, subject: str, to: str, content: str, reply_to : message.EmailMessage = None):
         # Prepare an email with the usuals fields
         # If this is an answer, pass on the original EMail object in `reply_to`,
         # the references and Message-ID are handled automatcally
@@ -49,6 +49,7 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
         # If copy_to_sent=True, the message is added to the "Sent" IMAP folder
         # after being sent to receipient.
         # A valid IMAP server connection needs to be open.
+        self.reinit_connection()
         super().send_message(self.msg)
 
         if copy_to_sent and "imap" in self.secretary.protocols and self.secretary.protocols["imap"].connection_inited:
@@ -60,6 +61,8 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
             date = imaplib.Time2Internaldate(date)
 
             try:
+                # We need to refresh the connection in case we timed out and were logged out
+                self.secretary.protocols["imap"].reinit_connection()
                 result = self.secretary.protocols["imap"].append(sentbox, "(\\Seen Auto)", date, self.msg.as_bytes())
 
                 if result[0] == "OK":
@@ -85,18 +88,21 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
                                                                                                     sentbox))
 
 
+    def reinit_connection(self):
+        # Deal with timeouts
+        smtplib.SMTP_SSL.__init__(self, self.server)
+        self.ehlo(self.server)
+        self.login(self.user, self.password)
+
 
     def init_connection(self, params: dict):
         # High-level method to login to a server in one shot
-        password = params["password"]
+        self.password = params["password"]
         self.server = params["server"]
         self.user = params["user"]
 
-        smtplib.SMTP_SSL.__init__(self, self.server)
-        self.ehlo(self.server)
-        self.login(self.user, password)
-
         # Notify that we have a server with an active connection
+        self.reinit_connection()
         self.connection_inited = True
 
 

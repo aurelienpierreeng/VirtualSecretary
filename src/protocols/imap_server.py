@@ -76,26 +76,40 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         if mailbox in self.folders:
             self.mailbox = mailbox
-            status, messages = self.select(mailbox)
-            num_messages = int(messages[0])
-            self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
-                utils.now(), mailbox, num_messages, n_messages))
-
             self.objects = []
             messages_queue = []
 
             # Network loop
             ts = time.time()
+            retries = 0
+            max_retries = 5
 
+            while len(messages_queue) == 0 and retries < max_retries:
+                # Retry for as long as we didn't fetch as many messages as we have on the server
             try:
+                    # Avoid getting logged out by time-outs
+                    self.reinit_connection()
+                    status, messages = self.select(mailbox)
+                    num_messages = int(messages[0])
+
+                    self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
+                        utils.now(), mailbox, num_messages, n_messages))
+
+                    if num_messages == 0:
+                        # There is no email in selected folder, abort
+                        break
+
                 # build a coma-separated list of IDs from start to end
-                ids = range(max(num_messages - n_messages + 1, 1), num_messages + 1)
-                ids = [str(x) for x in ids]
+                    ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
                 ids = ",".join(ids)
                 res, messages_queue = self.fetch(ids, "(FLAGS BODY.PEEK[] UID)")
             except:
-                print(
-                "Could not get some emails, they may have been deleted on server by another application in the meantime.")
+                    retries += 1
+
+                    # Wait some seconds before next connection attempt.
+                    # Increase the timeout in case there is a threshold on server
+                    print("  Could not get the emails from %s, will retry in %i s." % (mailbox, retries))
+                    time.sleep(retries)
 
             # When fetching emails in bulk, a weird "41" gets inserted between each record
             # so we need to keep one every next row.
@@ -111,15 +125,18 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
             # Process loop
             ts = time.time()
-            self.objects = [imap_object.EMail(msg, self) for msg in cleaned_queue]
-            print("  - Parsing\ttook %.3f s\tto parse\t%i emails" %
-                  (time.time() - ts, len(self.objects)))
+
+            # Append emails only if there is a message body saved as bytes.
+            # no message body means the email got deleted on server while we fetched it.
+            self.objects = [imap_object.EMail(msg, self) for msg in cleaned_queue if msg and len(msg) > 1 and msg[1] and isinstance(msg[1], bytes)]
+            print("  - Parsing\ttook %.3f s\tto parse\t%i emails" % (time.time() - ts, len(self.objects)))
 
             self.std_out = [status, messages]
 
         else:
             self.logfile.write("%s : Impossible to get the mailbox %s : no such folder on server\n" % (
                 utils.now(), mailbox))
+
 
     def __init_log_dict(self, log: dict):
         # Make sure the top-level dict keys are inited
@@ -129,6 +146,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         if self.user not in log[self.server]:
             log[self.server][self.user] = {}
+
 
     def __update_log_dict(self, email: imap_object.EMail, log: dict, field: str, enable_logging: bool, action_run=True):
         if(enable_logging and action_run):
@@ -146,6 +164,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             except:
                 # Create a new log entry for the current uid
                 log[self.server][self.user][email.hash] = {field: 0}
+
 
     def run_filters(self, filter, action, runs=1):
         # Run the function `filter` and execute the function `action` if the filtering condition is met
@@ -186,6 +205,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         self.__init_log_dict(log)
 
+        # Avoid getting logged out by time-outs
+        self.reinit_connection()
+        self.select(self.mailbox)
+
         ts = time.time()
 
         for email in self.objects:
@@ -212,14 +235,13 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 try:
                     filter_on = filter(email)
                     # print("Filter successful on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
-                except:
+                except Exception as e:
                     print("Filter failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
-                    pass
+                    print(e)
 
                 if not isinstance(filter_on, bool):
                     filter_on = False
-                    raise TypeError(
-                        "The filter does not return a boolean, the behaviour is ambiguous. Filtering is canceled.")
+                    raise TypeError("The filter does not return a boolean, the behaviour is ambiguous.")
 
             # Run the action
             if filter_on and action:
@@ -227,7 +249,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 # Success and errors matter only for email write operations
                 self.std_out = ["OK", ]
                 success = False
-                if True:
+                try:
                     action(email)
 
                     if self.std_out[0] == "OK":
@@ -235,8 +257,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                         # print("Filter application successful on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
                         self.__update_log_dict(email, log, "processed", enable_logging)
                         success = True
-                else:
-                    pass
+
+                except Exception as e:
+                    print("Action failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
+                    print(e)
 
                 if not success:
                     # Log error
@@ -282,27 +306,31 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         self.n_messages = int(params["entries"])
         self.server = params["server"]
         self.user = params["user"]
+        self.password = params["password"] # TODO: hash that in RAM ?
 
         # Init the SSL connection to the server
-        self.logfile.write("%s : Trying to login to %s with username %s\n" % (
-            utils.now(), self.server, self.user))
+        self.logfile.write("%s : Trying to login to %s with username %s\n" % (utils.now(), self.server, self.user))
+        self.reinit_connection()
+        self.get_imap_folders()
+        self.connection_inited = True
+
+
+    def reinit_connection(self):
+        # Restart the IMAP connection using previous parameters, to
+        # prevent deconnections from time-outs
         try:
             imaplib.IMAP4_SSL.__init__(self, host=self.server)
         except:
-            print(
-                "We can't reach the server %s. Check your network connection." % self.server)
+            print("We can't reach the server %s. Check your network connection." % self.server)
 
         try:
-            self.std_out = self.login(self.user, params["password"])
+            self.std_out = self.login(self.user, self.password)
             self.logfile.write("%s : Connection to %s : %s\n" %
                                (utils.now(), self.server, self.std_out[0]))
         except:
             print("We can't login to %s with username %s. Check your credentials" % (
                 self.server, self.user))
 
-        self.get_imap_folders()
-
-        self.connection_inited = True
 
     def close_connection(self):
         # High-level method to logout from a server
