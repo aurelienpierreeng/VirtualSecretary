@@ -68,7 +68,7 @@ class EMail(connectors.Content):
   def get_sender(self) -> list[list, list]:
     emails = email_pattern.findall(self["From"])
     names = re.findall(r"\"(.+)?\"", self["From"])
-    out = [names, emails]
+    out = [names, [email[0] for email in emails if email[0]]]
     return out
 
 
