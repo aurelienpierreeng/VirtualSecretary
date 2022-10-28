@@ -15,7 +15,7 @@ from email import policy
 from datetime import datetime, timedelta, timezone
 
 ip_pattern = re.compile(r"\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]")
-email_pattern = re.compile(r"([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+?\.[a-zA-Z]{2,})")
+email_pattern = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?")
 url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)")
 uid_pattern = re.compile(r"UID ([0-9]+) ")
 flags_pattern = re.compile(r"FLAGS \((.*)?\)")
