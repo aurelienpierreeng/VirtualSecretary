@@ -357,10 +357,9 @@ class EMail(connectors.Content):
   ##
 
   def age(self):
-    # Compute the age of an email at the time of evaluration
-    sending_date = email.utils.parsedate_to_datetime(self["Date"])
+    # Compute the age of an email at the time of evaluation
     current_date = datetime.now(timezone.utc)
-    delta = (current_date - sending_date)
+    delta = (current_date - self.date)
     return delta
 
 
@@ -524,3 +523,8 @@ Attachments : %s
       self.create_hash()
     except:
       print("Can't hash the email", self["Subject"], "on", self["Date"], "from", self["From"], "to", self["To"])
+
+    try:
+      self.date = email.utils.parsedate_to_datetime(self["Date"])
+    except:
+      print("Can't parse the date", self["Date"])
