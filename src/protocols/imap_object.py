@@ -349,6 +349,8 @@ class EMail(connectors.Content):
     # This email has been flagged as important
     return "\\Flagged" in self.flags
 
+  def has_tag(self, tag:str) -> bool:
+    return tag in self.flags
 
   ##
   ## Utils
