@@ -55,7 +55,7 @@ class Secretary(object):
       if file.endswith("_server"):
         protocol = file.replace("_server", "")
         protocol_module = importlib.import_module("." + file, package="protocols")
-        self.protocols[protocol] = protocol_module.Server(self.logfile)
+        self.protocols[protocol] = protocol_module.Server(self.logfile, self)
 
     # Connect to all servers for which we have credentials in settings.ini
     self.load_connectors()

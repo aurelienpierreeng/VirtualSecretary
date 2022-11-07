@@ -16,7 +16,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         if(mail_list[0] == "OK"):
             for elem in mail_list[1]:
-                entry = elem.decode().split('"."')
+                entry = utils.imap_decode(elem).split('"."')
                 flags = entry[0].strip("' ")
                 folder = entry[1].strip("' ")
 
@@ -50,7 +50,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         # If a mailbox is specified, we select it temporarilly and we restore the original mailbox used
         # to get objects.
         if mailbox:
-            self.select(mailbox)
+            self.select(utils.imap_encode(mailbox))
 
         message = None
         result, msg = self.uid('FETCH', uid, '(FLAGS BODY.PEEK[] UID)', None)
@@ -59,7 +59,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             message = imap_object.EMail(msg[0], self)
 
         if mailbox:
-            self.select(self.mailbox)
+            self.select(utils.imap_encode(mailbox))
 
         return message
 
@@ -86,10 +86,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
             while len(messages_queue) == 0 and retries < max_retries:
                 # Retry for as long as we didn't fetch as many messages as we have on the server
-            try:
+                try:
                     # Avoid getting logged out by time-outs
                     self.reinit_connection()
-                    status, messages = self.select(mailbox)
+                    status, messages = self.select(utils.imap_encode(mailbox))
                     num_messages = int(messages[0])
 
                     self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
@@ -99,11 +99,11 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                         # There is no email in selected folder, abort
                         break
 
-                # build a coma-separated list of IDs from start to end
+                    # build a coma-separated list of IDs from start to end
                     ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
-                ids = ",".join(ids)
-                res, messages_queue = self.fetch(ids, "(FLAGS BODY.PEEK[] UID)")
-            except:
+                    ids = ",".join(ids)
+                    res, messages_queue = self.fetch(ids, "(FLAGS BODY.PEEK[] UID)")
+                except:
                     retries += 1
 
                     # Wait some seconds before next connection attempt.

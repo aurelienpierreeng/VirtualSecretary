@@ -252,12 +252,12 @@ class EMail(connectors.Content):
 
       if target not in self.server.folders:
         print(target)
-        result = self.server.create(target.encode("utf-7"))
+        result = self.server.create(utils.imap_encode(target))
 
         if result[0] == "OK":
           print("Folder `%s` created\n" % target)
           self.server.logfile.write("%s : Folder `%s` created\n" % (utils.now(), target))
-          self.server.subscribe(target)
+          self.server.subscribe(utils.imap_encode(target))
         else:
           print("Failed to create folder `%s`\n" % target)
           self.server.logfile.write("%s : Failed to create folder `%s`\n" % (utils.now(), target))
@@ -270,7 +270,7 @@ class EMail(connectors.Content):
 
   def move(self, folder:str):
     self.create_folder(folder)
-    result = self.server.uid('COPY', self.uid, folder.encode("utf-7"))
+    result = self.server.uid('COPY', self.uid, utils.imap_encode(folder))
 
     if result[0] == "OK":
       result = self.server.uid('STORE', self.uid, '+FLAGS', '(\\Deleted)')
