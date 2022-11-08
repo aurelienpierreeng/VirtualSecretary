@@ -1,13 +1,9 @@
 import imaplib
-import quopri
 import utils
 import email
 import re
-import pickle
-import os
 import hashlib
 import html
-import time
 import connectors
 
 from email import policy
@@ -246,9 +242,10 @@ class EMail(connectors.Content):
 
   def create_folder(self, folder:str):
     # create the folder, recursively if needed (create parent then children)
-    target = ""
-    for level in folder.split(self.server.separator):
-      target += level
+    path = []
+    for level in self.server.split_subfolder_path(folder):
+      path.append(level)
+      target = self.server.build_subfolder_name(path)
 
       if target not in self.server.folders:
         result = self.server.create(target)
@@ -260,8 +257,6 @@ class EMail(connectors.Content):
         else:
           print("Failed to create folder `%s`\n" % target)
           self.server.logfile.write("%s : Failed to create folder `%s`\n" % (utils.now(), target))
-
-      target += "."
 
     # Update the list of server folders
     self.server.get_imap_folders()

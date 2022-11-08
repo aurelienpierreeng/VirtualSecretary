@@ -13,6 +13,31 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
     # Should be either . or /
     separator: str = ""
 
+
+    def build_subfolder_name(self, path: list) -> str:
+        # Assemble a complete subfolder name using the separator of the server
+        # Path should be the complete list of parent folders, e.g.
+        # `path = ["INBOX", "Money", "Taxes"]` will be assembled as
+        # `INBOX.Money.Taxes` or `INBOX/Money/Taxes`, depending on server's defaults.
+        return self.separator.join(path)
+
+
+    def split_subfolder_path(self, folder: str) -> list:
+        # Find out what kind of separator is used and split the parent folders
+
+        if re.match(r".*?\..*", folder):
+            # We found a dot-separated subfolder
+            path = folder.split(".")
+        elif re.match(r".*?\/.*", folder):
+            # We found a slash-sparated subfolder
+            path = folder.split("/")
+        else:
+            # We have a first-level folder. Make it a single-element list for uniform handling
+            path = [folder]
+
+        return path
+
+
     def encode_imap_folder(self, folder:str) -> bytes:
         # Ensure the subfolders are properly separated using the convention of the server
         # and encode the names in IMAP-custom UTF-7. The result is ready for use in IMAP commands.
@@ -22,18 +47,9 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         # Remove spaces and quotes around folder name, if any
         folder_str = folder.strip("' \"")
 
-        if re.match(r".*?\..*", folder_str):
-            # We found a dot-separated subfolder
-            path = folder_str.split(".")
-        elif re.match(r".*?\/.*", folder_str):
-            # We found a slash-sparated subfolder
-            path = folder_str.split("/")
-        else:
-            # We have a first-level folder. Make it a single-element list for uniform handling
-            path = [folder_str]
-
         # Rebuild the new path string using the current server separator
-        folder_str = self.separator.join(path)
+        path = self.split_subfolder_path(folder_str)
+        folder_str = self.build_subfolder_name(path)
 
         # Insert into quotes if apostrophe or spaces are found in name
         if " " in folder_str or "'" in folder_str:
@@ -41,6 +57,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         # Convert to bytes as UTF-7 with custom IMAP mapping for special characters
         return utils.imap_encode(folder_str)
+
 
     def get_imap_folders(self):
         # List inbox subfolders as plain text, to be reused by filter definitions
