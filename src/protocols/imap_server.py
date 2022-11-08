@@ -126,7 +126,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 try:
                     # Avoid getting logged out by time-outs
                     self.reinit_connection()
-                    status, messages = self.select(utils.imap_encode(mailbox))
+                    status, messages = self.select(self.encode_imap_folder(mailbox))
                     num_messages = int(messages[0])
 
                     self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (

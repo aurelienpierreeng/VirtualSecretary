@@ -142,9 +142,7 @@ def filter(email) -> bool:
 
 for folder in imap.folders:
   if folder != imap.junk:
-    print("Parsing %s for whitelisting" % folder)
     # Restore hidden folders, delete them if needed but don't hide them.
-    imap.subscribe(folder)
     imap.get_objects(folder)
     imap.run_filters(filter, None, runs=-1)
 
