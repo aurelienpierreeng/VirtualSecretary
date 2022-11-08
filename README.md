@@ -110,10 +110,11 @@ When you run the `main.py` script, it will create a `sync.log` file into each em
 
 ## Installing
 
-1. Install Git and Python 3:
-   1. On Debian, Ubuntu and their derivatives (Mint, etc.): `$ sudo apt install git python3`
-   2. On Redhat and all its derivatives (Fedora, CentOS, etc.): `$ sudo dnf install git python3`
+1. Install Git and Python 3.10:
+   1. On Debian, Ubuntu and their derivatives (Mint, etc.): `$ sudo apt install git python3.10 python3-pip`
+   2. On Redhat and all its derivatives (Fedora, CentOS, etc.): `$ sudo dnf install git python3 python3-pip`
 2. Clone this repository: `$ git clone https://github.com/Aurelien-Pierre/VirtualSecretary.git`
+2. Install the required dependencies: `pip3 install vobjects requests requests-oauthlib nltk`
 3. Get into the directory: `$ cd VirtualSecretary`
 4. Copy the `examples` to your own `config` folder : `cp examples config`. This is important because updates may erase your changes within the `examples` folder.
 5. Edit the content of the `settings.ini` within `config/me@server.com` with your own credentials
