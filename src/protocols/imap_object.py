@@ -230,7 +230,7 @@ class EMail(connectors.Content):
     self.server.uid('STORE', self.uid, '+FLAGS', 'Junk')
     self.server.uid('STORE', self.uid, '-FLAGS', '(\\Seen)')
 
-    result = self.server.uid('COPY', self.uid, spam_folder)
+    result = self.server.uid('COPY', self.uid, self.server.encode_imap_folder(spam_folder))
 
     if result[0] == "OK":
       result = self.server.uid('STORE', self.uid, '+FLAGS', '(\\Deleted)')
@@ -247,17 +247,16 @@ class EMail(connectors.Content):
   def create_folder(self, folder:str):
     # create the folder, recursively if needed (create parent then children)
     target = ""
-    for level in folder.split('.'):
+    for level in folder.split(self.server.separator):
       target += level
 
       if target not in self.server.folders:
-        print(target)
-        result = self.server.create(utils.imap_encode(target))
+        result = self.server.create(self.server.encode_imap_folder(target))
 
         if result[0] == "OK":
           print("Folder `%s` created\n" % target)
           self.server.logfile.write("%s : Folder `%s` created\n" % (utils.now(), target))
-          self.server.subscribe(utils.imap_encode(target))
+          self.server.subscribe(self.server.encode_imap_folder(target))
         else:
           print("Failed to create folder `%s`\n" % target)
           self.server.logfile.write("%s : Failed to create folder `%s`\n" % (utils.now(), target))
@@ -270,7 +269,7 @@ class EMail(connectors.Content):
 
   def move(self, folder:str):
     self.create_folder(folder)
-    result = self.server.uid('COPY', self.uid, utils.imap_encode(folder))
+    result = self.server.uid('COPY', self.uid, self.server.encode_imap_folder(folder))
 
     if result[0] == "OK":
       result = self.server.uid('STORE', self.uid, '+FLAGS', '(\\Deleted)')
@@ -476,7 +475,7 @@ Attachments : %s
 
       while not data[0] and i < len(self.server.folders):
         # Iterate over all mailboxes until we find the email
-        self.server.select(self.server.folders[i])
+        self.server.select(self.server.encode_imap_folder(self.server.folders[i]))
         typ, data = self.server.uid('SEARCH', '(HEADER Message-ID "%s")' % id)
         i += 1
 

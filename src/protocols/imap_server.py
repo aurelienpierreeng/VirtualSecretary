@@ -3,11 +3,45 @@ import utils
 import pickle
 import os
 import time
+import re
 from protocols import imap_object
 
 import connectors
 
 class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
+    # The separator used by the server between IMAP folders and subfolders
+    # Should be either . or /
+    separator: str = ""
+
+    def encode_imap_folder(self, folder:str) -> bytes:
+        # Ensure the subfolders are properly separated using the convention of the server
+        # and encode the names in IMAP-custom UTF-7. The result is ready for use in IMAP commands.
+        # This function allows users to define subfolders one way or the other while re-encoding
+        # them properly for the current server.
+
+        # Remove spaces and quotes around folder name, if any
+        folder_str = folder.strip("' \"")
+
+        if re.match(r".*?\..*", folder_str):
+            # We found a dot-separated subfolder
+            path = folder_str.split(".")
+        elif re.match(r".*?\/.*", folder_str):
+            # We found a slash-sparated subfolder
+            path = folder_str.split("/")
+        else:
+            # We have a first-level folder. Make it a single-element list for uniform handling
+            path = [folder_str]
+
+        # Rebuild the new path string using the current server separator
+        folder_str = self.separator.join(path)
+
+        # Insert into quotes if apostrophe or spaces are found in name
+        if " " in folder_str or "'" in folder_str:
+            folder_str = "\"" + folder_str + "\""
+
+        return utils.imap_encode(folder_str)
+
+
     def get_imap_folders(self):
         # List inbox subfolders as plain text, to be reused by filter definitions
 
@@ -16,9 +50,12 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         if(mail_list[0] == "OK"):
             for elem in mail_list[1]:
-                entry = utils.imap_decode(elem).split('"."')
-                flags = entry[0].strip("' ")
-                folder = entry[1].strip("' ")
+                # Subfolders can be separated by . or by / depending on servers, let's find out
+                tokens = re.match(r"\((.*?)\) \"([.\/])\" (.*)", utils.imap_decode(elem)).groups()
+
+                flags = tokens[0]
+                self.separator = tokens[1]
+                folder = tokens[2].strip("' \"")
 
                 if "\\Archive" in flags:
                     self.archive = folder
