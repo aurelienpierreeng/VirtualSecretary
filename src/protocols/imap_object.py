@@ -399,8 +399,7 @@ Attachments : %s
 
     # Convert the email date to Unix timestamp
     try:
-      date_time = email.utils.parsedate_to_datetime(self["Date"])
-      timestamp = str(int(datetime.timestamp(date_time)))
+      timestamp = str(int(datetime.timestamp(self.date)))
     except:
       # Some poorly-encoded emails (spams) are not properly decoded by the email package
       # and the date gets embedded in subject
@@ -416,15 +415,22 @@ Attachments : %s
       hashable = self["Received"]
     elif "Message-ID" in self.headers:
       hashable = self["Message-ID"]
-    else:
+    elif "From" in self.headers and "To" in self.headers:
       # Last chance for malformed emails. "Message-ID" is technically not mandatory,
       # but it has become de-facto standard to thread emails.
-      hashable = self["Date"] + self["From"] + self["To"]
+      hashable = self.date.strftime("%d/%m/%Y %H:%M:%S") + self["From"] + self["To"]
+    else:
+      hashable = self.get_body("plain")
 
-    hash = hashlib.md5(hashable.encode())
+    hash = ""
+
+    try:
+      hash = hashlib.md5(hashable.encode()).hexdigest()
+    except:
+      print("Can't hash the email", self["Subject"], "on", self["Date"], "from", self["From"], "to", self["To"])
 
     # Our final hash is the Unix timestamp for easy finding and Received hash
-    self.hash = timestamp + "-" + hash.hexdigest()
+    self.hash = timestamp + "-" + hash
 
 
   def query_referenced_emails(self) -> list:
@@ -517,14 +523,17 @@ Attachments : %s
 
     # Decode RFC822 email body
     # No exception handling here, let it fail. Email validity should be checked at server level
-    self.msg = email.message_from_bytes(raw_message[1], policy=email.policy.default)
+    self.msg = email.message_from_bytes(raw_message[1], policy=policy.default)
 
+    # Extract some temporal info. Problem is bad emails don't have a proper Date header,
+    # or it is badly encoded, so we need to deal with that.
     try:
-      self.create_hash()
-    except:
-      print("Can't hash the email", self["Subject"], "on", self["Date"], "from", self["From"], "to", self["To"])
-
-    try:
+      # Try the date of sending
       self.date = email.utils.parsedate_to_datetime(self["Date"])
     except:
+      # If we don't find one, use the incoming date. This one should be put by our server.
+      self.date = email.utils.parsedate_to_datetime(self["Delivery-date"])
       print("Can't parse the date", self["Date"])
+
+    # The hash uses the date defined above, so we need to create it after
+    self.create_hash()
