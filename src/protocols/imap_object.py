@@ -251,12 +251,12 @@ class EMail(connectors.Content):
       target += level
 
       if target not in self.server.folders:
-        result = self.server.create(self.server.encode_imap_folder(target))
+        result = self.server.create(target)
 
         if result[0] == "OK":
           print("Folder `%s` created\n" % target)
           self.server.logfile.write("%s : Folder `%s` created\n" % (utils.now(), target))
-          self.server.subscribe(self.server.encode_imap_folder(target))
+          self.server.subscribe(target)
         else:
           print("Failed to create folder `%s`\n" % target)
           self.server.logfile.write("%s : Failed to create folder `%s`\n" % (utils.now(), target))

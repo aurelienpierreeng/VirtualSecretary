@@ -39,8 +39,8 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         if " " in folder_str or "'" in folder_str:
             folder_str = "\"" + folder_str + "\""
 
+        # Convert to bytes as UTF-7 with custom IMAP mapping for special characters
         return utils.imap_encode(folder_str)
-
 
     def get_imap_folders(self):
         # List inbox subfolders as plain text, to be reused by filter definitions
@@ -87,7 +87,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         # If a mailbox is specified, we select it temporarilly and we restore the original mailbox used
         # to get objects.
         if mailbox:
-            self.select(utils.imap_encode(mailbox))
+            self.select(mailbox)
 
         message = None
         result, msg = self.uid('FETCH', uid, '(FLAGS BODY.PEEK[] UID)', None)
@@ -96,7 +96,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             message = imap_object.EMail(msg[0], self)
 
         if mailbox:
-            self.select(utils.imap_encode(mailbox))
+            self.select(mailbox)
 
         return message
 
@@ -126,7 +126,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 try:
                     # Avoid getting logged out by time-outs
                     self.reinit_connection()
-                    status, messages = self.select(self.encode_imap_folder(mailbox))
+                    status, messages = self.select(mailbox)
                     num_messages = int(messages[0])
 
                     self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
@@ -373,3 +373,14 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         # High-level method to logout from a server
         self.logout()
         self.connection_inited = False
+
+
+    ## Re-implement imaplib folder commands with our folder encoding on top
+    def select(self, mailbox: str):
+        return super().select(self.encode_imap_folder(mailbox))
+
+    def subscribe(self, mailbox: str):
+        return super().subscribe(self.encode_imap_folder(mailbox))
+
+    def create(self,mailbox: str):
+        return super().create(self.encode_imap_folder(mailbox))
