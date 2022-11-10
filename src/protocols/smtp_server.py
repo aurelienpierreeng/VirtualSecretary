@@ -91,9 +91,16 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
     def reinit_connection(self):
         # Deal with timeouts
         try:
+            # Start with TLS/SSL
             smtplib.SMTP_SSL.__init__(self, self.server, port=self.port)
         except:
-            print("[SMTP] We can't reach the server %s. Check your network connection." % self.server)
+            # Fallback to STARTTLS
+            try:
+                smtplib.SMTP.__init__(self, self.server, port=self.port)
+                self.starttls()
+            except:
+                # Unsecured protocols not supported
+                print("[SMTP] We can't reach the server %s. Check your network connection." % self.server)
 
         try:
             self.ehlo(self.server)
