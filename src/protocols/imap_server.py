@@ -81,7 +81,6 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                     # IMAP RFC something says the base inbox should be called `INBOX` (case-sensitive)
                     # Outlook/Office365 calls it `Inbox`. Deal with that.
                     self.inbox = folder
-                    print(self.inbox)
                 if "\\Archive" in flags:
                     self.archive = folder
                 if "\\Sent" in flags:
@@ -140,7 +139,6 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         if encoded_mailbox in self.folders:
             self.mailbox = encoded_mailbox
-            print(self.mailbox)
             self.objects = []
             messages_queue = []
 

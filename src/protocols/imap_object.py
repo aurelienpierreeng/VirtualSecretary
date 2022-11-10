@@ -24,7 +24,6 @@ class EMail(connectors.Content):
   ##
 
   def parse_uid(self, raw):
-    print(raw)
     self.uid = uid_pattern.search(raw).groups()[0]
 
   def parse_flags(self, raw):
