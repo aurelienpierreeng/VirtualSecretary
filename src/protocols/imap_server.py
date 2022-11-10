@@ -19,7 +19,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         # Path should be the complete list of parent folders, e.g.
         # `path = ["INBOX", "Money", "Taxes"]` will be assembled as
         # `INBOX.Money.Taxes` or `INBOX/Money/Taxes`, depending on server's defaults.
-        return self.separator.join(path)
+
+        # Then, replace the `INBOX` marker with the actual case-sensitive inbox name
+        # This is to deal with Outlook/Office365
+        return self.separator.join(path).replace("INBOX", self.inbox)
 
 
     def split_subfolder_path(self, folder: str) -> list:
@@ -74,6 +77,11 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 self.separator = tokens[1]
                 folder = tokens[2].strip("' \"")
 
+                if "inbox" == folder.lower():
+                    # IMAP RFC something says the base inbox should be called `INBOX` (case-sensitive)
+                    # Outlook/Office365 calls it `Inbox`. Deal with that.
+                    self.inbox = folder
+                    print(self.inbox)
                 if "\\Archive" in flags:
                     self.archive = folder
                 if "\\Sent" in flags:
@@ -107,7 +115,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             self.select(mailbox)
 
         message = None
-        result, msg = self.uid('FETCH', uid, '(FLAGS BODY.PEEK[] UID)', None)
+        result, msg = self.uid('FETCH', uid, '(UID FLAGS BODY.PEEK[])', None)
 
         if result == "OK" and msg[0]:
             message = imap_object.EMail(msg[0], self)
@@ -128,8 +136,11 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         if n_messages == -1:
             n_messages = self.n_messages
 
-        if mailbox in self.folders:
-            self.mailbox = mailbox
+        encoded_mailbox = self.build_subfolder_name(self.split_subfolder_path(mailbox))
+
+        if encoded_mailbox in self.folders:
+            self.mailbox = encoded_mailbox
+            print(self.mailbox)
             self.objects = []
             messages_queue = []
 
@@ -144,7 +155,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 try:
                     # Avoid getting logged out by time-outs
                     self.reinit_connection()
-                    status, messages = self.select(mailbox)
+                    status, messages = self.select(self.mailbox)
                     num_messages = int(messages[0])
 
                     if (status == "OK" and num_messages == 0) or status == "NO":
@@ -159,7 +170,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                     # build a coma-separated list of IDs from start to end
                     ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
                     ids = ",".join(ids)
-                    res, messages_queue = self.fetch(ids, "(FLAGS BODY.PEEK[] UID)")
+                    res, messages_queue = self.fetch(ids, "(UID FLAGS BODY.PEEK[])")
                 except:
                     retries += 1
 
