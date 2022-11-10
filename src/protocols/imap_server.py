@@ -363,7 +363,9 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         self.password = params["password"] # TODO: hash that in RAM ?
 
         # Init the SSL connection to the server
-        self.logfile.write("%s : Trying to login to %s with username %s\n" % (utils.now(), self.server, self.user))
+        logstring = "[IMAP] Trying to login to %s with username %s" % (self.server, self.user)
+        self.logfile.write("%s : %s\n" % (utils.now(), logstring))
+        print(logstring)
         self.reinit_connection()
         self.get_imap_folders()
         self.connection_inited = True
@@ -375,12 +377,13 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         try:
             imaplib.IMAP4_SSL.__init__(self, host=self.server)
         except:
-            print("We can't reach the server %s. Check your network connection." % self.server)
+            print("[IMAP] We can't reach the server %s. Check your network connection." % self.server)
 
         try:
             self.std_out = self.login(self.user, self.password)
-            self.logfile.write("%s : Connection to %s : %s\n" %
-                               (utils.now(), self.server, self.std_out[0]))
+            logstring = "[IMAP] Connection to %s : %s" % (self.server, self.std_out[0])
+            self.logfile.write("%s : %s\n" % (utils.now(), logstring))
+            print(logstring)
         except:
             print("We can't login to %s with username %s. Check your credentials" % (
                 self.server, self.user))

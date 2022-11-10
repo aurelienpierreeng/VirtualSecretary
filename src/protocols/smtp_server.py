@@ -90,9 +90,20 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
 
     def reinit_connection(self):
         # Deal with timeouts
-        smtplib.SMTP_SSL.__init__(self, self.server)
-        self.ehlo(self.server)
-        self.login(self.user, self.password)
+        try:
+            smtplib.SMTP_SSL.__init__(self, self.server)
+        except:
+            print("[SMTP] We can't reach the server %s. Check your network connection." % self.server)
+
+        try:
+            self.ehlo(self.server)
+            self.std_out = self.login(self.user, self.password)
+            logstring = "[SMTP] Connection to %s : %s" % (self.server, "OK" if self.std_out[0] == 235 else self.std_out[0])
+            self.logfile.write("%s : %s\n" % (utils.now(), logstring))
+            print(logstring)
+        except:
+            print("We can't login to %s with username %s. Check your credentials" % (
+                self.server, self.user))
 
 
     def init_connection(self, params: dict):
@@ -102,6 +113,9 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
         self.user = params["user"]
 
         # Notify that we have a server with an active connection
+        logstring = "[SMTP] Trying to login to %s with username %s" % (self.server, self.user)
+        self.logfile.write("%s : %s\n" % (utils.now(), logstring))
+        print(logstring)
         self.reinit_connection()
         self.connection_inited = True
 
