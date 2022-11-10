@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 ip_pattern = re.compile(r"\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]")
 email_pattern = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?")
 url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)")
-uid_pattern = re.compile(r"^([0-9]+) \(")
+uid_pattern = re.compile(r"UID ([0-9]+)")
 flags_pattern = re.compile(r"FLAGS \((.*?)\)")
 
 
@@ -264,6 +264,7 @@ class EMail(connectors.Content):
 
   def move(self, folder:str):
     self.create_folder(folder)
+    print(self.server.encode_imap_folder(folder))
     result = self.server.uid('COPY', self.uid, self.server.encode_imap_folder(folder))
 
     if result[0] == "OK":
@@ -526,10 +527,14 @@ Attachments : %s
     try:
       # Try the date of sending
       self.date = email.utils.parsedate_to_datetime(self["Date"])
-    except:
-      # If we don't find one, use the incoming date. This one should be put by our server.
-      self.date = email.utils.parsedate_to_datetime(self["Delivery-date"])
-      print("Can't parse the date", self["Date"])
+    except Exception as e:
+      print(e)
+
+      if "Delivery-date" in self.headers:
+        # If we don't find one, use the incoming date. This one should be put by our server.
+        self.date = email.utils.parsedate_to_datetime(self["Delivery-date"])
+      else:
+        self.date = datetime.fromtimestamp(0, timezone.utc)
 
     # The hash uses the date defined above, so we need to create it after
     self.create_hash()
