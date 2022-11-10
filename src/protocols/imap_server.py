@@ -137,8 +137,9 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             ts = time.time()
             retries = 0
             max_retries = 5
+            has_something = True
 
-            while len(messages_queue) == 0 and retries < max_retries:
+            while len(messages_queue) == 0 and retries < max_retries and has_something:
                 # Retry for as long as we didn't fetch as many messages as we have on the server
                 try:
                     # Avoid getting logged out by time-outs
@@ -146,12 +147,14 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                     status, messages = self.select(mailbox)
                     num_messages = int(messages[0])
 
+                    if (status == "OK" and num_messages == 0) or status == "NO":
+                        # There is no email in selected folder or we don't have access permission, abort
+                        print("  No email in this mailbox")
+                        has_something = False
+                        break
+
                     self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
                         utils.now(), mailbox, num_messages, n_messages))
-
-                    if num_messages == 0:
-                        # There is no email in selected folder, abort
-                        break
 
                     # build a coma-separated list of IDs from start to end
                     ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
@@ -228,6 +231,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         # * `filter` and `action` take an `mailserver.EMail` instance as input
         # * `runs` defines how many times the emails need to be processed. -1 means no limit.
         # * `filter_file` is the full path to the filter Python script
+
+        if len(self.objects) == 0:
+            # No queue
+            return
 
         # Define the log file as an hidden file inheriting the filter filename
         filtername = self.calling_file()
@@ -327,6 +334,8 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         # Actually delete with IMAP the emails marked with the tag `\DELETED`
         # We only need to run it once per email loop/mailbox.
+        self.reinit_connection()
+        self.select(self.mailbox)
         self.expunge()
 
         # Close the current mailbox.
