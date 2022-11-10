@@ -361,6 +361,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         self.server = params["server"]
         self.user = params["user"]
         self.password = params["password"] # TODO: hash that in RAM ?
+        self.port = params["port"] if "port" in params else 993
 
         # Init the SSL connection to the server
         logstring = "[IMAP] Trying to login to %s with username %s" % (self.server, self.user)
@@ -375,7 +376,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         # Restart the IMAP connection using previous parameters, to
         # prevent deconnections from time-outs
         try:
-            imaplib.IMAP4_SSL.__init__(self, host=self.server)
+            imaplib.IMAP4_SSL.__init__(self, host=self.server, port=self.port)
         except:
             print("[IMAP] We can't reach the server %s. Check your network connection." % self.server)
 
