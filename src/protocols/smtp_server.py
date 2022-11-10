@@ -111,7 +111,7 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
         self.password = params["password"]
         self.server = params["server"]
         self.user = params["user"]
-        self.port = params["port"] if "port" in params else 465
+        self.port = int(params["port"]) if "port" in params else 465
 
         # Notify that we have a server with an active connection
         logstring = "[SMTP] Trying to login to %s with username %s" % (self.server, self.user)
