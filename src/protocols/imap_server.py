@@ -156,7 +156,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                     # build a coma-separated list of IDs from start to end
                     ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
                     ids = ",".join(ids)
-                    res, messages_queue = self.fetch(ids, "(FLAGS BODY.PEEK[] UID)")
+                    res, messages_queue = self.fetch(ids, "(FLAGS BODY.PEEK[])")
                 except:
                     retries += 1
 

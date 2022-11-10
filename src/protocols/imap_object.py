@@ -13,8 +13,8 @@ from datetime import datetime, timedelta, timezone
 ip_pattern = re.compile(r"\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]")
 email_pattern = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?")
 url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)")
-uid_pattern = re.compile(r"UID ([0-9]+) ")
-flags_pattern = re.compile(r"FLAGS \((.*)?\)")
+uid_pattern = re.compile(r"^([0-9]+) \(")
+flags_pattern = re.compile(r"FLAGS \((.*?)\)")
 
 
 class EMail(connectors.Content):
@@ -509,12 +509,13 @@ Attachments : %s
     # Raw message as fetched by IMAP, decode IMAP headers
     try:
       email_content = raw_message[0].decode()
+    except Exception as e:
+      print("Decoding headers failed for : %s" % raw_message[0])
+      print(e)
+
+    if email_content:
       self.parse_uid(email_content)
       self.parse_flags(email_content)
-    except:
-      self.flags = ""
-      self.uid = ""
-      print("Decoding headers failed for : %s" % raw_message[0])
 
     # Decode RFC822 email body
     # No exception handling here, let it fail. Email validity should be checked at server level
