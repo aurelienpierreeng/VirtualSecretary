@@ -92,18 +92,14 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
         # Deal with timeouts
         try:
             # Start with TLS/SSL
-            smtplib.SMTP_SSL.__init__(self, self.server, port=self.port)
-        except:
-            # Fallback to STARTTLS
-            try:
-                smtplib.SMTP.__init__(self, self.server, port=self.port)
-                self.starttls()
-            except:
-                # Unsecured protocols not supported
-                print("[SMTP] We can't reach the server %s. Check your network connection." % self.server)
+            smtplib.SMTP_SSL.__init__(self, self.server, port=self.port, timeout=15)
+        except Exception as e:
+            print(e)
+
+            # Unsecured protocols not supported
+            print("[SMTP] We can't reach the server %s. Check your network connection." % self.server)
 
         try:
-            self.ehlo(self.server)
             self.std_out = self.login(self.user, self.password)
             logstring = "[SMTP] Connection to %s : %s" % (self.server, "OK" if self.std_out[0] == 235 else self.std_out[0])
             self.logfile.write("%s : %s\n" % (utils.now(), logstring))
