@@ -24,7 +24,7 @@ def filter(email) -> bool:
 
 
 def action(email):
-  email.move('"INBOX.Services.Account security"')
+  email.move('INBOX.Services.Accounts')
 
 imap.get_objects("INBOX")
 imap.run_filters(filter, action, runs=-1)

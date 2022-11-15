@@ -21,9 +21,13 @@ def filter(email) -> bool:
   # Try to find if the current email is a reply to an automated message we sent in filter 31-imap-autoresponder-busy.
   # Much more expensive than other checks since it needs to query the server through the network.
   email_replied_to = email.query_replied_email()
-  return email_replied_to and ("X-Mailer" in email_replied_to.headers) and \
+  out = email_replied_to and ("X-Mailer" in email_replied_to.headers) and \
      email_replied_to["X-Mailer"] == "Virtual Secretary"
 
+  if out:
+    print("filter urgent triggered for", email["Subject"], email.age())
+
+  return False
 
 def action(email):
   # Find the parent emails, which "Message-ID" needs to be saved in "References".
