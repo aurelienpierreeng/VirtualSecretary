@@ -499,6 +499,46 @@ Attachments : %s
 
     return replied
 
+  def get_date(self):
+    # Extract some temporal info. Problem is bad emails don't have a proper Date header,
+    # or it is badly encoded, so we need to deal with that.
+
+    self.date = None
+
+    if "Date" in self.headers and self["Date"]:
+      try:
+        # Try the date of sending
+        self.date = email.utils.parsedate_to_datetime(self["Date"])
+      except Exception as e:
+        print(e)
+
+        # If we have a date header but the parsing failed, try again to parse
+        # usual-yet-non-standard formats.
+        date_eu = re.match(r"([0-9]{2})\-([0-9]{2})\-([0-9]{4})", self["Date"])
+        date_us = re.match(r"([0-9]{4})\-([0-9]{2})\-([0-9]{2})", self["Date"])
+
+        if date_eu:
+          month = int(date_eu.groups()[0])
+          day = int(date_eu.groups()[1])
+          year = int(date_eu.groups()[2])
+          self.date = datetime(year, month, day, tzinfo=timezone.utc)
+        elif date_us:
+          day = int(date_us.groups()[2])
+          month = int(date_us.groups()[1])
+          year = int(date_us.groups()[0])
+          self.date = datetime(year, month, day, tzinfo=timezone.utc)
+
+    if not self.date and "Delivery-date" in self.headers and self["Delivery-date"]:
+        # If we don't find one, use the incoming date. This one should be put by our server.
+        try:
+          self.date = email.utils.parsedate_to_datetime(self["Delivery-date"])
+        except Exception as e:
+          print(e)
+
+    if not self.date:
+      # If everything else failed, set 1970.
+      self.date = datetime.fromtimestamp(0, timezone.utc)
+
 
   def __init__(self, raw_message:list, server) -> None:
     # Position of the email in the server list
@@ -522,19 +562,8 @@ Attachments : %s
     # No exception handling here, let it fail. Email validity should be checked at server level
     self.msg = email.message_from_bytes(raw_message[1], policy=policy.default)
 
-    # Extract some temporal info. Problem is bad emails don't have a proper Date header,
-    # or it is badly encoded, so we need to deal with that.
-    try:
-      # Try the date of sending
-      self.date = email.utils.parsedate_to_datetime(self["Date"])
-    except Exception as e:
-      print(e)
-
-      if "Delivery-date" in self.headers:
-        # If we don't find one, use the incoming date. This one should be put by our server.
-        self.date = email.utils.parsedate_to_datetime(self["Delivery-date"])
-      else:
-        self.date = datetime.fromtimestamp(0, timezone.utc)
+    # Get "a" date for the email
+    self.get_date()
 
     # The hash uses the date defined above, so we need to create it after
     self.create_hash()
