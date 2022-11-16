@@ -119,11 +119,12 @@ class FbConnector():
   def set_account(self, radio_button, id):
     self.business_id = id
     self.reset_center_widget()
-    result = requests.get("https://graph.facebook.com/v15.0/%s?fields=instagram_business_account&access_token=%s" % (
-      self.business_id, self.config["instagram"]["access_token"]))
+    result = requests.get("https://graph.facebook.com/v15.0/%s?fields=instagram_business_account&access_token=%s" \
+      % (self.business_id, self.config["instagram"]["access_token"]))
 
     if result.status_code == 200:
       data = json.loads(result.text)
+      print(data)
       self.config["instagram"]["business_id"] = self.business_id
 
       if "instagram_business_account" in data:
@@ -131,8 +132,17 @@ class FbConnector():
         self.reset_center_widget()
         self.write_config()
 
-        info = QLabel("Your credentials have been successfully saved to %s, you can now close this window." % self.config_file_path)
-        self.HBox.addWidget(info)
+        result = requests.get("https://graph.facebook.com/v15.0/%s?fields=name,followers_count,username&access_token=%s" \
+                                  % (self.config["instagram"]["instagram_business_account"], self.config["instagram"]["access_token"]))
+
+        if result.status_code == 200:
+          data = json.loads(result.text)
+          confirmation = QLabel("We found the Instagram business account <strong>%s</strong> (@%s), having %s followers." \
+                                  % (data["name"], data["username"], data["followers_count"]))
+          self.HBox.addWidget(confirmation)
+
+          info = QLabel("Your credentials have been successfully saved to %s, you can now close this window." % self.config_file_path)
+          self.HBox.addWidget(info)
       else:
         self.reset_center_widget()
         info = QLabel("It seems that you have no Instagram account linked to this business account.")
@@ -159,10 +169,11 @@ class FbConnector():
         self.HBox.addWidget(label)
 
         for elem in data["data"]:
-          button = QRadioButton(elem["name"] + ", " + elem["category"])
-          button.setAccessibleName(elem["id"])
-          button.toggled.connect(lambda: self.set_account(button, elem["id"]))
-          self.HBox.addWidget(button)
+          if "MESSAGING" in elem["tasks"] and "MODERATE" in elem["tasks"] and "CREATE_CONTENT" in elem["tasks"]:
+            button = QRadioButton(elem["name"] + ", " + elem["category"])
+            button.setAccessibleName(elem["id"])
+            button.toggled.connect(lambda: self.set_account(button, elem["id"]))
+            self.HBox.addWidget(button)
 
       else:
         self.reset_center_widget()
