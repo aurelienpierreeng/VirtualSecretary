@@ -7,7 +7,7 @@ from requests.auth import HTTPBasicAuth
 from xml.dom import minidom
 
 
-class Card(object):
+class Card(connectors.Content):
 
   def __getitem__(self, key):
     # Getting key from the class is dispatched directly to email.EmailMessage properties
@@ -35,7 +35,7 @@ class Card(object):
     #print(self["fn"], self["categories"], self["email"], self["tel"])
 
 
-class Server(connectors.Server[connectors.Content]):
+class Server(connectors.Server[Card]):
 
     def get_objects(self):
         REPORTFIND = """<card:addressbook-query xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav">
