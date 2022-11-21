@@ -240,30 +240,8 @@ class EMail(connectors.Content):
 
     self.server.std_out = result
 
-  def create_folder(self, folder:str):
-    # create the folder, recursively if needed (create parent then children)
-    path = []
-    for level in self.server.split_subfolder_path(folder):
-      path.append(level)
-      target = self.server.build_subfolder_name(path)
-
-      if target not in self.server.folders:
-        result = self.server.create(target)
-
-        if result[0] == "OK":
-          print("Folder `%s` created\n" % target)
-          self.server.logfile.write("%s : Folder `%s` created\n" % (utils.now(), target))
-          self.server.subscribe(target)
-        else:
-          print("Failed to create folder `%s`\n" % target)
-          self.server.logfile.write("%s : Failed to create folder `%s`\n" % (utils.now(), target))
-
-    # Update the list of server folders
-    self.server.get_imap_folders()
-
-
   def move(self, folder:str):
-    self.create_folder(folder)
+    self.server.create_folder(folder)
     print(self.server.encode_imap_folder(folder))
     result = self.server.uid('COPY', self.uid, self.server.encode_imap_folder(folder))
 

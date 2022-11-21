@@ -413,6 +413,26 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         self.logout()
         self.connection_inited = False
 
+    def create_folder(self, folder:str):
+        # create the folder, recursively if needed (create parent then children)
+        path = []
+        for level in self.split_subfolder_path(folder):
+            path.append(level)
+            target = self.build_subfolder_name(path)
+
+            if target not in self.folders:
+                result = self.create(target)
+
+                if result[0] == "OK":
+                    print("Folder `%s` created\n" % target)
+                    self.logfile.write("%s : Folder `%s` created\n" % (utils.now(), target))
+                    self.subscribe(target)
+                else:
+                    print("Failed to create folder `%s`\n" % target)
+                    self.logfile.write("%s : Failed to create folder `%s`\n" % (utils.now(), target))
+
+        # Update the list of server folders
+        self.get_imap_folders()
 
     ## Re-implement imaplib folder commands with our folder encoding on top
     def select(self, mailbox: str):
