@@ -264,7 +264,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         enable_logging = (runs != -1) and isinstance(runs, int)
 
         # Open the logfile if any
-        if enable_logging and os.path.exists(filter_logfile):
+        if os.path.exists(filter_logfile):
             with open(filter_logfile, "rb") as f:
                 log = dict(pickle.load(f))
                 #print("DB found : %s" % f)
