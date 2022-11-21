@@ -6,6 +6,8 @@ import time
 import re
 from protocols import imap_object
 
+from email.utils import formatdate, make_msgid, parsedate_to_datetime
+
 import connectors
 
 class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
@@ -441,5 +443,14 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
     def subscribe(self, mailbox: str):
         return super().subscribe(self.encode_imap_folder(mailbox))
 
-    def create(self,mailbox: str):
+    def create(self, mailbox: str):
         return super().create(self.encode_imap_folder(mailbox))
+
+    def append(self, mailbox:str, flags, email):
+        self.reinit_connection()
+        self.create_folder(mailbox)
+
+        # Reformat RFC 822 date to IMAP stuff
+        date = parsedate_to_datetime(email["Date"])
+        date = imaplib.Time2Internaldate(date)
+        return super().append(self.encode_imap_folder(mailbox), flags, date, email.as_bytes())
