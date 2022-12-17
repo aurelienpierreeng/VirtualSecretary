@@ -3,8 +3,8 @@ import os
 import re
 import errno
 
-filter_pattern = re.compile("^([0-9]{2})-(imap|caldav|carddav|mysql)-[a-zA-Z0-9\-\_]+.py$")
-learn_pattern = re.compile("^(LEARN)-(imap|caldav|carddav|mysql)-[a-zA-Z0-9\-\_]+.py$")
+filter_pattern = re.compile("^([0-9]{2})-([a-z]+)-[a-zA-Z0-9\-\_]+.py$")
+learn_pattern = re.compile("^(LEARN)-([a-z]+)-[a-zA-Z0-9\-\_]+.py$")
 
 
 def now():
