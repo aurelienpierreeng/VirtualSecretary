@@ -321,6 +321,23 @@ class EMail(connectors.Content):
     # This email has been flagged as important
     return "\\Flagged" in self.flags
 
+  def is_mailing_list(self) -> bool:
+    # This email has the typical mailing-list tags. Warning: this is not standard and not systematically used.
+    # Mailing list are sent by humans to a group of other humans.
+    has_list_unsubscribe = "List-Unsubscribe" in self.headers # note that we don't check if it's a valid unsubscribe link
+    has_precedence_list = "Precedence" in self.headers and self["Precedence"] == "list"
+    return has_list_unsubscribe and has_precedence_list
+
+  def is_newsletter(self) -> bool:
+    # This email has the typical newsletter tags. Warning: this is not standard and not systematically used.
+    # Newsletters are sent by bots to a group of humans.
+    has_list_id = "List-ID" in self.headers or "List-Id" in self.headers
+    has_precedence_bulk = "Precedence" in self.headers and self["Precedence"] == "bulk"
+    has_feedback_id = "Feedback-ID" in self.headers
+    has_csa_complaints = "X-CSA-Complaints" in self.headers
+    has_list_unsubscribe = "List-Unsubscribe" in self.headers # note that we don't check if it's a valid unsubscribe link
+    return has_list_unsubscribe and (has_list_id or has_precedence_bulk or has_feedback_id or has_csa_complaints)
+
   def has_tag(self, tag:str) -> bool:
     return tag in self.flags
 
