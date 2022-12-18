@@ -242,7 +242,6 @@ class EMail(connectors.Content):
 
   def move(self, folder:str):
     self.server.create_folder(folder)
-    print(self.server.encode_imap_folder(folder))
     result = self.server.uid('COPY', self.uid, self.server.encode_imap_folder(folder))
 
     if result[0] == "OK":
