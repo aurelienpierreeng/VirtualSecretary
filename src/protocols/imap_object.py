@@ -10,7 +10,9 @@ from email import policy
 
 from datetime import datetime, timedelta, timezone
 
-ip_pattern = re.compile(r"\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]")
+# IPv4 and IPv6
+ip_pattern = re.compile(r"from.*?((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))")
+domain_pattern = re.compile(r"from ((?:[A-Za-z0-9\-_]{0,61}\.)*[a-z]{2,})")
 email_pattern = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?")
 url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)")
 uid_pattern = re.compile(r"UID ([0-9]+)")
@@ -30,25 +32,41 @@ class EMail(connectors.Content):
     self.flags = flags_pattern.search(raw).groups()[0]
 
   def parse_ips(self):
-    # Get the whole network route taken by the email
+    # Get the IPs of the whole network route taken by the email
     if "Received" in self.headers:
       # There will be no "Received" header for emails sent by the current mailbox
       network_route = self.msg.get_all("Received")
-      network_route = "; ".join(network_route)
+      network_route = "\n".join(network_route)
       self.ips = ip_pattern.findall(network_route)
 
       # Remove localhost
-      self.ips = [ip for ip in self.ips if not ip.startswith("127.")]
+      self.ips = [ip for ip in self.ips if not (ip.startswith("127.") or ip.startswith("fe80::"))]
     else:
       self.ips = []
 
   @property
   def ip(self):
     # Lazily parse IPs in email only when/if the property is used
-    if self.ips == []:
+    if self.ips == [] or not self.ips:
       self.parse_ips()
     return self.ips
 
+  def parse_domains(self):
+    # Get the domains of the whole network route taken by the email
+    if "Received" in self.headers:
+      # There will be no "Received" header for emails sent by the current mailbox
+      network_route = self.msg.get_all("Received")
+      network_route = "\n".join(network_route)
+      self.domains = domain_pattern.findall(network_route)
+    else:
+      self.domains = []
+
+  @property
+  def domain(self):
+    # Lazily parse IPs in email only when/if the property is used
+    if self.domains == [] or not self.domains:
+      self.parse_domains()
+    return self.domains
 
   @property
   def attachments(self) -> list[str]:
@@ -333,7 +351,7 @@ class EMail(connectors.Content):
     # Newsletters are sent by bots to a group of humans.
     has_list_id = "List-ID" in self.headers or "List-Id" in self.headers
     has_precedence_bulk = "Precedence" in self.headers and self["Precedence"] == "bulk"
-    has_feedback_id = "Feedback-ID" in self.headers
+    has_feedback_id = "Feedback-ID" in self.headers or "X-Feedback-ID" in self.headers
     has_csa_complaints = "X-CSA-Complaints" in self.headers
     has_list_unsubscribe = "List-Unsubscribe" in self.headers # note that we don't check if it's a valid unsubscribe link
     return has_list_unsubscribe and (has_list_id or has_precedence_bulk or has_feedback_id or has_csa_complaints)
@@ -540,6 +558,7 @@ Attachments : %s
 
     self.urls = []
     self.ips = []
+    self.domains = []
 
     # Raw message as fetched by IMAP, decode IMAP headers
     try:
