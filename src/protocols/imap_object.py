@@ -5,6 +5,8 @@ import re
 import hashlib
 import html
 import connectors
+import spf
+from dns import resolver
 
 from email import policy
 
@@ -12,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 # IPv4 and IPv6
 ip_pattern = re.compile(r"from.*?((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))")
-domain_pattern = re.compile(r"from ((?:[A-Za-z0-9\-_]{0,61}\.)*[a-z]{2,})")
+domain_pattern = re.compile(r"from ((?:[A-Za-z0-9\-_]{0,61}\.)+[a-z]{2,})")
 email_pattern = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?")
 url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)")
 uid_pattern = re.compile(r"UID ([0-9]+)")
@@ -39,8 +41,8 @@ class EMail(connectors.Content):
       network_route = "\n".join(network_route)
       self.ips = ip_pattern.findall(network_route)
 
-      # Remove localhost
-      self.ips = [ip for ip in self.ips if not (ip.startswith("127.") or ip.startswith("fe80::"))]
+      # Remove localhost and local network IPs
+      self.ips = [ip for ip in self.ips if not (ip.startswith("127.") or ip.startswith("fe80::") or ip.startswith("192."))]
     else:
       self.ips = []
 
@@ -58,6 +60,9 @@ class EMail(connectors.Content):
       network_route = self.msg.get_all("Received")
       network_route = "\n".join(network_route)
       self.domains = domain_pattern.findall(network_route)
+
+       # Remove localhost
+      self.domains = [ domain for domain in self.domains if "localhost" not in domain ]
     else:
       self.domains = []
 
@@ -358,6 +363,50 @@ class EMail(connectors.Content):
 
   def has_tag(self, tag:str) -> bool:
     return tag in self.flags
+
+  def spf_pass(self) -> bool:
+    # Check if any of the servers listed by IP in the "Received" header is authorized
+    # by the mail server to send emails on behalf of the email address used as "From".
+    # See https://www.rfc-editor.org/rfc/rfc7208
+    names, addresses = self.get_sender()
+
+    # Convert all DNS domains from the email route to IPs
+    # Useful for emails sent on the local network where no IP is written in headers
+    ips = []
+    for domain in self.domain:
+      try:
+        for x in resolver.resolve(domain, 'A'):
+          ips.append(x.to_text())
+      except:
+        pass
+
+    # Append the list of IPs mentionned explicitely in headers
+    # Reverse it so the bottom "Received" are treated first since they are the most probably
+    # linked to SPF records and each entry starts a network request.
+    ips += self.ip
+    ips.reverse()
+
+    # Check all addresses for all IPs in the email route until we find a match.
+    # We consider it a fail only on explicite fail, e.g. the SPF record explicitely prohibits
+    # all found IPs to send emails on behalf of the address used.
+    # Non-existing or wrongly-set SPF records are treated as a success.
+    for email in addresses:
+      email_domain = email.split("@")[1]
+      for ip in set(ips):
+        try:
+          for x in resolver.resolve(email_domain, 'MX'):
+            spf_result = spf.check2(i=ip, s=email, h=x.to_text())[0]
+            if spf_result == "permerror":
+              print("Warning: %s has invalid SPF records" % x.to_text())
+            if spf_result != "fail":
+              return True
+        except:
+          pass
+
+    return False
+
+  def is_spam(self) -> bool:
+    return not self.spf_pass()
 
   ##
   ## Utils
