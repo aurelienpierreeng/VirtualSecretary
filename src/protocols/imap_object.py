@@ -6,6 +6,7 @@ import hashlib
 import html
 import connectors
 import spf
+import dkim
 from dns import resolver
 
 from email import policy
@@ -37,7 +38,8 @@ class EMail(connectors.Content):
     # Get the IPs of the whole network route taken by the email
     if "Received" in self.headers:
       # There will be no "Received" header for emails sent by the current mailbox
-      network_route = self.msg.get_all("Received")
+      # Exclude the most recent "Received" header because it will be our server.
+      network_route = self.msg.get_all("Received")[1:-1]
       network_route = "\n".join(network_route)
       self.ips = ip_pattern.findall(network_route)
 
@@ -57,7 +59,8 @@ class EMail(connectors.Content):
     # Get the domains of the whole network route taken by the email
     if "Received" in self.headers:
       # There will be no "Received" header for emails sent by the current mailbox
-      network_route = self.msg.get_all("Received")
+      # Exclude the most recent "Received" header because it will be our server.
+      network_route = self.msg.get_all("Received")[1:-1]
       network_route = "\n".join(network_route)
       self.domains = domain_pattern.findall(network_route)
 
@@ -364,10 +367,24 @@ class EMail(connectors.Content):
   def has_tag(self, tag:str) -> bool:
     return tag in self.flags
 
-  def spf_pass(self) -> bool:
+  ##
+  ## Authenticity checks
+  ##
+
+  def spf_pass(self) -> int:
     # Check if any of the servers listed by IP in the "Received" header is authorized
     # by the mail server to send emails on behalf of the email address used as "From".
     # See https://www.rfc-editor.org/rfc/rfc7208
+    # Output a reputation score :
+    scores = { "none":    0,    # no SPF records were retrieved from the DNS.
+               "neutral": 1,    # the ADMD has explicitly stated that it is not asserting whether the IP address is authorized.
+               "pass":    2,    # explicit statement that the client is authorized to inject mail with the given identity.
+               "temperror":  0, # the SPF verifier encountered a transient (generally DNS) error while performing the check.
+               "permerror": -1, # the domain's published records could not be correctly interpreted.
+               "softfail":  -1, # weak statement by the publishing ADMD that the host is probably not authorized.
+               "fail": -2       # explicit statement that the client is not authorized to use the domain in the given identity.
+              }
+
     names, addresses = self.get_sender()
 
     # Convert all DNS domains from the email route to IPs
@@ -390,23 +407,72 @@ class EMail(connectors.Content):
     # We consider it a fail only on explicite fail, e.g. the SPF record explicitely prohibits
     # all found IPs to send emails on behalf of the address used.
     # Non-existing or wrongly-set SPF records are treated as a success.
+    spf_score = -2
     for email in addresses:
       email_domain = email.split("@")[1]
       for ip in set(ips):
         try:
           for x in resolver.resolve(email_domain, 'MX'):
-            spf_result = spf.check2(i=ip, s=email, h=x.to_text())[0]
-            if spf_result == "permerror":
-              print("Warning: %s has invalid SPF records" % x.to_text())
-            if spf_result != "fail":
-              return True
+            spf_status = spf.check2(i=ip, s=email, h=x.to_text())[0]
+
+            # Record the highest reputation score of the list of IPs
+            score = scores[spf_status]
+            spf_score = score if score > spf_score else spf_score
+
+            # If we got a success, abort immediately
+            if spf_score == 2:
+              return spf_score
         except:
           pass
 
-    return False
+    return spf_score
 
-  def is_spam(self) -> bool:
-    return not self.spf_pass()
+  def dkim_pass(self):
+    # Return a reputation score :
+    #  0 if no DKIM signature
+    #  1 if the DKIM signature is valid
+    # -1 if the DKIM signature is invalid. That's because many spammers
+    # forge a fake Google DKIM signature hoping to past by the spam filters
+    # that only check for the header presence without actually validating it.
+
+    if "DKIM-Signature" in self.headers:
+      dkim_score = -1
+      dk = dkim.DKIM(message=self.raw)
+      signatures = self.msg.get_all("DKIM-Signature")
+      for i in range(len(signatures)):
+        # Sometimes there are several DKIM Signature when the message
+        # transits through several servers. We need to check them all.
+        try:
+          output = dk.verify(i)
+        except:
+          # Invalid encoding or something happened
+          pass
+        else:
+          if output and dkim_score < 1:
+            # Valid DKIM signature - Abort now
+            dkim_score = 1
+            return dkim_score
+    else:
+      dkim_score = 0
+
+    return dkim_score
+
+  def authenticity_score(self) -> int:
+    # Returns :
+    # == 0 : neutral, no explicit authentification is defined on DNS or no rule could be found
+    #  > 0 : expliticitely authenticated
+    # == 3 : maximal authenticity (valid SPF and valid DKIM)
+    #  < 0 : spoofed, either or both SPF and DKIM explicitely failed
+    spf_score = int(self.spf_pass())
+    dkim_score = int(self.dkim_pass())
+    total = spf_score + dkim_score
+    print(self["From"], spf_score, "+", dkim_score, "=", total)
+    return total
+
+  def is_authentic(self) -> bool:
+    # Check SPF and DKIM to validate that the email is authentic,
+    # aka not spoofed. That's enough to detect most spams.
+    return self.authenticity_score() >= 0
 
   ##
   ## Utils
@@ -623,6 +689,7 @@ Attachments : %s
     # Decode RFC822 email body
     # No exception handling here, let it fail. Email validity should be checked at server level
     self.msg = email.message_from_bytes(raw_message[1], policy=policy.default)
+    self.raw = raw_message[1]
 
     # Get "a" date for the email
     self.get_date()
