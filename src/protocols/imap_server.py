@@ -264,6 +264,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         # Enable logging and runs limitations if required
         enable_logging = (runs != -1) and isinstance(runs, int)
+        filter_on = True
 
         # Open the logfile if any
         if os.path.exists(filter_logfile):
