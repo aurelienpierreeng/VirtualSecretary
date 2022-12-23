@@ -31,10 +31,10 @@ class Server(connectors.Server[connectors.Content], smtplib.SMTP_SSL):
         # Pass on the ID of the email being replied to, and previous emails in the thread if any.
         # This is to support email threads.
         if reply_to:
-            if "Message-ID" in reply_to.headers:
+            if reply_to.has_header("Message-ID"):
                 self.msg["In-Reply-To"] = reply_to["Message-ID"]
 
-                if "References" in reply_to.headers:
+                if reply_to.has_header("References"):
                     self.msg["References"] = reply_to["References"]
 
                 if "References" in self.msg:

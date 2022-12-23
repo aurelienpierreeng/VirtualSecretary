@@ -14,10 +14,10 @@ from email import policy
 from datetime import datetime, timedelta, timezone
 
 # IPv4 and IPv6
-ip_pattern = re.compile(r"from.*?((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))")
-domain_pattern = re.compile(r"from ((?:[A-Za-z0-9\-_]{0,61}\.)+[a-z]{2,})")
-email_pattern = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?")
-url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)")
+ip_pattern = re.compile(r"from.*?((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))", re.IGNORECASE)
+domain_pattern = re.compile(r"from ((?:[A-Za-z0-9\-_]{0,61}\.)+[a-z]{2,})", re.IGNORECASE)
+email_pattern = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?", re.IGNORECASE)
+url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", re.IGNORECASE)
 uid_pattern = re.compile(r"UID ([0-9]+)")
 flags_pattern = re.compile(r"FLAGS \((.*?)\)")
 
@@ -36,10 +36,10 @@ class EMail(connectors.Content):
 
   def parse_ips(self):
     # Get the IPs of the whole network route taken by the email
-    if "Received" in self.headers:
+    if self.has_header("Received"):
       # There will be no "Received" header for emails sent by the current mailbox
       # Exclude the most recent "Received" header because it will be our server.
-      network_route = self.msg.get_all("Received")[1:-1]
+      network_route = self.msg.get_all("received")[1:-1]
       network_route = "\n".join(network_route)
       self.ips = ip_pattern.findall(network_route)
 
@@ -57,10 +57,10 @@ class EMail(connectors.Content):
 
   def parse_domains(self):
     # Get the domains of the whole network route taken by the email
-    if "Received" in self.headers:
+    if self.has_header("Received"):
       # There will be no "Received" header for emails sent by the current mailbox
       # Exclude the most recent "Received" header because it will be our server.
-      network_route = self.msg.get_all("Received")[1:-1]
+      network_route = self.msg.get_all("received")[1:-1]
       network_route = "\n".join(network_route)
       self.domains = domain_pattern.findall(network_route)
 
@@ -83,9 +83,13 @@ class EMail(connectors.Content):
 
   @property
   def headers(self) -> list[str]:
-    # Return the currently declared headers keys (not values)
-    return self.msg.keys()
+    # Return the currently declared headers keys (not values) in lowercase.
+    # That's noticeably important for headers like "Message-ID" which can be aliased "Message-Id"
+    return [key.lower() for key in self.msg.keys()]
 
+  def has_header(self, header: str) -> bool:
+    check = header.lower() in self.headers
+    return check
 
   def get_sender(self) -> list[list, list]:
     emails = email_pattern.findall(self["From"])
@@ -111,9 +115,9 @@ class EMail(connectors.Content):
     self.urls = [item for sublist in self.urls for item in sublist]
 
 
-  def __getitem__(self, key):
+  def __getitem__(self, key: str):
     # Getting key from the class is dispatched directly to email.EmailMessage properties
-    return self.msg.get(key)
+    return self.msg.get(key.lower())
 
   xml_pattern = re.compile(r"<.*?>", re.DOTALL)
   style_pattern = re.compile(r"(<style.*?>)(.*?)(</style>)", re.DOTALL)
@@ -176,9 +180,9 @@ class EMail(connectors.Content):
     # Check if any or all of the elements in the query_list is in the email field
     # The field can by any RFC header or "Body".
     value = None
-    if field == "Body":
+    if field.lower() == "body":
       value = self.get_body() if case_sensitive else self.get_body().lower()
-    elif field in self.headers:
+    elif self.has_header(field):
       value = self[field] if case_sensitive else self[field].lower()
 
     if not value:
@@ -350,18 +354,18 @@ class EMail(connectors.Content):
   def is_mailing_list(self) -> bool:
     # This email has the typical mailing-list tags. Warning: this is not standard and not systematically used.
     # Mailing list are sent by humans to a group of other humans.
-    has_list_unsubscribe = "List-Unsubscribe" in self.headers # note that we don't check if it's a valid unsubscribe link
-    has_precedence_list = "Precedence" in self.headers and self["Precedence"] == "list"
+    has_list_unsubscribe = self.has_header("List-Unsubscribe") # note that we don't check if it's a valid unsubscribe link
+    has_precedence_list = self.has_header("Precedence") and self["Precedence"] == "list"
     return has_list_unsubscribe and has_precedence_list
 
   def is_newsletter(self) -> bool:
     # This email has the typical newsletter tags. Warning: this is not standard and not systematically used.
     # Newsletters are sent by bots to a group of humans.
-    has_list_id = "List-ID" in self.headers or "List-Id" in self.headers
-    has_precedence_bulk = "Precedence" in self.headers and self["Precedence"] == "bulk"
-    has_feedback_id = "Feedback-ID" in self.headers or "X-Feedback-ID" in self.headers
-    has_csa_complaints = "X-CSA-Complaints" in self.headers
-    has_list_unsubscribe = "List-Unsubscribe" in self.headers # note that we don't check if it's a valid unsubscribe link
+    has_list_id = self.has_header("List-ID")
+    has_precedence_bulk = self.has_header("Precedence") and self["Precedence"] == "bulk"
+    has_feedback_id = self.has_header("Feedback-ID") or self.has_header("X-Feedback-ID")
+    has_csa_complaints = self.has_header("X-CSA-Complaints")
+    has_list_unsubscribe = self.has_header("List-Unsubscribe") # note that we don't check if it's a valid unsubscribe link
     return has_list_unsubscribe and (has_list_id or has_precedence_bulk or has_feedback_id or has_csa_complaints)
 
   def has_tag(self, tag:str) -> bool:
@@ -435,7 +439,7 @@ class EMail(connectors.Content):
     # forge a fake Google DKIM signature hoping to past by the spam filters
     # that only check for the header presence without actually validating it.
 
-    if "DKIM-Signature" in self.headers:
+    if self.has_header("DKIM-Signature"):
       dkim_score = -1
       dk = dkim.DKIM(message=self.raw)
       signatures = self.msg.get_all("DKIM-Signature")
@@ -534,11 +538,11 @@ Attachments : %s
     # If no received header (for emails sent from the current mailbox),
     # find other fields supposed to be unique.
     hashable = ""
-    if "Received" in self.headers:
+    if self.has_header("Received"):
       hashable = self["Received"]
-    elif "Message-ID" in self.headers:
+    elif self.has_header("Message-ID"):
       hashable = self["Message-ID"]
-    elif "From" in self.headers and "To" in self.headers:
+    elif self.has_header("From") and self.has_header("To"):
       # Last chance for malformed emails. "Message-ID" is technically not mandatory,
       # but it has become de-facto standard to thread emails.
       hashable = self.date.strftime("%d/%m/%Y %H:%M:%S") + self["From"] + self["To"]
@@ -561,7 +565,7 @@ Attachments : %s
     # aka the whole email thread in wich the current email belongs.
     # The list is sorted from newest to oldest.
     thread = []
-    if "References" in self.headers:
+    if self.has_header("References"):
       for id in self["References"].split(" "):
         # Query all emails having Message-ID header matching an item in references
         data = [b'']
@@ -597,7 +601,7 @@ Attachments : %s
     # Fetch the email being replied to by the current email.
     replied = None
 
-    if "In-Reply-To" in self.headers:
+    if self.has_header("In-Reply-To"):
       id = self["In-Reply-To"]
       data = [b'']
       i = 0
@@ -632,7 +636,7 @@ Attachments : %s
 
     self.date = None
 
-    if "Date" in self.headers and self["Date"]:
+    if self.has_header("Date") and self["Date"]:
       try:
         # Try the date of sending
         self.date = email.utils.parsedate_to_datetime(self["Date"])
@@ -655,7 +659,7 @@ Attachments : %s
           year = int(date_us.groups()[0])
           self.date = datetime(year, month, day, tzinfo=timezone.utc)
 
-    if not self.date and "Delivery-date" in self.headers and self["Delivery-date"]:
+    if not self.date and self.has_header("Delivery-date") and self["Delivery-date"]:
         # If we don't find one, use the incoming date. This one should be put by our server.
         try:
           self.date = email.utils.parsedate_to_datetime(self["Delivery-date"])
