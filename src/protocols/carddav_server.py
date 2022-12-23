@@ -58,13 +58,23 @@ class Server(connectors.Server[Card]):
 
 
     def search_by_email(self, query:str):
-        # Find the contact whose email matches the query
+        # Find all the contact vcards whose email matches the query
+        result = []
         for elem in self.objects:
           for email in elem["email"]:
             if email == query:
-              return elem
+              result.append(elem)
 
-        return None
+        return None if len(result) == 0 else result
+
+    def get_emails_list(self):
+        # Get a flat list of all emails in contacts
+        # This is to be used mostly by spam filters to check wether "email" is in the list or not
+        # but efficiently.
+        self.emails = []
+        for elem in self.objects:
+          for email in elem["email"]:
+            self.emails.append(email)
 
 
     def init_connection(self, params: dict):
@@ -105,6 +115,7 @@ class Server(connectors.Server[Card]):
 
           self.connection_inited = True
           self.get_objects()
+          self.get_emails_list()
 
 
     def close_connection(self):
