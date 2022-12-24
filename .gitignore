@@ -129,5 +129,5 @@ dmypy.json
 .pyre/
 
 # Test config
-config/
+config*/
 workspace.code-workspace

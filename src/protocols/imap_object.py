@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 # IPv4 and IPv6
 ip_pattern = re.compile(r"from.*?((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))", re.IGNORECASE)
-domain_pattern = re.compile(r"from ((?:[A-Za-z0-9\-_]{0,61}\.)+[a-z]{2,})", re.IGNORECASE)
+domain_pattern = re.compile(r"from ((?:[a-z0-9\-_]{0,61}\.)+[a-z]{2,})", re.IGNORECASE)
 email_pattern = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?", re.IGNORECASE)
 url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", re.IGNORECASE)
 uid_pattern = re.compile(r"UID ([0-9]+)")
@@ -34,47 +34,85 @@ class EMail(connectors.Content):
   def parse_flags(self, raw):
     self.flags = flags_pattern.search(raw).groups()[0]
 
-  def parse_ips(self):
+  def __get_domain(self, string: str) -> str:
+    # Find the DNS domain in the form `something.com`
+    domain_pattern = r"^((?:[a-z0-9\-_]{0,61}\.)+[a-z]{2,})"
+    result = re.findall(domain_pattern, string, re.IGNORECASE)
+
+    if len(result) == 0:
+      # Nothing found.
+      if "localhost" in string:
+        # Check if it's localhost
+        result = ["localhost"]
+      else:
+        # Maybe the domain is referenced directly by IPv4 or IPv6
+        ip_pattern = r"^\[((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4})).*?\]"
+        result = re.findall(ip_pattern, string, re.IGNORECASE)
+
+        # Detect local IPs and rename them localhost
+        result = [r if (not (r.startswith("127.") or r.startswith("192.") or r.startswith("fe80::"))) else "localhost" for r in result]
+
+    return result
+
+  def __get_ip(self, string: str) -> str:
+    ip_pattern = r"\(.*?\[((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))\].*?\)"
+    result = re.findall(ip_pattern, string, re.IGNORECASE)
+
+    # Remove local IPs from results
+    return [r for r in result if not (r.startswith("127.") or r.startswith("192.") or r.startswith("fe80::"))]
+
+  def __get_envelope(self, string: str) ->str:
+    envelope_pattern = r"\(.*?envelope-from <(.+?@.+?)>\)"
+    result = re.findall(envelope_pattern, string, re.IGNORECASE)
+    return result
+
+  def __sanitize_domains(self, route: dict) -> dict:
+    ip_pattern = r"(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4})"
+
+    if len(route["from"]["domain"]) > 0 and len(route["from"]["ip"]) == 0:
+      if re.match(ip_pattern, route["from"]["domain"][0]):
+        # The domain is actually declared by its IP, we need to switch fields
+        route["from"]["ip"] = route["from"]["domain"]
+        route["from"]["domain"] = []
+
+    return route
+
+  def parse_network_route(self):
     # Get the IPs of the whole network route taken by the email
-    if self.has_header("Received"):
+    self.route = []
+
+    if self.has_header("received"):
       # There will be no "Received" header for emails sent by the current mailbox
       # Exclude the most recent "Received" header because it will be our server.
-      network_route = self.msg.get_all("received")[1:-1]
-      network_route = "\n".join(network_route)
-      self.ips = ip_pattern.findall(network_route)
+      network_route = self.msg.get_all("received")
 
-      # Remove localhost and local network IPs
-      self.ips = [ip for ip in self.ips if not (ip.startswith("127.") or ip.startswith("fe80::") or ip.startswith("192."))]
-    else:
-      self.ips = []
+      for step in network_route:
+        # Clean up space characters
+        step = step.replace("\t", "\n")
 
-  @property
-  def ip(self):
-    # Lazily parse IPs in email only when/if the property is used
-    if self.ips == [] or not self.ips:
-      self.parse_ips()
-    return self.ips
+        # Split sender, receipient and options
+        parts = {
+          "for": "".join(re.findall(r"^for (.+?);", step, re.MULTILINE)),
+          "from": "".join(re.findall(r"^from (.+?)\s(?:for|with|by)", step, re.MULTILINE)),
+          "by": "".join(re.findall(r"^by (.+?)\s(?:from|with|for)", step, re.MULTILINE)),
+        }
 
-  def parse_domains(self):
-    # Get the domains of the whole network route taken by the email
-    if self.has_header("Received"):
-      # There will be no "Received" header for emails sent by the current mailbox
-      # Exclude the most recent "Received" header because it will be our server.
-      network_route = self.msg.get_all("received")[1:-1]
-      network_route = "\n".join(network_route)
-      self.domains = domain_pattern.findall(network_route)
+        step_dict = {
+          "from": {
+            "ip": self.__get_ip(parts["from"]),
+            "domain":  self.__get_domain(parts["from"])
+            },
+          "by": {
+            "ip": self.__get_ip(parts["by"]),
+            "domain": self.__get_domain(parts["by"])
+            },
+          "envelope-from" : self.__get_envelope(step)
+        }
 
-       # Remove localhost
-      self.domains = [ domain for domain in self.domains if "localhost" not in domain ]
-    else:
-      self.domains = []
+        step_dict = self.__sanitize_domains(step_dict)
+        self.route.append(step_dict)
 
-  @property
-  def domain(self):
-    # Lazily parse IPs in email only when/if the property is used
-    if self.domains == [] or not self.domains:
-      self.parse_domains()
-    return self.domains
+      self.route.reverse()
 
   @property
   def attachments(self) -> list[str]:
@@ -389,35 +427,43 @@ class EMail(connectors.Content):
                "fail": -2       # explicit statement that the client is not authorized to use the domain in the given identity.
               }
 
-    names, addresses = self.get_sender()
-
-    # Convert all DNS domains from the email route to IPs
-    # Useful for emails sent on the local network where no IP is written in headers
-    ips = []
-    for domain in self.domain:
-      try:
-        for x in resolver.resolve(domain, 'A'):
-          ips.append(x.to_text())
-      except:
-        pass
-
-    # Append the list of IPs mentionned explicitely in headers
-    # Reverse it so the bottom "Received" are treated first since they are the most probably
-    # linked to SPF records and each entry starts a network request.
-    ips += self.ip
-    ips.reverse()
-
-    # Check all addresses for all IPs in the email route until we find a match.
-    # We consider it a fail only on explicite fail, e.g. the SPF record explicitely prohibits
-    # all found IPs to send emails on behalf of the address used.
-    # Non-existing or wrongly-set SPF records are treated as a success.
     spf_score = -2
-    for email in addresses:
-      email_domain = email.split("@")[1]
-      for ip in set(ips):
-        try:
-          for x in resolver.resolve(email_domain, 'MX'):
-            spf_status = spf.check2(i=ip, s=email, h=x.to_text())[0]
+    for step in self.route:
+      # Get the sender email from the SMTP envelope
+      if len(step["envelope-from"]) > 0:
+        email_address = step["envelope-from"][0]
+      else:
+        # If no envelope, then this step is probably done an a local network
+        continue
+
+      email_domain = email_address.split("@")[1]
+
+      # Build the list of mail servers from the DNS record of the sender domain
+      mx = []
+      try:
+        mx = resolver.resolve(email_domain, 'MX')
+      except:
+        # If we can't resolve an MX entry for this domain, abort this loop iteration
+        continue
+
+      # Build the list of IPs to test, starting with explicitely mentionned IPs
+      ips = step["from"]["ip"]
+
+      # Add IPs from DNS domains on top
+      for domain in step["from"]["domain"]:
+        if domain != "localhost":
+          try:
+            for x in resolver.resolve(domain, 'A'):
+              ips.append(x.to_text())
+          except:
+            pass
+
+      # Try each IP until we find a match
+      for x in mx:
+        # Ensure we have a set of unique IPs
+        for ip in set(ips):
+          try:
+            spf_status = spf.check2(i=ip, s=email_address, h=x.to_text())[0]
 
             # Record the highest reputation score of the list of IPs
             score = scores[spf_status]
@@ -426,8 +472,8 @@ class EMail(connectors.Content):
             # If we got a success, abort immediately
             if spf_score == 2:
               return spf_score
-        except:
-          pass
+          except:
+            pass
 
     return spf_score
 
@@ -700,3 +746,6 @@ Attachments : %s
 
     # The hash uses the date defined above, so we need to create it after
     self.create_hash()
+
+    # Get the message route
+    self.parse_network_route()
