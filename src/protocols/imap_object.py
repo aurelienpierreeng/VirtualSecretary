@@ -10,6 +10,7 @@ import dkim
 from dns import resolver
 
 from email import policy
+from email.utils import parseaddr
 
 from datetime import datetime, timedelta, timezone
 
@@ -422,21 +423,31 @@ class EMail(connectors.Content):
                "neutral": 1,    # the ADMD has explicitly stated that it is not asserting whether the IP address is authorized.
                "pass":    2,    # explicit statement that the client is authorized to inject mail with the given identity.
                "temperror":  0, # the SPF verifier encountered a transient (generally DNS) error while performing the check.
-               "permerror": -1, # the domain's published records could not be correctly interpreted.
+               "permerror":  0, # the domain's published records could not be correctly interpreted.
                "softfail":  -1, # weak statement by the publishing ADMD that the host is probably not authorized.
                "fail": -2       # explicit statement that the client is not authorized to use the domain in the given identity.
               }
 
     spf_score = -2
-    for step in self.route:
-      # Get the sender email from the SMTP envelope
-      if len(step["envelope-from"]) > 0:
-        email_address = step["envelope-from"][0]
-      else:
-        # If no envelope, then this step is probably done an a local network
-        continue
+    fast_fail = False
 
-      email_domain = email_address.split("@")[1]
+    if self.has_header("Return-Path"):
+      name, email_address = parseaddr(self["Return-Path"])
+
+      if email_address:
+        email_domain = email_address.split("@")[1]
+      else:
+        fast_fail = True
+    else:
+      fast_fail = True
+
+    if fast_fail:
+      # No Return-Path or invalid address in there means no SPF. Fail immediately.
+      # Typically indicates spoofing.
+      return spf_score
+
+    for step in self.route:
+      # Get the sender email from the Return-Path
 
       # Build the list of mail servers from the DNS record of the sender domain
       mx = []
@@ -480,8 +491,9 @@ class EMail(connectors.Content):
   def dkim_pass(self):
     # Return a reputation score :
     #  0 if no DKIM signature
-    #  1 if the DKIM signature is valid
-    # -1 if the DKIM signature is invalid. That's because many spammers
+    #  1 if the DKIM signature is valid but outdated
+    #  2 if the DKIM signature is valid and up-to-date
+    # -2 if the DKIM signature is invalid. That's because many spammers
     # forge a fake Google DKIM signature hoping to past by the spam filters
     # that only check for the header presence without actually validating it.
 
@@ -494,29 +506,67 @@ class EMail(connectors.Content):
         # transits through several servers. We need to check them all.
         try:
           output = dk.verify(i)
-        except:
+          # print("DKIM success on %i-th element" % i)
+        except Exception as e:
           # Invalid encoding or something happened
-          pass
-        else:
-          if output and dkim_score < 1:
-            # Valid DKIM signature - Abort now
+          # print("DKIM verify failed : ", type(e).__name__, e)
+
+          if ("value is past" in str(e)) and (dkim_score < 1):
+            # The DKIM signature is valid but expired. Don't penalize users
+            # because their IT guys sleep at their desk.
+            # TODO: check if the expiration timestamp of the DKIM signature is more recent
+            # than the message sending date, and treat that as a success.
             dkim_score = 1
+        else:
+          if output and dkim_score < 2:
+            # Valid DKIM signature - Abort now
+            dkim_score = 2
             return dkim_score
     else:
       dkim_score = 0
 
     return dkim_score
 
+  def arc_pass(self):
+    # Return a reputation score :
+    #  0 if no ARC signature
+    #  2 if the ARC signature is valid
+    # -2 if the ARC signature is invalid. That's because many spammers
+    # forge a fake Google ARC signature hoping to past by the spam filters
+    # that only check for the header presence without actually validating it.
+
+    if self.has_header("ARC-Message-Signature") and \
+        self.has_header("ARC-Seal") and \
+          self.has_header("ARC-Authentication-Results"):
+      arc_score = -2
+
+      try:
+        cv, results, comment = dkim.arc_verify(self.raw)
+      except Exception as e:
+        # Invalid encoding or something happened
+        # print("ARC verify failed : ", type(e).__name__, e)
+        pass
+      else:
+        if comment == "success" and arc_score < 2:
+          # Valid ARC signature - Abort now
+          arc_score = 2
+          return arc_score
+    else:
+      arc_score = 0
+
+    return arc_score
+
   def authenticity_score(self) -> int:
     # Returns :
     # == 0 : neutral, no explicit authentification is defined on DNS or no rule could be found
-    #  > 0 : expliticitely authenticated
-    # == 3 : maximal authenticity (valid SPF and valid DKIM)
+    #  > 0 : explicitly authenticated
+    # == 6 : maximal authenticity (valid SPF and valid DKIM)
     #  < 0 : spoofed, either or both SPF and DKIM explicitely failed
     spf_score = int(self.spf_pass())
     dkim_score = int(self.dkim_pass())
-    total = spf_score + dkim_score
-    print(self["From"], spf_score, "+", dkim_score, "=", total)
+    arc_score = int(self.arc_pass())
+    total = spf_score + dkim_score + arc_score
+    print(self["From"], arc_score, "+", spf_score, "+", dkim_score, "=", total)
     return total
 
   def is_authentic(self) -> bool:
@@ -738,8 +788,8 @@ Attachments : %s
 
     # Decode RFC822 email body
     # No exception handling here, let it fail. Email validity should be checked at server level
-    self.msg = email.message_from_bytes(raw_message[1], policy=policy.default)
     self.raw = raw_message[1]
+    self.msg = email.message_from_bytes(self.raw, policy=policy.default)
 
     # Get "a" date for the email
     self.get_date()
