@@ -66,6 +66,7 @@ class Classifier:
       Extract features from the text.
 
       We use meta-features like date, prices, time, number that discard the actual value but retain the property.
+      That is, we don't care about the actual date, price or time, we only care that there is a date, price or time.
       For everything else, we use the actual word.
 
       external_data is an optional, arbitrary set of (meta)data that can be added to the feature set
@@ -105,51 +106,51 @@ class Classifier:
       elif re.match(r"\d{2,4}(-|\/)\d{2}(-|\/)\d{2,4}", word) or \
         re.match(r"\d{1,2}(th|nd|st)", word):
         # Record dates format - we don't need to know which date
-        self.update_dict(features, 'contains(DATE)')
+        self.update_dict(features, 'DATE')
 
       elif re.match(r"\d{1,2}:\d{2}", word) or re.match(r"\d{1,2}(am|pm)", word):
         # Record time/hour format - we don't need to know what time
-        self.update_dict(features, 'contains(TIME)')
+        self.update_dict(features, 'TIME')
 
-      elif re.match(r"(CAD|USD|EUR|€|\$|£)\s?(\d{1,}(?:[.,]*\d{3})*(?:[.,]*\d*))|(\d{1,3}(?:[.,]*\d*)*(?:[.,]*\d*)?)\s?(USD|EUR|€|\$|£|CAD)",
-                      word):
+      elif re.match(r"(CAD|USD|EUR|€|\$|£)", word):
         # Record price - we don't need to know which one
-        self.update_dict(features, 'contains(PRICE)')
+        # Note that the word tokenizer will split numbers and monetary units, so no need to regex digits + unit
+        self.update_dict(features, 'MONEY')
 
       elif re.match(r"^\d+$", word):
         # Discard numbers, just record that we have a number
-        self.update_dict(features, 'contains(NUMBER)')
+        self.update_dict(features, 'NUMBER')
 
       elif re.match(r"\d", word):
         # We have a mix of digits and something else. Weird stuff, count it as digit.
-        self.update_dict(features, 'contains(DIGIT)')
+        self.update_dict(features, 'DIGIT')
 
       elif re.match(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", word):
         # Contains url - we don't need to know which site
-        self.update_dict(features, 'contains(URL)')
+        self.update_dict(features, 'URL')
 
       elif re.match(r"\.{2,}", word):
         # Teenagers need to calm the fuck down, ellipses need no more than three dots
-        self.update_dict(features, 'contains(...)')
+        self.update_dict(features, '...')
 
       elif re.match(r"-{1,}", word):
         # Same with dashes
-        self.update_dict(features, 'contains(-)')
+        self.update_dict(features, '-')
 
       elif re.match(r"\?{1,}", word):
         # Same with question marks
-        self.update_dict(features, 'contains(?)')
+        self.update_dict(features, '?')
 
       elif word in dates[language]:
         # Record textual dates - we don't need to know which date
-        self.update_dict(features, 'contains(DATE)')
+        self.update_dict(features, 'DATE')
 
       else:
-        self.update_dict(features, 'contains({})'.format(word))
+        self.update_dict(features, '{}'.format(word))
 
     if external_data:
       for elem in external_data:
-        features["hasproperty({})".format(elem)] = 1
+        features["{}".format(elem)] = 1
 
     return features
 
@@ -176,14 +177,7 @@ class Classifier:
       print("retained features: ", len(top_tokens))
 
       # Rebuild the featuresets with only the most common features
-      new_featureset = []
-      for entry in self.set:
-        features = dict()
-        for key in entry[0]:
-          if key in top_tokens:
-            features[key] = entry[0][key]
-
-        new_featureset.append((features, entry[1]))
+      new_featureset = [(dict([(key, entry[0][key]) for key in entry[0] if key in top_tokens]), entry[1]) for entry in self.set]
 
       if validate:
         size = int(len(new_featureset) * 0.05)
@@ -197,19 +191,6 @@ class Classifier:
       if validate:
         print("accuracy against train set:", nltk.classify.accuracy(self.model, train_set))
         print("accuracy against test set:", nltk.classify.accuracy(self.model, test_set))
-
-      errors = 0
-      for sample in self.set:
-        guess = self.model.classify(sample[0])
-        if guess != sample[1]:
-          errors += 1
-          # print("\nidentified :", guess, "is :", sample[1])
-          text = []
-          for key in sample[0].keys():
-            text.append(re.match(r"contains\((.*)\)", key).groups()[0])
-          # print("for text :", "\t".join(text))
-
-      print("total misclassifications:", errors)
 
       # Save the model to a reusable object
       joblib.dump(self.model, self.path)
@@ -232,8 +213,8 @@ class Classifier:
     # This returns a weird distribution of probabilities for each label that is not quite a dict
     proba_distros = self.model.prob_classify_many(items)
 
-    # Build the list of dictionnaries label: probability
+    # Build the list of dictionnaries like `label: probability`
     output = [dict([(i, distro.prob(i)) for i in distro.samples()]) for distro in proba_distros]
 
-    # Finally, return the max probability with the associated label for each elem
+    # Finally, return label and probability only for the max proba of each element
     return [(max(item, key=item.get), max(item.values())) for item in output]
