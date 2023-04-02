@@ -156,7 +156,9 @@ class EMail(connectors.Content):
 
   def __getitem__(self, key: str):
     # Getting key from the class is dispatched directly to email.EmailMessage properties
-    return self.msg.get(key.lower())
+    # Return empty string instead of None object for direct concatenation
+    value = self.msg.get(key.lower())
+    return value if value else ""
 
   xml_pattern = re.compile(r"<.*?>", re.DOTALL)
   style_pattern = re.compile(r"(<style.*?>)(.*?)(</style>)", re.DOTALL)
