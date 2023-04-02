@@ -17,6 +17,7 @@ the user-defined functions.
 from __future__ import annotations
 import typing
 import inspect
+import nlp
 from abc import ABC, abstractmethod
 
 
@@ -71,3 +72,9 @@ class Server(ABC, typing.Generic[_ContentType]):
 
     # pass on manager
     self.secretary = secretary
+
+    # pass on nlp
+    self.nlp = nlp
+
+    # Timestamp of the last successful connection. This is to manage server timeouts
+    self.connection_timestamp = 0
