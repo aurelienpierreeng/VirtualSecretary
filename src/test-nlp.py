@@ -3,12 +3,19 @@ from nlp import *
 # Build the training set of Data
 nltk.download('nps_chat')
 training_set = [Data(post.text, post.get('class')) for post in nltk.corpus.nps_chat.xml_posts()]
-#own_set = [(self.dialogue_act_features(post.text), post.label) for post in english_training.training_set]
+embedding_set = [post.text for post in nltk.corpus.nps_chat.xml_posts()]
 
 # Build the model
-model = Classifier(training_set, 'sentences_classifier.joblib', True)
+model = Classifier(training_set, embedding_set, 'sentences_classifier.joblib', True)
+
+# Test word2vec
+print(model.word2vec.wv.most_similar("free"))
 
 # Classify test stuff
-print(model.classify("Do you have time to meet at 5pm ?"))
-print(model.classify_many(["Come with me !", "Nope", "Well, fuck", "What do you think ?"]))
-print(model.prob_classify_many(["Come with me !", "Nope", "Well, fuck", "What do you thing ?"]))
+l = ["Do you have time to meet at 5 pm ?", "Come with me !", "Nope", "Well, fuck", "What do you think ?"]
+
+for item in l:
+  print(model.classify(item))
+
+print(model.classify_many(l))
+print(model.prob_classify_many(l))
