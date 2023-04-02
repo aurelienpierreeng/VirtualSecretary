@@ -1,0 +1,1 @@
+::: virtualsecretary.secretary.Secretary
