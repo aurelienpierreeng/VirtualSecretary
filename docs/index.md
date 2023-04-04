@@ -1,4 +1,4 @@
-# Welcome to the Virtual Secretary Documentation !
+# Home
 
 ## Presentation
 
@@ -7,6 +7,8 @@ The Virtual Secretary is a Python framework that provides connectors to your ema
 It aims at making your office life less stressful, by pre-filtering all the inputs you need to manage to sort the important/urgent information out of the notifications and other less important information that you can read later. To pre-filter inputs, it relies on cross-checking information between different sources accessible through the connectors.
 
 The framework provides an high-level Python API allowing you to efficiently write simple and advanced email filters, unleashing the full power of the Python programming language, along with its powerful ecosystem of packages for data mining, machine learning, regular expression search, etc.
+
+The Virtual Secretary is standalone: it doesn't need any intermediate piece of software, but connects directly to servers.
 
 ## Features
 

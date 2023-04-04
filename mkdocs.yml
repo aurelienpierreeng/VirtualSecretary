@@ -1,9 +1,22 @@
 site_name: Virtual Secretary Documentation
 
+repo_url: https://github.com/aurelienpierreeng/VirtualSecretary
+repo_name: aurelienpierreeng/VirtualSecretary
+
 theme:
   name: material
+  features:
+    - content.code.copy
+    - navigation.instant
+    - navigation.tabs
+    - navigation.top
+    - navigation.sections
+  palette:
+    primary: pink
+
 
 markdown_extensions:
+  - smarty
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -13,21 +26,53 @@ markdown_extensions:
       anchor_linenums: true
       line_spans: __span
       pygments_lang_class: true
+  - pymdownx.critic
   - pymdownx.inlinehilite
   - pymdownx.snippets
   - pymdownx.superfences
+  - pymdownx.caret
+  - pymdownx.mark
+  - pymdownx.tilde
+  - toc:
+      permalink: "¤"
+  - admonition
+  - callouts:
+      strip_period: no
+  - footnotes
+  - pymdownx.emoji
+  - pymdownx.magiclink
+  - pymdownx.snippets:
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist
 
 plugins:
 - search
 - autorefs
+- offline
 - mkdocstrings:
     enabled: !ENV [ENABLE_MKDOCSTRINGS, true]
     custom_templates: templates
     default_handler: python
+    enable_inventory: true
     handlers:
       python:
-        options:
-          show_source: true
-          show_root_heading: true
+        paths: [src]
         import:
         - https://docs.python.org/3/objects.inv
+        options:
+          show_root_heading: true
+          docstring_options:
+            ignore_init_summary: no
+          merge_init_into_class: yes
+          show_signature: yes
+          show_signature_annotations: yes
+          show_if_no_docstring: no
+          separate_signature: yes
+          docstring_section_style: list
+          show_source: no
+          show_category_heading: no
+          show_submodules: yes
+          members_order: alphabetical

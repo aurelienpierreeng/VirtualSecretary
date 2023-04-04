@@ -1,1 +1,1 @@
-::: virtualsecretary.secretary.Secretary
+::: secretary.Secretary
