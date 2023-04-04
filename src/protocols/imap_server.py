@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import imaplib
 import email
 import utils
@@ -89,7 +91,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def get_imap_folders(self):
-        """List all inbox subfolders as plain text, to be reused by filter definitions"""
+        """List all inbox subfolders as plain text, to be reused by filter definitions. Update the [Server.folders][protocols.imap_server.Server.folders] list."""
 
         mail_list = self.list()
         self.folders = []
@@ -135,7 +137,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         """Get an arbitrary email by its UID. If no mailbox is specified,
         use the one defined when we got objects in `self.set_objects()`.
 
-        If a mailbox is specified, we select it temporarilly and we restore the original mailbox used to get objects.
+        If a mailbox is specified, we select it temporarilly and we restore the original mailbox used to get objects. If no mailbox is selected, we use the previously-selected one, typically in [Server.get_objects][protocols.imap_server.Server.get_objects].
 
         Arguments:
             uid (str): the unique ID of the email in the mailbox. Be aware that this ID is unique only in the scope of one mailbox (aka IMAP (sub)folder) because it is defined as the positional order of reception of each email in the mailbox.
@@ -159,7 +161,13 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def get_objects(self, mailbox: str, n_messages=-1):
-        # List the n-th last emails in mailbox
+        """Get the n last emails in a mailbox.
+
+        Arguments:
+            mailbox (str): the full path of the mailbox. It will be sanitized for folder/subfolder separator and actual `INBOX` name internally.
+            n_messages (int): number of messages to fetch, starting with the most recent. If `-1`, the preference set in `settings.ini` will be used. Any other value will set it temporarily.
+
+        """
         if not self.connection_inited:
             print("We do not have an active IMAP connection. Ensure your IMAP credentials are defined in `settings.ini`")
             return
@@ -266,15 +274,15 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def run_filters(self, filter, action, runs=1):
-        # Run the function `filter` and execute the function `action` if the filtering condition is met
-        # * `filter` needs to return a boolean encoding the success of the filter.
-        # * `action` needs to return a list where the [0] element contains "OK" if the operation succeeded,
-        #    and the [1] element is user-defined stuff.
-        # * `filter` and `action` take an `mailserver.EMail` instance as input
-        # * `runs` defines how many times the emails need to be processed. -1 means no limit.
-        # * `filter_file` is the full path to the filter Python script
+        """Run the function `filter` and execute the function `action` if the filtering condition is met
 
-        if len(self.objects) == 0:
+        Arguments:
+            filter (callable): function performing checking arbitrary conditions on emails, returning `True` if the action should be performed. It will get an [EMail][protocols.imap_object.EMail] object as argument.
+            action (callable): function performing the actual action. It will get an [EMail][protocols.imap_object.EMail] object as argument.
+            runs (int): how many times a filter should run at most on each email. `-1` means no limit.
+
+        """
+        if not self.objects:
             # No queue
             return
 
@@ -309,10 +317,6 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         self.__init_log_dict(log)
 
-        # Avoid getting logged out by time-outs
-        self.reinit_connection()
-        self.select(self.mailbox)
-
         ts = time.time()
 
         for email in self.objects:
@@ -336,6 +340,8 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             if filter_on and filter:
                 # User wrote good filters.
                 self.std_out = ["OK", ]
+                self.reinit_connection()
+
                 try:
                     filter_on = filter(email)
                     # print("Filter successful on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
@@ -352,9 +358,13 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 # The action should update self.std_out internally. If not, init here as a success.
                 # Success and errors matter only for email write operations
                 self.std_out = ["OK", ]
+                self.reinit_connection()
+
                 success = False
                 try:
+                    # self.std_out =
                     action(email)
+                    # TODO: make all actions return ["OK", etc.]
 
                     if self.std_out[0] == "OK":
                         # Log success
@@ -375,10 +385,9 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 # No action run but we still store email ID in DB
                 self.__update_log_dict(email, log, "processed", enable_logging, action_run=False)
 
+
         # Actually delete with IMAP the emails marked with the tag `\DELETED`
         # We only need to run it once per email loop/mailbox.
-        self.reinit_connection()
-        self.select(self.mailbox)
         self.expunge()
 
         # Close the current mailbox.
@@ -398,6 +407,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
     def count(self, method):
         # Count the number of messages matching a criterion defined in the EMail.method()
         # Criteria will typically the presence of some flags
+        # TODO: test it ?
         number = 0
         for email in self.objects:
             func = getattr(email, method)
@@ -408,7 +418,22 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def init_connection(self, params: dict):
-        # High-level method to login to a server in one shot
+        """High-level method to login to a server in one shot. The parameters are passed by the [secretary.Secretary.load_connectors][] caller.
+
+        Arguments:
+            params (dict): the dictionnary of mailserver credentials, extracted from the `settings.ini` file by [configparser.ConfigParser][].
+
+        Examples:
+            Mandatory content of the `settings.ini` file to declare IMAP connection credentials:
+
+            ```ini
+            [imap]
+                user = me@server.com
+                password = xyz
+                server = mail.server.com
+                entries = 20
+            ```
+        """
         self.n_messages = int(params["entries"])
         self.server = params["server"]
         self.user = params["user"]
@@ -424,13 +449,27 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         self.connection_inited = True
 
 
+    def probe_connection(self):
+        """Probe the connection to see if it's still open"""
+        try:
+            self.std_out = self.noop()
+            return self.std_out[0] == "OK"
+        except:
+            return False
+
+
     def reinit_connection(self):
-        # Restart the IMAP connection using previous parameters, to
-        # prevent deconnections from time-outs
+        """Restart the IMAP connection using previous parameters, to prevent deconnections from time-outs"""
+        if self.probe_connection():
+            # We still have an open connection, nothing to reinit
+            return
+
+        # No connection open, need to (re)start one
         try:
             imaplib.IMAP4_SSL.__init__(self, host=self.server, port=self.port)
         except:
             print("[IMAP] We can't reach the server %s. Check your network connection." % self.server)
+            return
 
         try:
             self.std_out = self.login(self.user, self.password)
@@ -440,10 +479,16 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         except:
             print("We can't login to %s with username %s. Check your credentials" % (
                 self.server, self.user))
+            return
+
+        # Need to re-select the mailbox if any
+        if self.mailbox:
+            self.select(self.mailbox)
 
 
     def close_connection(self):
-        # High-level method to logout from a server
+        """High-level method to logout from a server"""
+
         self.logout()
         self.connection_inited = False
 
@@ -452,6 +497,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         Calls [Server.create][protocols.imap_server.Server.create] at each recursivity level, so IMAP folder names are fully sanitized.
         """
+
         path = []
         for level in self.split_subfolder_path(folder):
             path.append(level)
@@ -485,13 +531,16 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         """
         return super().create(self.encode_imap_folder(mailbox))
 
-    def append(self, mailbox: str, flags: str, email: email.message.EmailMessage):
+    def append(self, mailbox: str, flags: str, email: email.message.EmailMessage) -> str:
         """Add an arbitrary email to the specified mailbox. The email doesn't need to have been actually sent, it can be generated programmatically or be a copy of a sent email.
 
         Arguments:
             mailbox (str): the name of the target mailbox (folder or subfolder).
             flags (str): IMAP flags, standard (like `'(\\Seen)'` to mark as read, or `'(\\Flagged)'` to mark as important) or custom (can be any string not starting with `\`).
             email (email.message.EmailMessage): a proper `EmailMessage` object with initialized content, ready to send.
+
+        Returns:
+            status (str)
         """
         self.reinit_connection()
         self.create_folder(mailbox)
@@ -501,14 +550,16 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         date = imaplib.Time2Internaldate(date)
         return super().append(self.encode_imap_folder(mailbox), flags, date, email.as_bytes())
 
-    def __init__(self, logfile, secretary: 'secretary.Secretary'):
-
+    def __init__(self, logfile, secretary):
         # Call the parent __init__()
         super(Server, self).__init__(logfile, secretary)
 
         # The separator used by the server between IMAP folders and subfolders
         # Should be either . or /
         self.separator: str = ""
+
+        self.mailbox: str = ""
+        """The currently-opened or last-opened mailbox (aka (sub)folder)."""
 
         self.folders: list[str]
         """
@@ -519,3 +570,36 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         """
         The case-sensitive name of the system top-level and default mailbox. Gmail and Dovecot comply with the standard and call it `INBOX`, but Outlook/Office365 gets creative and call it `Inbox`. This attribute is properly set for the current server and should be used for portability instead of hard-coding `"INBOX"` in filters.
         """
+
+        self.junk: str
+        """The case-sensitive name of the server spam mailbox, typically called `Junk` or `Spam`."""
+
+        self.trash: str
+        """The case-sensitive name of the server trashbin mailbox."""
+
+        self.sent: str
+        """The case-sensitive name of the server mailbox where copies of sent emails are kept. Note that some client store sent emails in the same folder as the email they reply to."""
+
+        self.archive: str
+        """The case-sensitive name of the server mailbox where old emails may be automatically archived. Not all servers use it."""
+
+        self.drafts: str
+        """The case-sensitive name of the server mailbox where emails written but not yet sent may be saved."""
+
+        self.flagged: str
+        """The case-sensitive name of the server mailbox where emails marked as important (having the standard flag `\\Flagged`) may be moved or duplicated. Not all servers use it."""
+
+        self.n_messages:int
+        """Default number of emails to retrieve (starting from the most recent). Set from the `entries` config parameter."""
+
+        self.server: str
+        """URL or IP of the mailserver. Set from the `server` config parameter."""
+
+        self.user: str
+        """Username of the mail account on the mailserver."""
+
+        self.password: str
+        """Password of the mail account on the mailserver."""
+
+        self.port: int = 993
+        """Connection port on the mailserver. Defaults to 993 (IMAP SSL)."""
