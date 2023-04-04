@@ -178,71 +178,72 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         encoded_mailbox = self.build_subfolder_name(self.split_subfolder_path(mailbox))
 
-        if encoded_mailbox in self.folders:
-            self.mailbox = encoded_mailbox
-            self.objects = []
-            messages_queue = []
-
-            # Network loop
-            ts = time.time()
-            retries = 0
-            max_retries = 5
-            has_something = True
-
-            while len(messages_queue) == 0 and retries < max_retries and has_something:
-                # Retry for as long as we didn't fetch as many messages as we have on the server
-                try:
-                    # Avoid getting logged out by time-outs
-                    self.reinit_connection()
-                    status, messages = self.select(self.mailbox)
-                    num_messages = int(messages[0])
-
-                    if (status == "OK" and num_messages == 0) or status == "NO":
-                        # There is no email in selected folder or we don't have access permission, abort
-                        print("  No email in this mailbox")
-                        has_something = False
-                        break
-
-                    self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
-                        utils.now(), mailbox, num_messages, n_messages))
-
-                    # build a coma-separated list of IDs from start to end
-                    ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
-                    ids = ",".join(ids)
-                    res, messages_queue = self.fetch(ids, "(UID FLAGS BODY.PEEK[])")
-                except:
-                    retries += 1
-
-                    # Wait some seconds before next connection attempt.
-                    # Increase the timeout in case there is a threshold on server
-                    print("  Could not get the emails from %s, will retry in %i s." % (mailbox, retries))
-                    time.sleep(retries)
-
-            # When fetching emails in bulk, a weird "41" gets inserted between each record
-            # so we need to keep one every next row.
-            cleaned_queue = []
-            i = 0
-            for message in messages_queue:
-                if i % 2 == 0:
-                    cleaned_queue.append(message)
-                i += 1
-
-            print("  - IMAP\ttook %.3f s\tto query\t%i emails from %s" %
-                  (time.time() - ts, len(cleaned_queue), mailbox))
-
-            # Process loop
-            ts = time.time()
-
-            # Append emails only if there is a message body saved as bytes.
-            # no message body means the email got deleted on server while we fetched it.
-            self.objects = [imap_object.EMail(msg, self) for msg in cleaned_queue if msg and len(msg) > 1 and msg[1] and isinstance(msg[1], bytes)]
-            print("  - Parsing\ttook %.3f s\tto parse\t%i emails" % (time.time() - ts, len(self.objects)))
-
-            self.std_out = [status, messages]
-
-        else:
+        if encoded_mailbox not in self.folders:
             self.logfile.write("%s : Impossible to get the mailbox %s : no such folder on server\n" % (
                 utils.now(), mailbox))
+            return
+
+        self.mailbox = encoded_mailbox
+        self.objects = []
+        messages_queue = []
+
+        # Network loop
+        ts = time.time()
+        retries = 0
+        has_something = True
+
+        while not messages_queue and retries < 5 and has_something:
+            # Retry for as long as we didn't fetch as many messages as we have on the server
+            try:
+                # Avoid getting logged out by time-outs
+                self.reinit_connection()
+                status, messages = self.select(self.mailbox)
+                num_messages = int(messages[0])
+
+                if (status == "OK" and num_messages == 0) or status == "NO":
+                    # There is no email in selected folder or we don't have access permission, abort
+                    print("  No email in this mailbox")
+                    has_something = False
+                    break
+
+                self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
+                    utils.now(), mailbox, num_messages, n_messages))
+
+                # build a coma-separated list of IDs from start to end
+                ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
+                ids = ",".join(ids)
+                res, messages_queue = self.fetch(ids, "(UID FLAGS BODY.PEEK[])")
+
+            except:
+                retries += 1
+
+                # Wait some seconds before next connection attempt.
+                # Increase the timeout in case there is a threshold on server
+                print("  Could not get the emails from %s, will retry in %i s." % (mailbox, retries))
+                time.sleep(retries)
+
+        # When fetching emails in bulk, a weird "41" gets inserted between each record
+        # so we need to keep one every next row.
+        cleaned_queue = []
+        i = 0
+        for message in messages_queue:
+            if i % 2 == 0:
+                cleaned_queue.append(message)
+            i += 1
+
+        print("  - IMAP\ttook %.3f s\tto query\t%i emails from %s" %
+                (time.time() - ts, len(cleaned_queue), mailbox))
+
+        # Process loop
+        ts = time.time()
+
+        # Append emails only if there is a message body saved as bytes.
+        # no message body means the email got deleted on server while we fetched it.
+        self.objects = [imap_object.EMail(msg, self) for msg in cleaned_queue if msg and len(msg) > 1 and msg[1] and isinstance(msg[1], bytes)]
+        print("  - Parsing\ttook %.3f s\tto parse\t%i emails" % (time.time() - ts, len(self.objects)))
+
+        self.std_out = [status, messages]
+
 
 
     def __init_log_dict(self, log: dict):
@@ -340,7 +341,6 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             if filter_on and filter:
                 # User wrote good filters.
                 self.std_out = ["OK", ]
-                self.reinit_connection()
 
                 try:
                     filter_on = filter(email)
@@ -348,6 +348,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 except Exception as e:
                     print("Filter failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
                     print(e)
+                    filter_on = False
 
                 if not isinstance(filter_on, bool):
                     filter_on = False
