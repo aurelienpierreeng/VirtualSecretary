@@ -23,12 +23,13 @@ import os
 
 import numpy as np
 
-
 class Data():
   def __init__(self, text: str, label: str):
-    """
-    text : the content to label, which will be vectorized
-    label : the category of the content, which will be predicted by the model
+    """Represent an item of training data
+
+    Arguments:
+      text (str): the content to label, which will be vectorized
+      label (str): the category of the content, which will be predicted by the model
     """
     self.text = text
     self.label = label

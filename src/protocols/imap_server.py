@@ -1,4 +1,5 @@
 import imaplib
+import email
 import utils
 import pickle
 import os
@@ -11,24 +12,41 @@ from email.utils import formatdate, make_msgid, parsedate_to_datetime
 import connectors
 
 class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
-    # The separator used by the server between IMAP folders and subfolders
-    # Should be either . or /
-    separator: str = ""
+    """IMAP server connector using mandatory SSL. Non-SSL connection is not implemented on purpose, because the Internet is a dangerous place and SSL only adds a little bit of safety, but it's better than going out naked.
 
+    This class inherits from the Python standard class [imaplib.IMAP4_SSL][], so all the method are available, although most of them are re-wrapped here for direct and higher-level data handling.
+    """
 
     def build_subfolder_name(self, path: list) -> str:
-        # Assemble a complete subfolder name using the separator of the server
-        # Path should be the complete list of parent folders, e.g.
-        # `path = ["INBOX", "Money", "Taxes"]` will be assembled as
-        # `INBOX.Money.Taxes` or `INBOX/Money/Taxes`, depending on server's defaults.
+        """Assemble a complete subfolder name using the separator of the server.
 
-        # Then, replace the `INBOX` marker with the actual case-sensitive inbox name
-        # This is to deal with Outlook/Office365
+        Path should be the complete list of parent folders, e.g.
+        `path = ["INBOX", "Money", "Taxes"]` will be assembled as
+        `INBOX.Money.Taxes` or `INBOX/Money/Taxes`, depending on server's defaults.
+
+        Then, replace the `INBOX` marker with the actual case-sensitive inbox name.
+        This is to deal with Outlook/Office365 discrepancies in folders name.
+
+        Arguments:
+            path (list): the tree of parents folders
+
+        Returns:
+            path (str): IMAP-encoded UTF-8 path
+        """
         return self.separator.join(path).replace("INBOX", self.inbox)
 
 
-    def split_subfolder_path(self, folder: str) -> list:
-        # Find out what kind of separator is used and split the parent folders
+    def split_subfolder_path(self, folder: str) -> list[str]:
+        """Find out what kind of separator is used on server for IMAP subfolder and split the parent folders into a list of folders.
+
+        Most servers use dots, like `INBOX.Money.Taxes`, but Outlook/Office365 uses slashes, like `INBOX/Money/Taxes`.
+
+        Arguments:
+            folder (str): IMAP folder path
+
+        Returns:
+            tree (list): list of parent folders
+        """
 
         if re.match(r".*?\..*", folder):
             # We found a dot-separated subfolder
@@ -44,10 +62,16 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def encode_imap_folder(self, folder:str) -> bytes:
-        # Ensure the subfolders are properly separated using the convention of the server
-        # and encode the names in IMAP-custom UTF-7. The result is ready for use in IMAP commands.
-        # This function allows users to define subfolders one way or the other while re-encoding
-        # them properly for the current server.
+        """Ensure the subfolders are properly separated using the actual server separator (`.` or `/`) and encode the names in IMAP-custom UTF-7, taking care of non-latin characters and enquoting strings containing whitespaces. The result is ready for direct use in IMAP server commands.
+
+        This function takes fully-formed IMAP mailbox folder pathes, like `INBOX.Money.Taxes` or `INBOX/Money/Taxes` and will replace the subfolder separators with the server separator. The main `INBOX` will also be replaced by the proper, case-sensitive, inbox name for the current server.
+
+        Arguments:
+            folder (str): IMAP folder as Python string
+
+        Returns:
+            folder (bytes): IMAP folder as IMAP-custom UTF-7 bytes.
+        """
 
         # Remove spaces and quotes around folder name, if any
         folder_str = folder.strip("' \"")
@@ -65,7 +89,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def get_imap_folders(self):
-        # List inbox subfolders as plain text, to be reused by filter definitions
+        """List all inbox subfolders as plain text, to be reused by filter definitions"""
 
         mail_list = self.list()
         self.folders = []
@@ -108,10 +132,17 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def get_email(self, uid: str, mailbox=None) -> imap_object.EMail:
-        # Get an arbitrary email by UID. If no mailbox is specified,
-        # use the one defined when we got objects in `self.set_objects()`.
-        # If a mailbox is specified, we select it temporarilly and we restore the original mailbox used
-        # to get objects.
+        """Get an arbitrary email by its UID. If no mailbox is specified,
+        use the one defined when we got objects in `self.set_objects()`.
+
+        If a mailbox is specified, we select it temporarilly and we restore the original mailbox used to get objects.
+
+        Arguments:
+            uid (str): the unique ID of the email in the mailbox. Be aware that this ID is unique only in the scope of one mailbox (aka IMAP (sub)folder) because it is defined as the positional order of reception of each email in the mailbox.
+
+        Returns:
+            message (imap_object.EMail): the email object.
+        """
         if mailbox:
             self.select(mailbox)
 
@@ -417,7 +448,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         self.connection_inited = False
 
     def create_folder(self, folder:str):
-        # create the folder, recursively if needed (create parent then children)
+        """Create an IMAP (sub)folder recursively if needed (create the parent(s) if missing, then create the child).
+
+        Calls [Server.create][protocols.imap_server.Server.create] at each recursivity level, so IMAP folder names are fully sanitized.
+        """
         path = []
         for level in self.split_subfolder_path(folder):
             path.append(level)
@@ -445,9 +479,20 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         return super().subscribe(self.encode_imap_folder(mailbox))
 
     def create(self, mailbox: str):
+        """Create a new mailbox. This is a wrapper over [imaplib.IMAP4.create][] method, where `mailbox` is directly encoded to IMAP-custom UTF-7 format through [Server.encode_imap_folder][protocols.imap_server.Server.encode_imap_folder].
+
+        The direct use of this function is discouraged, see [Server.create_folder][protocols.imap_server.Server.create_folder] for a nicer method. Namely, this will error if trying to create a subfolder of a non-existing parent folder, and does not update [Server.folders][protocols.imap_server.Server.folders].
+        """
         return super().create(self.encode_imap_folder(mailbox))
 
-    def append(self, mailbox:str, flags, email):
+    def append(self, mailbox: str, flags: str, email: email.message.EmailMessage):
+        """Add an arbitrary email to the specified mailbox. The email doesn't need to have been actually sent, it can be generated programmatically or be a copy of a sent email.
+
+        Arguments:
+            mailbox (str): the name of the target mailbox (folder or subfolder).
+            flags (str): IMAP flags, standard (like `'(\\Seen)'` to mark as read, or `'(\\Flagged)'` to mark as important) or custom (can be any string not starting with `\`).
+            email (email.message.EmailMessage): a proper `EmailMessage` object with initialized content, ready to send.
+        """
         self.reinit_connection()
         self.create_folder(mailbox)
 
@@ -455,3 +500,22 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         date = parsedate_to_datetime(email["Date"])
         date = imaplib.Time2Internaldate(date)
         return super().append(self.encode_imap_folder(mailbox), flags, date, email.as_bytes())
+
+    def __init__(self, logfile, secretary: 'secretary.Secretary'):
+
+        # Call the parent __init__()
+        super(Server, self).__init__(logfile, secretary)
+
+        # The separator used by the server between IMAP folders and subfolders
+        # Should be either . or /
+        self.separator: str = ""
+
+        self.folders: list[str]
+        """
+        The list of all IMAP mailboxes (folders and subfolders) found on the current server. This attribute is auto-set when initializing a connection to a server. It gets refreshed when new folders are added programmatically at runtime.
+        """
+
+        self.inbox: str
+        """
+        The case-sensitive name of the system top-level and default mailbox. Gmail and Dovecot comply with the standard and call it `INBOX`, but Outlook/Office365 gets creative and call it `Inbox`. This attribute is properly set for the current server and should be used for portability instead of hard-coding `"INBOX"` in filters.
+        """

@@ -21,7 +21,7 @@ parser.add_argument('-s', '--single', type=str, help="path of the only config su
 
 args = parser.parse_args()
 path = os.path.abspath(args.path)
-mode = args.mode
+mode = utils.filter_mode[args.mode.upper()]
 single = args.single
 
 # Get the common filters if any

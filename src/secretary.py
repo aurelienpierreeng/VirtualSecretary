@@ -1,5 +1,6 @@
 import configparser
 import os
+import io
 import typing
 import importlib
 
@@ -9,22 +10,38 @@ import utils
 import protocols as prt
 
 class Secretary(object):
-  protocols: typing.Dict[str, connectors.Server] = { }
+  """
+  Backbone class managing the collection of available connectors.
+  It is not exposed to user-defined filters.
+  """
 
   def load_connectors(self):
+    """
+    Iterate over all connectors for which we have both an implementation and credentials in the congig file.
+    Initialize them and append them to the dictionnary [protocols][]
+    """
     for key in self.protocols:
       if key in self.config_file and key in self.protocols:
         self.protocols[key].init_connection(self.config_file[key])
 
   def close_connectors(self):
+    """
+    Iterate over all initialized connectors and close the connections.
+    Then close the logfile.
+    """
     for key in self.protocols:
       if key in self.config_file:
         self.protocols[key].close_connection()
 
     self.logfile.close()
 
-  def filters(self, filters:dict):
-    # Launch the method that processes the filter loop for this server
+  def filters(self, filters: utils.filter_bank):
+    """
+    Process the loop over `Content` objects from the implementation of [connectors.Server.run_filters][] for each filter.
+
+    Arguments:
+      filters (utils.filter_bank): iterable of available filters. See [utils.filter_bank][].
+    """
     for key in sorted(filters.keys()):
       filter = filters[key]["filter"]
       filter_path = filters[key]["path"]
@@ -44,12 +61,28 @@ class Secretary(object):
 
 
   def __init__(self, subfolder_path:str):
-    # Unpack the servers credentials
+    """
+    Load configuration from `settings.ini` file in the current folder.
+    Load all connector modules from `protocols`.
+
+    Arguments:
+      subfolder_path (str): the current folder of filters
+
+    Attributes:
+      protocols (dict of str: connectors.Server): available [connectors.Server][] implementations for server protocols. They are exposed to user filters in `globals()`.
+
+      config_file (configparser.ConfigParser): object handling the `settings.ini` content for the current config folder.
+
+      log_file (io.TextIOWrapper): object handling the main `sync.log` for the whole application, where every action on [connectors.Content][] will be logged.
+    """
+
+    self.protocols: typing.Dict[str, connectors.Server] = { }
+
     self.config_file = configparser.ConfigParser()
     self.config_file.read(os.path.join(subfolder_path, "settings.ini"))
 
     # Start the logile
-    self.logfile = open(os.path.join(subfolder_path, "sync.log"), 'a')
+    self.logfile: io.TextIOWrapper = open(os.path.join(subfolder_path, "sync.log"), 'a')
 
     # Open all servers for which we have a connector implemented
     for file in prt.__all__:

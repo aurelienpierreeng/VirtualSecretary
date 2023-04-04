@@ -1,28 +1,81 @@
+
+"""
+Logging and filter finding utilities.
+
+© 2022-2023 - Aurélien Pierre
+"""
+
 from datetime import datetime
 import os
 import re
 import errno
+
+from typing import TypedDict
+
+filter_entry = TypedDict("filter_entry", {"path": str, "filter": str, "protocol": str })
+"""Dictionnary type representating a Virtual Secretary filter
+
+Attributes:
+  path (str): absolute path of the filter path.
+  filter (str): name of the filter filter, aka name of the filter itself.
+  protocol (str): server protocol, matching the name of one of the [protocols][].
+"""
+
+filter_bank = dict[int, filter_entry]
+"""Dictionnary type of [utils.filter_entry][] elements associated with their priority in the bank.
+
+Attributes:
+  key (int): priority
+  value (filter_entry): filter data
+"""
+
+from enum import Enum
+
+class filter_mode(Enum):
+  """Available filter types"""
+
+  PROCESS = "process"
+  """Filter applying write, edit or move actions"""
+
+  LEARN = "learn"
+  """Filter applying machine-learning or read-only actions"""
 
 filter_pattern = re.compile("^([0-9]{2})-([a-z]+)-[a-zA-Z0-9\-\_]+.py$")
 learn_pattern = re.compile("^(LEARN)-([a-z]+)-[a-zA-Z0-9\-\_]+.py$")
 
 
 def now():
+  """Return current time for log lines"""
   return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def match_filter_name(file:str, mode:str):
-  if mode == "process":
+def match_filter_name(file: str, mode: filter_mode):
+  """Check if the current filter file matches the requested mode.
+
+  Arguments:
+    file (str): filter file to test
+    mode (filter_mode): filter type
+
+  Returns:
+    match (re.Match.group):
+  """
+  if mode == filter_mode.PROCESS:
     match = filter_pattern.match(file)
-  elif mode == "learn":
+  elif mode == filter_mode.LEARN:
     match = learn_pattern.match(file)
   return match
 
 
-def find_filters(path:str, filters:dict, mode:str) -> dict:
-  # Find all the filter files in directory (aka filenames matching filter name pattern)
-  # and append them to the dictionnary of filters based on their priority.
-  # If 2 similar priorities are found, the first-defined one gets precedence, the other is discarded.
+def find_filters(path: str, filters: filter_bank, mode: filter_mode) -> filter_bank:
+  """Find all the filter files in directory (aka filenames matching filter name pattern)
+     and append them to the dictionnary of filters based on their priority.
+     If 2 similar priorities are found, the first-defined one gets precedence, the other is discarded.
+
+    Arguments:
+      path (str): the folder where to find filter files
+      filters (filter_bank): the dictionnary where we will append filters found here. This dictionnary will have the integer priority of filters (order of running) set as keys. If filters with the same priority are found in the current path, former filters are overriden.
+      mode (filter_mode): the type of filter.
+  """
   local_filters = filters.copy()
 
   # Dry run only test connection and login
@@ -39,10 +92,10 @@ def find_filters(path:str, filters:dict, mode:str) -> dict:
       match = match_filter_name(file, mode)
       if match:
         # Unpack the regex matching variables
-        if mode == "process":
+        if mode == filter_mode.PROCESS:
           # Get the 2 digits prefix as the priority
           priority = int(match.groups()[0])
-        elif mode == "learn":
+        elif mode == filter_mode.LEARN:
           # No digits here
           priority += 1
 
@@ -56,14 +109,23 @@ def find_filters(path:str, filters:dict, mode:str) -> dict:
             (file, priority, old_filter))
 
         # Save filter, possibly overriding anything previously defined at same priority
-        local_filters[priority] = {"path": filter_path,
-                                   "filter": file,
-                                   "protocol": protocol }
+        local_filters[priority] = filter_entry(path=filter_path, filter=file, protocol=protocol)
 
   return local_filters
 
 
-def lock_subfolder(lockfile):
+def lock_subfolder(lockfile: str):
+  """
+  Write a `.lock` text file in the subfolder being currently processed, with the PID of the current Virtual Secretary instance.
+
+  Override the lock if it contains a PID that doesn't exist anymore on the system (Linux-only).
+
+  Arguments:
+    lockfile (str): absolute path of the target lockfile
+
+  Todo:
+    Make it work for Windows PID too.
+  """
   pid = str(os.getpid())
   abort = False
   if os.path.exists(lockfile):
@@ -103,7 +165,13 @@ def lock_subfolder(lockfile):
   return [abort, pid]
 
 
-def unlock_subfolder(lockfile):
+def unlock_subfolder(lockfile: str):
+  """
+  Remove the `.lock` file in current subfolder.
+
+  Arguments:
+    lockfile (str): absolute path of the target lockfile
+  """
   if os.path.exists(lockfile):
     delete = False
     with open(lockfile, "r") as f:
@@ -112,16 +180,6 @@ def unlock_subfolder(lockfile):
     if delete:
       os.remove(lockfile)
 
-
-"""
-Encode and decode UTF-7 string, as described in the RFC 3501
-There are variations, specific to IMAP4rev1, therefore the built-in python UTF-7 codec can't be used.
-The main difference is the shift character, used to switch from ASCII to base64 encoding context.
-This is "&" in that modified UTF-7 convention, since "+" is considered as mainly used in mailbox names.
-Full description at RFC 3501, section 5.1.3.
-
-Code from imap_tools/imap_utf7.py by ikvk under Apache 2.0 license
-"""
 
 import binascii
 from typing import Iterable, MutableSequence
@@ -140,6 +198,22 @@ def _do_b64(_in: Iterable[str], r: MutableSequence[bytes]):
 
 
 def imap_encode(value: str) -> bytes:
+    """
+    Encode Python string into IMAP-compliant UTF-7 bytes, as described in the RFC 3501.
+
+    There are variations, specific to IMAP4rev1, therefore the built-in python UTF-7 codec can't be used.
+    The main difference is the shift character, used to switch from ASCII to base64 encoding context.
+    This is "&" in that modified UTF-7 convention, since "+" is considered as mainly used in mailbox names.
+    Full description at RFC 3501, section 5.1.3.
+
+    Code from [imap_tools/imap_utf7.py](https://github.com/ikvk/imap_tools/blob/master/imap_tools/imap_utf7.py) by ikvk under Apache 2.0 license.
+
+    Arguments:
+      value (str): IMAP mailbox path as string
+
+    Returns:
+      path (bytes): IMAP-encoded path as UTF-7
+    """
     res = []
     _in = []
     for char in value:
@@ -163,6 +237,22 @@ def _modified_unbase64(value: bytearray) -> str:
 
 
 def imap_decode(value: bytes) -> str:
+    """
+    Decode IMAP-compliant UTF-7 byte into Python string, as described in the RFC 3501.
+
+    There are variations, specific to IMAP4rev1, therefore the built-in python UTF-7 codec can't be used.
+    The main difference is the shift character, used to switch from ASCII to base64 encoding context.
+    This is "&" in that modified UTF-7 convention, since "+" is considered as mainly used in mailbox names.
+    Full description at RFC 3501, section 5.1.3.
+
+    Code from [imap_tools/imap_utf7.py](https://github.com/ikvk/imap_tools/blob/master/imap_tools/imap_utf7.py) by ikvk under Apache 2.0 license.
+
+    Arguments:
+      value (bytes): IMAP-encoded path as UTF-7 modified for IMAP
+
+    Returns:
+      path (str): IMAP path encoded as Python string
+    """
     res = []
     decode_arr = bytearray()
     for char in value:

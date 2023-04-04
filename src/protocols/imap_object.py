@@ -30,7 +30,7 @@ class EMail(connectors.Content):
   ##
 
   def parse_uid(self, raw):
-    self.uid = uid_pattern.search(raw).groups()[0]
+    self.uid =  uid_pattern.search(raw).groups()[0]
 
   def parse_flags(self, raw):
     self.flags = flags_pattern.search(raw).groups()[0]
@@ -500,7 +500,7 @@ class EMail(connectors.Content):
     # that only check for the header presence without actually validating it.
 
     if self.has_header("DKIM-Signature"):
-      dkim_score = -1
+      dkim_score = -2
       dk = dkim.DKIM(message=self.raw)
       signatures = self.msg.get_all("DKIM-Signature")
       for i in range(len(signatures)):
