@@ -256,22 +256,13 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             log[self.server][self.user] = {}
 
 
-    def __update_log_dict(self, email: imap_object.EMail, log: dict, field: str, enable_logging: bool, action_run=True):
-        if(enable_logging and action_run):
-            try:
-                # Update existing log entry for the current uid
-                log[self.server][self.user][email.hash][field] += 1
-            except:
-                # Create a new log entry for the current uid
-                log[self.server][self.user][email.hash] = {field: 1}
-
-        if(not action_run):
-            try:
-                # Update existing log entry for the current uid
-                log[self.server][self.user][email.hash][field] += 0
-            except:
-                # Create a new log entry for the current uid
-                log[self.server][self.user][email.hash] = {field: 0}
+    def __update_log_dict(self, email: imap_object.EMail, log: dict, field: str):
+        if field in log[self.server][self.user][email.hash]:
+            # Update existing log entry for the current uid
+            log[self.server][self.user][email.hash][field] += 1
+        else:
+            # Create a new log entry for the current uid
+            log[self.server][self.user][email.hash] = {field: 1}
 
 
     def run_filters(self, filter, action, runs=1):
@@ -302,49 +293,33 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 }
                }
 
-        # Enable logging and runs limitations if required
-        enable_logging = (runs != -1) and isinstance(runs, int)
         filter_on = True
 
         # Open the logfile if any
         if os.path.exists(filter_logfile):
             with open(filter_logfile, "rb") as f:
                 log = dict(pickle.load(f))
-                #print("DB found : %s" % f)
-                # print(log)
-        else:
-            #print("%s not found" % log)
-            pass
 
         self.__init_log_dict(log)
 
         ts = time.time()
+        filter_success = False # Did the filter run succeed, regardless of output value ?
 
         for email in self.objects:
-            # Disable the filters if the number of allowed runs is already exceeded
-            if enable_logging and email.hash in log[self.server][self.user]:
-                # We have a log entry for this hash.
-                #print("%s found in DB" % email.hash)
-                try:
-                    filter_on = (log[self.server][self.user]
-                                [email.hash]["processed"] < runs)
-                except:
-                    # We have a log entry but it's invalid. Reset it.
-                    log[self.server][self.user][email.hash]["processed"] = 0
-                    filter_on = True
+            # Do we need to run the filter on this one ?
+            if runs == -1:
+                filter_on = True
+            elif email.hash in log[self.server][self.user] and \
+                 "processed" in log[self.server][self.user][email.hash]:
+                filter_on = log[self.server][self.user][email.hash]["processed"] < runs
             else:
-                # We don't have a log entry for this hash or we don't limit runs
-                #print("%s not found in DB" % email.hash)
                 filter_on = True
 
-            # Run the actual filter
+            # Run the  filter
             if filter_on and filter:
-                # User wrote good filters.
-                self.std_out = ["OK", ]
-
                 try:
                     filter_on = filter(email)
-                    # print("Filter successful on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
+                    filter_success = True
                 except Exception as e:
                     print("Filter failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
                     print(e)
@@ -361,34 +336,24 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 self.std_out = ["OK", ]
                 self.reinit_connection()
 
-                success = False
                 try:
-                    # self.std_out =
                     action(email)
-                    # TODO: make all actions return ["OK", etc.]
-
-                    if self.std_out[0] == "OK":
-                        # Log success
-                        # print("Filter application successful on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
-                        self.__update_log_dict(email, log, "processed", enable_logging)
-                        success = True
-
                 except Exception as e:
                     print("Action failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
                     print(e)
+                    filter_success = False
 
-                if not success:
-                    # Log error
-                    print("Filter application failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
-                    self.__update_log_dict( email, log, "errored", enable_logging)
-
+            if filter_success:
+                # filter executed with no error AND action executed with no error if it needed to run:
+                # log it as a success to avoid reprocessing it on next run.
+                self.__update_log_dict(email, log, "processed")
             else:
-                # No action run but we still store email ID in DB
-                self.__update_log_dict(email, log, "processed", enable_logging, action_run=False)
+                # either the filter or the action errored: log it. Best luck next time ?
+                self.__update_log_dict( email, log, "errored")
 
 
-        # Actually delete with IMAP the emails marked with the tag `\DELETED`
-        # We only need to run it once per email loop/mailbox.
+        # If the action deleted emails, at this point they will only be marked with the tag `\DELETED`.
+        # The following will actually remove them. We only need to run it once per email loop/mailbox.
         self.expunge()
 
         # Close the current mailbox.
