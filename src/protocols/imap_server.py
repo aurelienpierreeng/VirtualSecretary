@@ -257,12 +257,14 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def __update_log_dict(self, email: imap_object.EMail, log: dict, field: str):
-        if field in log[self.server][self.user][email.hash]:
+        if email.hash in log[self.server][self.user] and \
+            field in log[self.server][self.user][email.hash]:
             # Update existing log entry for the current uid
             log[self.server][self.user][email.hash][field] += 1
-        else:
-            # Create a new log entry for the current uid
-            log[self.server][self.user][email.hash] = {field: 1}
+            return
+
+        # Create a new log entry for the current uid
+        log[self.server][self.user][email.hash] = {field: 1}
 
 
     def run_filters(self, filter, action, runs=1):
