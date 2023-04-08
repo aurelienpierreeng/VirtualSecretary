@@ -314,10 +314,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         # Init a brand-new log dict
         log = {self.server:  # server
-               {self.user:  # username
-                {
-                    # email.hash : { PROPERTIES }
-                }
+                {self.user:  # username
+                    {
+                        # email.hash : { PROPERTIES }
+                    }
                 }
                }
 
@@ -342,6 +342,8 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 filter_on = log[self.server][self.user][email.hash]["processed"] < runs
             else:
                 filter_on = True
+
+            log_on = filter_on # if we have something to filter, we have something to log
 
             # Run the  filter
             if filter_on and filter:
@@ -371,17 +373,21 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                     print(e)
                     filter_success = False
 
-            if filter_success:
-                # filter executed with no error AND action executed with no error if it needed to run:
-                # log it as a success to avoid reprocessing it on next run.
-                self.__update_log_dict(email, log, "processed")
-            else:
-                # either the filter or the action errored: log it. Best luck next time ?
-                self.__update_log_dict( email, log, "errored")
+            if log_on:
+                if filter_success:
+                    # filter executed with no error AND action executed with no error if it needed to run:
+                    # log it as a success to avoid reprocessing it on next run.
+                    self.__update_log_dict(email, log, "processed")
+                    print("success")
+                else:
+                    # either the filter or the action errored: log it. Best luck next time ?
+                    self.__update_log_dict( email, log, "errored")
+                    print("error")
 
 
         # If the action deleted emails, at this point they will only be marked with the tag `\DELETED`.
         # The following will actually remove them. We only need to run it once per email loop/mailbox.
+        self.__reinit_connection()
         self.expunge()
 
         # Close the current mailbox.
