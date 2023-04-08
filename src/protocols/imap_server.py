@@ -17,6 +17,19 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
     """IMAP server connector using mandatory SSL. Non-SSL connection is not implemented on purpose, because the Internet is a dangerous place and SSL only adds a little bit of safety, but it's better than going out naked.
 
     This class inherits from the Python standard class [imaplib.IMAP4_SSL][], so all the method are available, although most of them are re-wrapped here for direct and higher-level data handling.
+
+    The connection credentials are passed from [secretary.Secretary.load_connectors][] from the `settings.ini` file of the current config subfolder.
+
+    Examples:
+        Mandatory content of the `settings.ini` file to declare IMAP connection credentials:
+
+        ```ini
+        [imap]
+            user = me@server.com
+            password = xyz
+            server = mail.server.com
+            entries = 20
+        ```
     """
 
     def build_subfolder_name(self, path: list) -> str:
@@ -178,7 +191,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         encoded_mailbox = self.build_subfolder_name(self.split_subfolder_path(mailbox))
 
-        if encoded_mailbox not in self.folders:
+        if encoded_mailbox not in self.folders or encoded_mailbox == "[Gmail]":
             self.logfile.write("%s : Impossible to get the mailbox %s : no such folder on server\n" % (
                 utils.now(), mailbox))
             return
@@ -194,13 +207,16 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
         while not messages_queue and retries < 5 and has_something:
             # Retry for as long as we didn't fetch as many messages as we have on the server
+            num_messages = 0
+            status = "invalid"
+
             try:
                 # Avoid getting logged out by time-outs
-                self.reinit_connection()
-                status, messages = self.select(self.mailbox)
+                self.__reinit_connection()
+                status, messages = self.select(self.mailbox) # This fails for `[Gmail]` virtual folder.
                 num_messages = int(messages[0])
 
-                if (status == "OK" and num_messages == 0) or status == "NO":
+                if num_messages == 0 or status == "NO":
                     # There is no email in selected folder or we don't have access permission, abort
                     print("  No email in this mailbox")
                     has_something = False
@@ -209,18 +225,28 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
                     utils.now(), mailbox, num_messages, n_messages))
 
-                # build a coma-separated list of IDs from start to end
-                ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
-                ids = ",".join(ids)
-                res, messages_queue = self.fetch(ids, "(UID FLAGS BODY.PEEK[])")
-
             except:
                 retries += 1
+                timeout = 2**retries
 
                 # Wait some seconds before next connection attempt.
                 # Increase the timeout in case there is a threshold on server
-                print("  Could not get the emails from %s, will retry in %i s." % (mailbox, retries))
-                time.sleep(retries)
+                print("  Could not get the emails from %s, will retry in %i s." % (mailbox, timeout))
+                time.sleep(timeout)
+
+            if has_something and status == "OK":
+                # build a coma-separated list of IDs from start to end
+                ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
+                ids = ",".join(ids)
+
+                try:
+                    self.__reinit_connection()
+                    status, messages_queue = self.fetch(ids, "(UID FLAGS BODY.PEEK[])")
+                except:
+                    retries += 1
+                    timeout = 2**retries
+                    print("  IMAP fetch failed")
+                    time.sleep(timeout)
 
         # When fetching emails in bulk, a weird "41" gets inserted between each record
         # so we need to keep one every next row.
@@ -336,7 +362,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 # The action should update self.std_out internally. If not, init here as a success.
                 # Success and errors matter only for email write operations
                 self.std_out = ["OK", ]
-                self.reinit_connection()
+                self.__reinit_connection()
 
                 try:
                     action(email)
@@ -386,22 +412,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def init_connection(self, params: dict):
-        """High-level method to login to a server in one shot. The parameters are passed by the [secretary.Secretary.load_connectors][] caller.
-
-        Arguments:
-            params (dict): the dictionnary of mailserver credentials, extracted from the `settings.ini` file by [configparser.ConfigParser][].
-
-        Examples:
-            Mandatory content of the `settings.ini` file to declare IMAP connection credentials:
-
-            ```ini
-            [imap]
-                user = me@server.com
-                password = xyz
-                server = mail.server.com
-                entries = 20
-            ```
-        """
+        # High-level method to login to a server in one shot. The parameters are passed by the `secretary.Secretary.load_connectors()` caller.
         self.n_messages = int(params["entries"])
         self.server = params["server"]
         self.user = params["user"]
@@ -412,13 +423,13 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         logstring = "[IMAP] Trying to login to %s with username %s" % (self.server, self.user)
         self.logfile.write("%s : %s\n" % (utils.now(), logstring))
         print(logstring)
-        self.reinit_connection()
+        self.__reinit_connection()
         self.get_imap_folders()
         self.connection_inited = True
 
 
-    def probe_connection(self):
-        """Probe the connection to see if it's still open"""
+    def __probe_connection(self):
+        # Probe the connection to see if it's still open
         try:
             self.std_out = self.noop()
             return self.std_out[0] == "OK"
@@ -426,9 +437,9 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             return False
 
 
-    def reinit_connection(self):
-        """Restart the IMAP connection using previous parameters, to prevent deconnections from time-outs"""
-        if self.probe_connection():
+    def __reinit_connection(self):
+        # Restart the IMAP connection using previous parameters, to prevent deconnections from time-outs
+        if self.__probe_connection():
             # We still have an open connection, nothing to reinit
             return
 
@@ -514,7 +525,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         Returns:
             status (str)
         """
-        self.reinit_connection()
+        self.__reinit_connection()
         self.create_folder(mailbox)
 
         # Reformat RFC 822 date to IMAP stuff
