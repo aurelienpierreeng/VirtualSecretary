@@ -2,13 +2,24 @@
 
 ## Presentation
 
-The Virtual Secretary is a Python framework that provides connectors to your emails, CardDAV address books, Instagram posts & comments (_and more to come, like CalDAV events and MySQL entries_) in order to write custom filters and actions to automate your digital office workflows.
+<figure style="float:left;" markdown>
+![](/assets/secretary.png){ align=left width="300" }
+  <figcaption markdown>Secretary icons by [UltimateArm](https://www.flaticon.com/authors/ultimatearm)</figcaption>
+</figure>
+ The Virtual Secretary is a Python framework allowing to write custom filters and actions to __automate your digital office workflows__. It provides connectors to synchronize information across:
 
-It aims at making your office life less stressful, by pre-filtering all the inputs you need to manage to sort the important/urgent information out of the notifications and other less important information that you can read later. To pre-filter inputs, it relies on cross-checking information between different sources accessible through the connectors.
+* your emails,
+* your contacts (address books),
+* your Instagram posts & comments,
+* _and more in the future_:
+    * your agenda events,
+    * your database entries.
+
+It aims at __making your ultra-connected office life less stressful__, by cross-checking and pre-filtering information for you, such that you get a digest of only the important/urgent information, and can deal with less important information later, at your own pace.
 
 The framework provides an high-level Python API allowing you to efficiently write simple and advanced email filters, unleashing the full power of the Python programming language, along with its powerful ecosystem of packages for data mining, machine learning, regular expression search, etc.
 
-The Virtual Secretary is standalone: it doesn't need any intermediate piece of software, but connects directly to servers.
+The Virtual Secretary works standalone: it doesn't need any intermediate piece of software, but connects directly to servers. It can therefore be used on any typical mailbox supporting IMAP v4 (Gmail, Outlook/Office365, self-hosted and custom servers). It can work alongside your usual desktop mail client (Microsoft Outlook, Mozilla Thunderbird, web clients like Zimbra, Horde, SoGo, etc.).
 
 ## Features
 
@@ -22,7 +33,7 @@ Internally, it provides low-level features exposed through a nice programming in
 * filters can be processed on a desktop or on a server, on demand or as a Cron job. A locking mechanism prevents more than one instance to process each mailbox. AI classifiers can be trained locally on desktop and sent to run on the server,
 * an overridable internal logging mechanism prevents emails from being processed more than once, so automatic actions that are manually reverted are not performed again on the next run.
 
-## Some applications
+## Examples of applications
 
 The Virtual Secretary can, for example :
 
@@ -30,6 +41,12 @@ The Virtual Secretary can, for example :
 * detect spoofed emails and send them to the spam box,
 * mirror your Instagram comments into an IMAP folder, respecting their original date, author, and threading, and attaching the original media,
 * create advanced autoresponders, based on timeframes and number of unread messages in your mailbox,
+* detect the language of an email.
+
+In the future, it will be able to :
+
+* add an "urgent" tag to emails sent by people with whom you have an appointment scheduled in the next 48 hours,
+* add a "client" tag to emails sent by someone who bought your product (connecting to the MySQL database of your Prestashop or WordPress WooCommerce website).
 
 ## Quick demos
 
@@ -73,7 +90,7 @@ imap.run_filters(filter, action)
 
 ### Sort emails in folders by CardDAV category
 
-Assuming your CardDAV contacts have a category (like "client", "family", "friends"), we can move their emails directly to a corresponding sub-folder of a `People` parent folder (which will be created on-the-fly if it does not exist), or simply move them to `People` if they have no category:
+Assuming your CardDAV contacts have a category (like "client", "family", "friends"), we can move their emails directly to a corresponding sub-folder of a `People` parent folder, or simply move them to `People` if they have no category:
 
 ```python
 protocols = globals()
@@ -111,9 +128,16 @@ imap.get_objects("INBOX")
 imap.run_filters(filter, None)
 ```
 
+!!! note
+    The true power of the Virtual Secretary here is mail folders and subfolders will be created dynamically for each contact category, meaning that:
+
+    * you don't need to know beforehand what the contact categories will be,
+    * you can add more contact categories anytime in the future, with no additional work on the filter,
+    * you don't need to manually map one filter with one folder, as with conventional mail filters.
+
 ### Sort Github emails by organization/project
 
-Github can generate a lot of notifications, but since all emails subjects start with `[organization/repository]`, we can use this to sort all emails into `Github/Organization/Repository` folders. Sub-folders are created on-the-fly if they don't already exist. We will unleash here the power of regular expressions:
+Github can generate a lot of notifications, but since all emails subjects start with `[organization/repository]`, we can use this to sort all emails into `Github/Organization/Repository` folders and dynamically replace `Organization` and `Repository` by their actual value from each email. We will unleash here the power of regular expressions:
 
 ```python
 
@@ -144,6 +168,9 @@ def filter(email) -> bool:
 imap.get_objects("INBOX")
 imap.run_filters(filter, None)
 ```
+
+!!! note
+    This is not possible to achieve with conventional email filters because they don't allow to use the content to dynamically change the action performed on the email. So you would have to write one filter per repository, like `if email.subject contains("orga/repo") then move(email, to="Github/Orga/Repo"`, in addition of manually creating each `Github/Orga/Repo` subfolder.
 
 ### Train an AI to classify emails for you
 
@@ -202,6 +229,9 @@ imap.run_filters(filter, None)
 ```
 
 The model will be stored in a file named `classifier.joblib` that can be saved and shared between computers. On a training sample of 6500 emails mixing both French and English, I get a predictive accuracy between 87 and 90 %.
+
+!!! note
+    Training your own AI makes sure it uses your language(s) and it knows the specific vocabulary of your particular business (including slang, trademarks and company names). This training is done on your own computer or server, not on a third-party cloud, which solves one of the major data privacy concerns of AI in its current [SaaS](https://en.wikipedia.org/wiki/Software_as_a_service) approach.
 
 
 ## Extensible by design

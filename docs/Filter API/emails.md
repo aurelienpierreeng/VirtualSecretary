@@ -30,4 +30,6 @@ Unfortunately, IMAP actions still have to use the IMAP UID.
 
 ## API
 
-::: protocols.imap_server
+::: protocols.imap_server.Server
+
+::: protocols.imap_object.EMail
