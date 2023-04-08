@@ -2,12 +2,12 @@
 
 import argparse
 import os
-import utils
 import re
 import time
 import sys
 
 from secretary import Secretary
+import utils
 
 ts = time.time()
 
