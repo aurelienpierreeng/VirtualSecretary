@@ -174,12 +174,13 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def get_objects(self, mailbox: str, n_messages=-1):
-        """Get the n last emails in a mailbox.
+        """Get the n last emails in a mailbox. Update the [Server.objects][connectors.Server.objects] list.
+
+        Processed email get logged with the number
 
         Arguments:
             mailbox (str): the full path of the mailbox. It will be sanitized for folder/subfolder separator and actual `INBOX` name internally.
             n_messages (int): number of messages to fetch, starting with the most recent. If `-1`, the preference set in `settings.ini` will be used. Any other value will set it temporarily.
-
         """
         if not self.connection_inited:
             print("We do not have an active IMAP connection. Ensure your IMAP credentials are defined in `settings.ini`")

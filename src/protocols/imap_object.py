@@ -241,9 +241,18 @@ class EMail(connectors.Content):
 
     return content
 
-  def is_in(self, query_list, field:str, case_sensitive:bool=False, mode:str="any"):
-    # Check if any or all of the elements in the query_list is in the email field
-    # The field can by any RFC header or "Body".
+  def is_in(self, query_list: list[str] | str, field:str, case_sensitive:bool=False, mode:str="any") -> bool:
+    """Check if any or all of the elements in the `query_list` is in the email `field`.
+
+    Arguments:
+      query_list (list[str] | str): list of keywords or unique keyword to find in `field`.
+      field (str): any RFC 822 header or `"body"`.
+      case_sensitive (str): `True` if the search should be case-sensitive. This has no effect if `field` is a RFC 822 header, it only applies to the email body.
+      mode (str): `"any"` if any element in `query_list` should be found in `field` to return `True`. `"all"` if all elements in `query_list` should be found in `field` to return `True`.
+
+    Returns:
+      (bool): `True` if any or all elements (depending on `mode`) of `query_list` have been found in `field`.
+    """
     value = None
     if field.lower() == "body":
       value = self.get_body() if case_sensitive else self.get_body().lower()
@@ -263,7 +272,7 @@ class EMail(connectors.Content):
     elif mode == "all":
       return all(query_item in value for query_item in query_list)
     else:
-      raise ValueError("Non-implementad mode `%s` used" % mode)
+      raise ValueError("Non-implemented mode `%s` used" % mode)
 
 
   ##
@@ -271,7 +280,13 @@ class EMail(connectors.Content):
   ##
 
   def tag(self, keyword:str):
-    # Add a tag.
+    """Add any arbitrary IMAP tag (aka label), standard or not, to the current email.
+
+    Warning:
+      In Mozilla Thunderbird, labels/tags need to be configured first in the preferences (by mapping the label string to a color) to properly appear in the GUI. Otherwise, any undefined tag will be identified as "Important" (associated with red), no matter its actual string.
+
+      Horde, Roundcube and Nextcloud mail (based on Horde) treat those properly.
+    """
     result = self.server.uid('STORE', self.uid, '+FLAGS', keyword)
 
     if result[0] == "OK":
@@ -284,8 +299,8 @@ class EMail(connectors.Content):
 
     self.server.std_out = result
 
-  def untag(self, keyword):
-    # Remove a tag.
+  def untag(self, keyword: str):
+    """Remove any arbitrary IMAP tag (aka label), standard or not, to the current email."""
     result = self.server.uid('STORE', self.uid, '-FLAGS', keyword)
 
     if result[0] == "OK":
@@ -299,8 +314,13 @@ class EMail(connectors.Content):
     self.server.std_out = result
 
   def delete(self):
-    # Delete an email directly without using the trash bin.
-    # Use a move to trash folder to get a last chance at reviewing what will be deleted.
+    """Delete the current email directly without using the trash bin. It will not be recoverable.
+
+    Use [EMail.move][protocols.imap_object.EMail.move] to move the email to the trash folder to get a last chance at reviewing what will be deleted.
+
+    Note:
+      As per IMAP standard, this only add the `\\Deleted` flag to the current email. Emails will be actually deleted when the `expunge` server command is launched, which is done automatically at the end of [Server.run_filters][protocols.imap_server.Server.run_filters].
+    """
     result = self.server.uid('STORE', self.uid, '+FLAGS', "(\\Deleted)")
 
     if result[0] == "OK":
@@ -316,7 +336,7 @@ class EMail(connectors.Content):
     self.server.std_out = result
 
   def spam(self, spam_folder="INBOX.spam"):
-    # Mark an email as spam using Thunderbird tags and move it to the spam/junk folder
+    """Mark the current email as spam, adding Mozilla Thunderbird `Junk` flag, and move it to the spam/junk folder."""
     self.server.uid('STORE', self.uid, '-FLAGS', 'NonJunk')
     self.server.uid('STORE', self.uid, '+FLAGS', 'Junk')
     self.server.uid('STORE', self.uid, '-FLAGS', '(\\Seen)')
@@ -336,6 +356,8 @@ class EMail(connectors.Content):
     self.server.std_out = result
 
   def move(self, folder:str):
+    """Move the current email to the target `folder`, that will be created recursively if it does not exist. `folder` will be internally encoded to IMAP-custom UTF-7 with [Server.encode_imap_folder][protocols.imap_server.Server.encode_imap_folder].
+    """
     self.server.create_folder(folder)
     result = self.server.uid('COPY', self.uid, self.server.encode_imap_folder(folder))
 
@@ -356,7 +378,12 @@ class EMail(connectors.Content):
 
 
   def mark_as_important(self, mode:str):
-    # Flag or unflag an email as important
+    """Flag or unflag an email as important
+
+    Arguments:
+      mode (str): `add` to add the `\\Flagged` IMAP tag to the current email, `remove` to remove it.
+
+    """
     tag = "(\\Flagged)"
     if mode == "add":
       self.tag(tag)
@@ -365,7 +392,12 @@ class EMail(connectors.Content):
 
 
   def mark_as_read(self, mode:str):
-    # Flag or unflag an email as read (seen)
+    """Flag or unflag an email as read (seen).
+
+    Arguments:
+      mode (str): `add` to add the `\\Seen` IMAP tag to the current email, `remove` to remove it.
+
+    """
     tag = "(\\Seen)"
     if mode == "add":
       self.tag(tag)
@@ -374,12 +406,14 @@ class EMail(connectors.Content):
 
 
   def mark_as_answered(self, mode:str):
-    # Flag or unflag an email as answered
-    # Note :
-    #   if you answer programmatically, you need to manually pass the Message-ID of the original email
-    #   to the In-Reply-To and Referencess of the answer to get threaded messages. In-Reply-To gets only
-    #   the immediate previous email, References get the whole thread.
+    """Flag or unflag an email as answered.
 
+    Arguments:
+      mode (str): `add` to add the `\\Answered` IMAP tag to the current email, `remove` to remove it.
+
+    Note :
+      if you answer programmatically, you need to manually pass the Message-ID of the original email to the In-Reply-To and Referencess of the answer to get threaded messages. In-Reply-To gets only the immediate previous email, References get the whole thread.
+    """
     tag = "(\\Answered)"
     if mode == "add":
       self.tag(tag)
@@ -392,40 +426,49 @@ class EMail(connectors.Content):
   ##
 
   def is_read(self) -> bool:
-    # Email has been opened and read
+    """Check if this email has been opened and read."""
     return "\\Seen" in self.flags
 
   def is_unread(self) -> bool:
-    # Email has not been opened and read
+    """Check if this email has not been yet opened and read."""
     return "\\Seen" not in self.flags
 
   def is_recent(self) -> bool:
-    # This session is the first one to get this email. Doesn't mean user read it.
-    # Note : this flag cannot be set by client, only by server. It's read-only app-wise.
+    """Check if this session is the first one to get this email. It doesn't mean user read it.
+
+    Note:
+      this flag cannot be set by client, only by server. It's read-only app-wise.
+    """
     return "\\Recent" in self.flags
 
   def is_draft(self) -> bool:
-    # This email is maked as draft
+    """Check if this email is maked as draft."""
     return "\\Draft" in self.flags
 
   def is_answered(self) -> bool:
-    # This email has been answered
+    """Check if this email has been answered."""
     return "\\Answered" in self.flags
 
   def is_important(self) -> bool:
-    # This email has been flagged as important
+    """Check if this email has been flagged as important."""
     return "\\Flagged" in self.flags
 
   def is_mailing_list(self) -> bool:
-    # This email has the typical mailing-list tags. Warning: this is not standard and not systematically used.
-    # Mailing list are sent by humans to a group of other humans.
+    """Check if this email has the typical mailing-list headers.
+
+    Warning:
+      The headers checked for hints here are not standard and not systematically used.
+    """
     has_list_unsubscribe = self.has_header("List-Unsubscribe") # note that we don't check if it's a valid unsubscribe link
     has_precedence_list = self.has_header("Precedence") and self["Precedence"] == "list"
     return has_list_unsubscribe and has_precedence_list
 
   def is_newsletter(self) -> bool:
-    # This email has the typical newsletter tags. Warning: this is not standard and not systematically used.
-    # Newsletters are sent by bots to a group of humans.
+    """Check if this email has the typical newsletter headers.
+
+    Warning:
+      The headers checked for hints here are not standard and not systematically used.
+    """
     has_list_id = self.has_header("List-ID")
     has_precedence_bulk = self.has_header("Precedence") and self["Precedence"] == "bulk"
     has_feedback_id = self.has_header("Feedback-ID") or self.has_header("X-Feedback-ID")
@@ -441,8 +484,22 @@ class EMail(connectors.Content):
   ##
 
   def spf_pass(self) -> int:
-    # Check if any of the servers listed by IP in the "Received" header is authorized
-    # by the mail server to send emails on behalf of the email address used as "From".
+    """Check if any of the servers listed in the `Received` email headers is authorized by the DNS SPF rules to send emails on behalf of the email address set in `Return-Path`.
+
+    Returns:
+      score:
+        - `= 0`: neutral result, no explicit success or fail, or server configuration could not be retrieved/interpreted.
+        - `> 0`: success, server is explicitly authorized or SPF rules are deliberately permissive.
+        - `< 0`: fail, server is unauthorized.
+        - `= 2`: explicit success, server is authorized.
+        - `= -2`: explicit fail, server is forbidden, the email is a deliberate spoofing attempt.
+
+    Note:
+      The `Return-Path` header is set by any proper mail client to the mailbox collecting bounces (notice of undelivered emails), and, while it is optional, the [RFC 4408](https://www.ietf.org/rfc/rfc4408.txt) states that it is the one from which the SPF domain will be inferred. In practice, it is missing only in certain spam messages, so its absence is treated as an explicit fail.
+
+    Warning:
+      Emails older than 6 months will at least get a score of `0` and will therefore never fail the SPF check. This is because DNS configuration may have changed since the email was sent, and it could have been valid at the time of sending.
+    """
     # See https://www.rfc-editor.org/rfc/rfc7208
     # Output a reputation score :
     scores = { "none":    0,    # no SPF records were retrieved from the DNS.
@@ -514,14 +571,22 @@ class EMail(connectors.Content):
     # Otherwise return neutral score. This is because server DKIM/ARC keys, MX and SPF may have changed.
     return 0 if self.age() > timedelta(days=30 * 6) and spf_score < 0 else spf_score
 
-  def dkim_pass(self):
-    # Return a reputation score :
-    #  0 if no DKIM signature
-    #  1 if the DKIM signature is valid but outdated
-    #  2 if the DKIM signature is valid and up-to-date
-    # -2 if the DKIM signature is invalid. That's because many spammers
-    # forge a fake Google DKIM signature hoping to past by the spam filters
-    # that only check for the header presence without actually validating it.
+  def dkim_pass(self) -> int:
+    """Check the authenticity of the DKIM signature.
+
+    Note:
+      The DKIM signature uses an asymetric key scheme, where the private key is set on the SMTP server and the public key is set in DNS records of the mailserver. The signature is a cryptographic hash of the email headers (not their content). A valid signature means the private key used to hash headers matches the public key in the DNS records AND the headers have not been tampered with since sending.
+
+    Returns:
+      score:
+        - `= 0`: there is no DKIM signature.
+        - `= 1`: the DKIM signature is valid but outdated. This means the public key in DNS records has been updated since they email was sent.
+        - `= 2`: the DKIM signature is valid and up-to-date.
+        - `= -2`: the DKIM signature is invalid. Either the headers have been tampered or the DKIM signature is entirely forged (happens a lot in spam emails).
+
+    Warning:
+      Emails older than 6 months will at least get a score of `0` and will therefore never fail the DKIM check. This is because DNS configuration (public key) may have changed since the email was sent, and it could have been valid at the time of sending.
+    """
 
     if self.has_header("DKIM-Signature"):
       dkim_score = -2
@@ -553,14 +618,18 @@ class EMail(connectors.Content):
     # Otherwise return neutral score. This is because server DKIM/ARC keys, MX and SPF may have changed.
     return 0 if self.age() > timedelta(days=30 * 6) and dkim_score < 0 else dkim_score
 
-  def arc_pass(self):
-    # Return a reputation score :
-    #  0 if no ARC signature
-    #  2 if the ARC signature is valid
-    # -2 if the ARC signature is invalid. That's because many spammers
-    # forge a fake Google ARC signature hoping to past by the spam filters
-    # that only check for the header presence without actually validating it.
+  def arc_pass(self) -> int:
+    """Check the authenticity of the ARC signature.
 
+    Note:
+      The ARC signature is still experimental and not widely used. When an email is forwarded, by an user or through a mailing list, its DKIM signature will be invalidated and the email will appear forged/tampered. ARC authentifies the intermediate servers and aims at solving this issue.
+
+    Returns:
+      score:
+        - `= 0`: there is no ARC signature,
+        - `= 2`: the ARC signature is valid
+        - `=-2`: the ARC signature is invalid. Typically, it means the signature has been forged.
+    """
     if self.has_header("ARC-Message-Signature") and \
         self.has_header("ARC-Seal") and \
           self.has_header("ARC-Authentication-Results"):
@@ -585,11 +654,15 @@ class EMail(connectors.Content):
     return 0 if self.age() > timedelta(days=30 * 6) and arc_score < 0 else arc_score
 
   def authenticity_score(self) -> int:
-    # Returns :
-    # == 0 : neutral, no explicit authentification is defined on DNS or no rule could be found
-    #  > 0 : explicitly authenticated
-    # == 6 : maximal authenticity (valid SPF and valid DKIM)
-    #  < 0 : spoofed, either or both SPF and DKIM explicitely failed
+    """Compute the score of authenticity of the email, summing the results of [EMail.spf_pass][protocols.imap_object.EMail.spf_pass], [EMail.dkim_pass][protocols.imap_object.EMail.dkim_pass] and [EMail.arc_pass][protocols.imap_object.EMail.arc_pass]. The weighting is designed such that one valid check compensates one fail.
+
+    Returns:
+      score:
+        - `== 0`: neutral, no explicit authentification is defined on DNS or no rule could be found
+        - `> 0`: explicitly authenticated by at least one method,
+        - `== 6`: maximal authenticity (valid SPF, DKIM and ARC)
+        - `< 0`: spoofed, at least one of SPF or DKIM or ARC failed and
+    """
     spf_score = int(self.spf_pass())
     dkim_score = int(self.dkim_pass())
     arc_score = int(self.arc_pass())
@@ -598,23 +671,30 @@ class EMail(connectors.Content):
     return total
 
   def is_authentic(self) -> bool:
-    # Check SPF and DKIM to validate that the email is authentic,
-    # aka not spoofed. That's enough to detect most spams.
+    """Helper function for [EMail.authenticity_score][protocols.imap_object.EMail.authenticity_score], checking if at least one authentication method succeeded.
+
+    Returns:
+      True if [EMail.authenticity_score][protocols.imap_object.EMail.authenticity_score] returns a score greater or equal to zero.
+    """
     return self.authenticity_score() >= 0
 
   ##
   ## Utils
   ##
 
-  def age(self):
-    # Compute the age of an email at the time of evaluation
+  def age(self) -> timedelta:
+    """Compute the age of an email at the time of evaluation
+
+    Returns:
+      time difference between current time and sending time of the email
+    """
     current_date = datetime.now(timezone.utc)
     delta = (current_date - self.date)
     return delta
 
 
-  def now(self):
-    # Helper to get access to date/time from within the email object when writing filters
+  def now(self) -> str:
+    """Helper to get access to date/time from within the email object when writing filters"""
     return utils.now()
 
 
@@ -684,10 +764,14 @@ Attachments : %s
     self.hash = timestamp + "-" + hash
 
 
-  def query_referenced_emails(self) -> list:
-    # Fetch the list of all emails referenced in the present message,
-    # aka the whole email thread in wich the current email belongs.
-    # The list is sorted from newest to oldest.
+  def query_referenced_emails(self) -> list[EMail]:
+    """Fetch the list of all emails referenced in the present message, aka the whole email thread in wich the current email belongs.
+
+    The list is sorted from newest to oldest. Queries emails having a `Message-ID` header matching the ones contained in the `References` header of the current email.
+
+    Returns:
+      All emails referenced.
+    """
     thread = []
     if self.has_header("References"):
       for id in self["References"].split(" "):
@@ -721,8 +805,13 @@ Attachments : %s
     return thread
 
 
-  def query_replied_email(self):
-    # Fetch the email being replied to by the current email.
+  def query_replied_email(self) -> EMail:
+    """Fetch the email being replied to by the current email.
+
+    Returns:
+      The email being replied to.
+
+    """
     replied = None
 
     if self.has_header("In-Reply-To"):
@@ -800,8 +889,13 @@ Attachments : %s
     super().__init__(raw_message, server)
 
     self.urls = []
+    """`list(tuple(str))` List of URLs found in email body."""
+
     self.ips = []
+    """`list(str)` List of IPs found in the server delivery route (in `Received` headers)"""
+
     self.domains = []
+    """`list(str)` List of domains found in the server delivery route (in `Received` headers)"""
 
     # Raw message as fetched by IMAP, decode IMAP headers
     try:
@@ -818,7 +912,7 @@ Attachments : %s
     # No exception handling here, let it fail. Email validity should be checked at server level
     self.raw = raw_message[1]
     self.msg : email.message.EmailMessage = email.message_from_bytes(self.raw, policy=policy.default)
-    """(email.message.EmailMessage) standard Python email object"""
+    """`(email.message.EmailMessage)` standard Python email object"""
 
     # Get "a" date for the email
     self.get_date()
