@@ -438,6 +438,12 @@ class EMail(connectors.Content):
 
       if email_address:
         email_domain = email_address.split("@")[1]
+
+        # Build the list of mail servers from the DNS record of the sender domain
+        try:
+          mx = resolver.resolve(email_domain, 'MX')
+        except:
+          fast_fail = True
       else:
         fast_fail = True
     else:
@@ -450,14 +456,6 @@ class EMail(connectors.Content):
 
     for step in self.route:
       # Get the sender email from the Return-Path
-
-      # Build the list of mail servers from the DNS record of the sender domain
-      mx = []
-      try:
-        mx = resolver.resolve(email_domain, 'MX')
-      except:
-        # If we can't resolve an MX entry for this domain, abort this loop iteration
-        continue
 
       # Build the list of IPs to test, starting with explicitely mentionned IPs
       ips = step["from"]["ip"]
@@ -488,7 +486,9 @@ class EMail(connectors.Content):
           except:
             pass
 
-    return spf_score
+    # Return score if email is more recent than 6 months or not detected spammy.
+    # Otherwise return neutral score. This is because server DKIM/ARC keys, MX and SPF may have changed.
+    return 0 if self.age() > timedelta(days=30 * 6) and spf_score < 0 else spf_score
 
   def dkim_pass(self):
     # Return a reputation score :
@@ -516,8 +516,6 @@ class EMail(connectors.Content):
           if ("value is past" in str(e)) and (dkim_score < 1):
             # The DKIM signature is valid but expired. Don't penalize users
             # because their IT guys sleep at their desk.
-            # TODO: check if the expiration timestamp of the DKIM signature is more recent
-            # than the message sending date, and treat that as a success.
             dkim_score = 1
         else:
           if output and dkim_score < 2:
@@ -527,7 +525,9 @@ class EMail(connectors.Content):
     else:
       dkim_score = 0
 
-    return dkim_score
+    # Return score if email is more recent than 6 months or not detected spammy.
+    # Otherwise return neutral score. This is because server DKIM/ARC keys, MX and SPF may have changed.
+    return 0 if self.age() > timedelta(days=30 * 6) and dkim_score < 0 else dkim_score
 
   def arc_pass(self):
     # Return a reputation score :
@@ -556,7 +556,9 @@ class EMail(connectors.Content):
     else:
       arc_score = 0
 
-    return arc_score
+    # Return score if email is more recent than 6 months or not detected spammy.
+    # Otherwise return neutral score. This is because server DKIM/ARC keys, MX and SPF may have changed.
+    return 0 if self.age() > timedelta(days=30 * 6) and arc_score < 0 else arc_score
 
   def authenticity_score(self) -> int:
     # Returns :
