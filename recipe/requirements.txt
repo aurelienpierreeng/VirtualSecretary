@@ -1,0 +1,14 @@
+python-dateutil
+vobject
+requests
+requests-oauthlib
+PySide6
+py3DNS
+dnspython
+dkimpy
+pyspf
+nltk
+scikit-learn
+gensim
+beautifulsoup4
+pandas
