@@ -457,7 +457,11 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
     def close_connection(self):
         """High-level method to logout from a server"""
 
-        self.logout()
+        try:
+            self.logout()
+        except:
+            pass # Connection already closed or lost
+
         self.connection_inited = False
 
     def create_folder(self, folder:str):
