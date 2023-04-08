@@ -1,3 +1,4 @@
+from __future__ import annotations
 import imaplib
 import utils
 import email
@@ -127,23 +128,38 @@ class EMail(connectors.Content):
     return [key.lower() for key in self.msg.keys()]
 
   def has_header(self, header: str) -> bool:
-    check = header.lower() in self.headers
-    return check
+    """Check if the case-insensitive `header` exists in the email headers.
+
+    Arguments:
+      header (str): the RFC 822 email header.
+
+    Returns:
+      (bool): presence of the header
+    """
+    return header.lower() in self.headers
 
   def get_sender(self) -> list[list, list]:
+    """Get the full list of senders of the email, using the `From` header, splitting their name (if any) apart from their address.
+
+    Returns:
+      (list[list, list]): `list[0]` contains the list of names, rarely used, `list[1]` is the list of email addresses.
+    """
     emails = email_pattern.findall(self["From"])
     names = re.findall(r"\"(.+)?\"", self["From"])
-    out = [names, [email[0] for email in emails if email[0]]]
-    return out
+    return [names, [email[0] for email in emails if email[0]]]
 
 
-  def parse_urls(self, input:str):
-    # Output a list of all URLs found in email body.
-    # Each result in the list is a tuple (domain, page), for example :
-    # `google.com/index.php` is broken into `('google.com', '/index.php')`
-    # `google.com/` is broken into `('google.com', '/')`
-    # `google.com/login.php?id=xxx` is broken into `('google.com', '/login.php')`
+  def parse_urls(self, input:str) -> list[tuple]:
+    """Update `self.urls` with a list of all URLs found in `input`, split as `(domain, page)` tuples.
 
+    Examples:
+      Each result in the list is a tuple (domain, page), for example :
+
+      - `google.com/index.php` is broken into `('google.com', '/index.php')`
+      - `google.com/` is broken into `('google.com', '/')`
+      - `google.com/login.php?id=xxx` is broken into `('google.com', '/login.php')`
+
+    """
     try:
       self.urls.append(url_pattern.findall(input))
     except:
@@ -184,7 +200,15 @@ class EMail(connectors.Content):
 
     return output
 
-  def get_body(self, preferencelist=('related', 'html', 'plain')):
+  def get_body(self, preferencelist=('related', 'html', 'plain')) -> str:
+    """Get the body of the email.
+
+    Arguments:
+      preferencelist (tuple | str): sequence of candidate properties in which to pick the email body, by order of priority. If set to `"plain"`, return either the plain-text variant of the email if any, or build one by removing (x)HTML markup from the HTML variant if no plain-text variant is available.
+
+    Note:
+      Emails using `quoted-printable` transfer encoding but not UTF-8 charset are not handled. This weird combination has been met only in spam messages written in Russian, so far, and should not affect legit emails.
+    """
     body = self.msg.get_body(preferencelist)
 
     # For emails providing HTML only, build a plain text version from
@@ -213,7 +237,7 @@ class EMail(connectors.Content):
       if encoding == "quoted-printable" and charset != "utf-8":
         # That should be handled because it's prone to errors,
         # but affects only spam messages thus low-priority.
-        pass
+        return ""
 
     return content
 
@@ -771,7 +795,7 @@ Attachments : %s
       self.date = datetime.fromtimestamp(0, timezone.utc)
 
 
-  def __init__(self, raw_message:list, server) -> None:
+  def __init__(self, raw_message:list, server):
     # Position of the email in the server list
     super().__init__(raw_message, server)
 
@@ -793,7 +817,8 @@ Attachments : %s
     # Decode RFC822 email body
     # No exception handling here, let it fail. Email validity should be checked at server level
     self.raw = raw_message[1]
-    self.msg = email.message_from_bytes(self.raw, policy=policy.default)
+    self.msg : email.message.EmailMessage = email.message_from_bytes(self.raw, policy=policy.default)
+    """(email.message.EmailMessage) standard Python email object"""
 
     # Get "a" date for the email
     self.get_date()
