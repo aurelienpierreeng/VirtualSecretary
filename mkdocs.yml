@@ -13,9 +13,12 @@ theme:
     - navigation.sections
   palette:
     primary: pink
+  logo: assets/virtualsecretary-inverted.png
 
 
 markdown_extensions:
+  - attr_list
+  - md_in_html
   - smarty
   - pymdownx.superfences:
       custom_fences:
@@ -71,8 +74,9 @@ plugins:
           show_signature_annotations: yes
           show_if_no_docstring: no
           separate_signature: yes
-          docstring_section_style: list
-          show_source: no
+          docstring_section_style: table
+          show_source: yes
           show_category_heading: no
           show_submodules: yes
           members_order: alphabetical
+          heading_level: 3
