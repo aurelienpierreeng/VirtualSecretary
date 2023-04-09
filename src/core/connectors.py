@@ -11,7 +11,7 @@ The core of the framework knows only these abstract classes.
 from __future__ import annotations
 import typing
 import inspect
-import nlp
+import core.nlp as nlp
 from abc import ABC, abstractmethod
 
 

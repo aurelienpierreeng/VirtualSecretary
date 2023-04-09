@@ -1,4 +1,4 @@
-from nlp import *
+from core import nlp
 
 # Build the training set of Data
 nltk.download('nps_chat')
@@ -6,7 +6,7 @@ training_set = [Data(post.text, post.get('class')) for post in nltk.corpus.nps_c
 embedding_set = [post.text for post in nltk.corpus.nps_chat.xml_posts()]
 
 # Build the model
-model = Classifier(training_set, embedding_set, 'sentences_classifier.joblib', True)
+model = Classifier(training_set, embedding_set, 'sentences_classifier.joblib', False)
 
 # Test word2vec
 print(model.word2vec.wv.most_similar("free"))

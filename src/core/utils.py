@@ -44,7 +44,7 @@ filter_pattern = re.compile("^([0-9]{2})-([a-z]+)-[a-zA-Z0-9\-\_]+.py$")
 learn_pattern = re.compile("^(LEARN)-([a-z]+)-[a-zA-Z0-9\-\_]+.py$")
 
 
-def now():
+def now() -> str:
   """Return current time for log lines"""
   return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 

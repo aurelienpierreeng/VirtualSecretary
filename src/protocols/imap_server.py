@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import imaplib
 import email
-import utils
+from core import utils
 import pickle
 import os
 import time
@@ -11,7 +11,7 @@ from protocols import imap_object
 
 from email.utils import formatdate, make_msgid, parsedate_to_datetime
 
-import connectors
+from core import connectors
 
 class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
     """IMAP server connector using mandatory SSL. Non-SSL connection is not implemented on purpose, because the Internet is a dangerous place and SSL only adds a little bit of safety, but it's better than going out naked.
@@ -379,12 +379,9 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                     # filter executed with no error AND action executed with no error if it needed to run:
                     # log it as a success to avoid reprocessing it on next run.
                     self.__update_log_dict(email, log, "processed")
-                    print("success")
                 else:
                     # either the filter or the action errored: log it. Best luck next time ?
                     self.__update_log_dict( email, log, "errored")
-                    print("error")
-
 
         # If the action deleted emails, at this point they will only be marked with the tag `\DELETED`.
         # The following will actually remove them. We only need to run it once per email loop/mailbox.

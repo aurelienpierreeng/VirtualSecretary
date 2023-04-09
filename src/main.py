@@ -6,8 +6,8 @@ import re
 import time
 import sys
 
-from secretary import Secretary
-import utils
+from core.secretary import Secretary
+from core import utils
 
 ts = time.time()
 

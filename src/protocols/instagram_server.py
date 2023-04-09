@@ -1,4 +1,4 @@
-import utils
+from core import utils
 import pickle
 import os
 import time
@@ -16,7 +16,7 @@ from email.mime.text import MIMEText
 from email.utils import make_msgid
 
 
-import connectors
+from core import connectors
 
 class TokenExpired(Exception):
     pass

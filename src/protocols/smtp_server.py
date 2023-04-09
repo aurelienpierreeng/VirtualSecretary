@@ -1,8 +1,8 @@
 import smtplib
 import imaplib
 
-import connectors
-import utils
+from core import connectors
+from core import utils
 
 from email import message
 from email.utils import formatdate, make_msgid, parsedate_to_datetime

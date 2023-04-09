@@ -4,9 +4,9 @@ import io
 import typing
 import importlib
 
-import nlp
-import connectors
-import utils
+from core import nlp
+from core import connectors
+from core import utils
 import protocols as prt
 
 class Secretary(object):

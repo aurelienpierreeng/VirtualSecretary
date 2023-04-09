@@ -1,11 +1,11 @@
 from __future__ import annotations
 import imaplib
-import utils
+from core import utils
 import email
 import re
 import hashlib
 import html
-import connectors
+from core import connectors
 import spf
 import dkim
 from dns import resolver
@@ -889,13 +889,16 @@ Attachments : %s
     super().__init__(raw_message, server)
 
     self.urls = []
-    """`list(tuple(str))` List of URLs found in email body."""
+    """`list[tuple[str]]`: List of URLs found in email body."""
 
     self.ips = []
-    """`list(str)` List of IPs found in the server delivery route (in `Received` headers)"""
+    """`list[str]`: List of IPs found in the server delivery route (in `Received` headers)"""
 
     self.domains = []
-    """`list(str)` List of domains found in the server delivery route (in `Received` headers)"""
+    """`list[str]`: List of domains found in the server delivery route (in `Received` headers)"""
+
+    self.server: 'Server'
+    """`(Server)`: back-reference to the [Server][protocols.imap_server.Server] instance from which the current email is extracted."""
 
     # Raw message as fetched by IMAP, decode IMAP headers
     try:

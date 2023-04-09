@@ -1,5 +1,5 @@
-import connectors
-import utils
+from core import connectors
+from core import utils
 import requests
 import vobject
 

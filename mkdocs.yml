@@ -65,6 +65,9 @@ plugins:
         paths: [src]
         import:
         - https://docs.python.org/3/objects.inv
+        - https://numpy.org/doc/1.24/objects.inv
+        - https://www.nltk.org/objects.inv
+        - https://radimrehurek.com/gensim/objects.inv
         options:
           show_root_heading: true
           docstring_options:
