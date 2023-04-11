@@ -131,3 +131,5 @@ dmypy.json
 # Test config
 config*/
 workspace.code-workspace
+src/user_scripts/*.py
+models/*
