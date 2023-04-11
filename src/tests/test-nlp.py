@@ -1,21 +1,49 @@
+"""
+Test the natural language model generation with the "Chat" dataset.
+
+This corpus has 10567 chat messages, manually tagged with a category like "statement", "yes/no question", "wh* question", "greet", etc.
+
+"""
+
+import os
+import sys
+
+import nltk
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.dirname(SCRIPT_DIR))
+
 from core import nlp
 
 # Build the training set of Data
-nltk.download('nps_chat')
-training_set = [Data(post.text, post.get('class')) for post in nltk.corpus.nps_chat.xml_posts()]
+#nltk.download('nps_chat')
 embedding_set = [post.text for post in nltk.corpus.nps_chat.xml_posts()]
 
-# Build the model
-model = Classifier(training_set, embedding_set, 'sentences_classifier.joblib', False)
+# Build the word2vec language model
+w2v = nlp.Word2Vec(embedding_set, "word2vec_chat")
 
 # Test word2vec
-print(model.word2vec.wv.most_similar("free"))
+print(w2v.wv.most_similar("free"))
+
+# Load existing model
+w2v = nlp.Word2Vec.load_model("word2vec_chat")
+
+# Test word2vec
+print(w2v.wv.most_similar("free"))
+
+# Build the model
+training_set = [nlp.Data(post.text, post.get('class')) for post in nltk.corpus.nps_chat.xml_posts()]
+model = nlp.Classifier(training_set, "chat", w2v, validate=True, language="any")
 
 # Classify test stuff
 l = ["Do you have time to meet at 5 pm ?", "Come with me !", "Nope", "Well, fuck", "What do you think ?"]
 
 for item in l:
   print(model.classify(item))
+  print(model.prob_classify(item))
 
-print(model.classify_many(l))
-print(model.prob_classify_many(l))
+# Load the existing model and retry
+model = nlp.Classifier.load("chat")
+for item in l:
+  print(model.classify(item))
+  print(model.prob_classify(item))
