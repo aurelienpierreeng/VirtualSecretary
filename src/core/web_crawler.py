@@ -1,7 +1,30 @@
 import re
+import pickle
+import os
 
 import requests
 from bs4 import BeautifulSoup
+
+
+def get_data_folder(filename: str) -> str:
+    """Resolve the path of a training data saved under `filename`. These are stored in `../../data/`.
+    The `.pickle` extension is added automatically.
+
+    Warning:
+        This does not check the existence of the file and root folder.
+    """
+    current_path = os.path.abspath(__file__)
+    install_path = os.path.dirname(
+                        os.path.dirname(
+                            os.path.dirname(current_path)))
+    models_path = os.path.join(install_path, "data")
+    return os.path.abspath(os.path.join(models_path, filename + ".pickle"))
+
+
+def save_data(data, filename: str):
+    """Save scraped data to a pickle file in data folder. Folder and file extension are handled automtically."""
+    with open(get_data_folder(filename), 'wb') as f:
+        pickle.dump(data, f, pickle.HIGHEST_PROTOCOL)
 
 
 def relative_to_absolute(URL, domain):
