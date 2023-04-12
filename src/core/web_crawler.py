@@ -183,7 +183,7 @@ class Crawler:
         urls = get_page_content(website + sitemap).find_all('loc')
         print("%i URLs found in sitemap" % len(urls))
         domain = re.search(
-            r"(https?://[a-z0-9]+?\.[a-z0-9]{2,})", website).group(0)
+            r"(https?:\/\/[a-z0-9\-\_]+?\.[a-z0-9]{2,})", website).group(0)
         output = []
 
         for url in urls:
