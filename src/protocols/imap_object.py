@@ -14,16 +14,7 @@ from email import policy
 from email.utils import parseaddr
 
 from datetime import datetime, timedelta, timezone
-
-# IPv4 and IPv6
-ip_pattern = re.compile(r"from.*?((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))", re.IGNORECASE)
-domain_pattern = re.compile(r"from ((?:[a-z0-9\-_]{0,61}\.)+[a-z]{2,})", re.IGNORECASE)
-email_pattern = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?", re.IGNORECASE)
-url_pattern = re.compile(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", re.IGNORECASE)
-uid_pattern = re.compile(r"UID ([0-9]+)")
-flags_pattern = re.compile(r"FLAGS \((.*?)\)")
-
-
+from core.patterns import *
 class EMail(connectors.Content):
 
   ##
@@ -31,15 +22,15 @@ class EMail(connectors.Content):
   ##
 
   def parse_uid(self, raw):
-    self.uid =  uid_pattern.search(raw).groups()[0]
+    self.uid =  UID_PATTERN.search(raw).groups()[0]
 
   def parse_flags(self, raw):
-    self.flags = flags_pattern.search(raw).groups()[0]
+    self.flags = FLAGS_PATTERN.search(raw).groups()[0]
 
   def __get_domain(self, string: str) -> str:
     # Find the DNS domain in the form `something.com`
-    domain_pattern = r"^((?:[a-z0-9\-_]{0,61}\.)+[a-z]{2,})"
-    result = re.findall(domain_pattern, string, re.IGNORECASE)
+    DOMAIN_PATTERN = r"^((?:[a-z0-9\-_]{0,61}\.)+[a-z]{2,})"
+    result = re.findall(DOMAIN_PATTERN, string, re.IGNORECASE)
 
     if len(result) == 0:
       # Nothing found.
@@ -48,8 +39,8 @@ class EMail(connectors.Content):
         result = ["localhost"]
       else:
         # Maybe the domain is referenced directly by IPv4 or IPv6
-        ip_pattern = r"^\[((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4})).*?\]"
-        result = re.findall(ip_pattern, string, re.IGNORECASE)
+        IP_PATTERN = r"^\[((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4})).*?\]"
+        result = re.findall(IP_PATTERN, string, re.IGNORECASE)
 
         # Detect local IPs and rename them localhost
         result = [r if (not (r.startswith("127.") or r.startswith("192.") or r.startswith("fe80::"))) else "localhost" for r in result]
@@ -57,8 +48,8 @@ class EMail(connectors.Content):
     return result
 
   def __get_ip(self, string: str) -> str:
-    ip_pattern = r"\(.*?\[((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))\].*?\)"
-    result = re.findall(ip_pattern, string, re.IGNORECASE)
+    IP_PATTERN = r"\(.*?\[((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))\].*?\)"
+    result = re.findall(IP_PATTERN, string, re.IGNORECASE)
 
     # Remove local IPs from results
     return [r for r in result if not (r.startswith("127.") or r.startswith("192.") or r.startswith("fe80::"))]
@@ -69,10 +60,10 @@ class EMail(connectors.Content):
     return result
 
   def __sanitize_domains(self, route: dict) -> dict:
-    ip_pattern = r"(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4})"
+    IP_PATTERN = r"(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4})"
 
     if len(route["from"]["domain"]) > 0 and len(route["from"]["ip"]) == 0:
-      if re.match(ip_pattern, route["from"]["domain"][0]):
+      if re.match(IP_PATTERN, route["from"]["domain"][0]):
         # The domain is actually declared by its IP, we need to switch fields
         route["from"]["ip"] = route["from"]["domain"]
         route["from"]["domain"] = []
@@ -144,7 +135,7 @@ class EMail(connectors.Content):
     Returns:
       (list[list, list]): `list[0]` contains the list of names, rarely used, `list[1]` is the list of email addresses.
     """
-    emails = email_pattern.findall(self["From"])
+    emails = EMAIL_PATTERN.findall(self["From"])
     names = re.findall(r"\"(.+)?\"", self["From"])
     return [names, [email[0] for email in emails if email[0]]]
 
@@ -161,7 +152,7 @@ class EMail(connectors.Content):
 
     """
     try:
-      self.urls.append(url_pattern.findall(input))
+      self.urls.append(URL_PATTERN.findall(input))
     except:
       print("Could not parse urls in email body :")
       print(input)

@@ -17,6 +17,8 @@ from nltk.data import find
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
+from core.patterns import *
+
 
 #nltk.download('punkt')
 
@@ -91,12 +93,11 @@ def normalize_token(word: str, language: str = "any"):
         # Discard the names of chat users
         value = ''
 
-    elif re.match(r"\d{2,4}(-|\/)\d{2}(-|\/)\d{2,4}", word) or \
-            re.match(r"\d{1,2}(th|nd|st)", word):
+    elif re.match(DATE_PATTERN, word):
         # Record dates format - we don't need to know which dateé
         value = '_DATE_'
 
-    elif re.match(r"\d{1,2}:\d{2}", word) or re.match(r"\d{1,2}\s?(am|pm|h)", word):
+    elif re.match(TIME_PATTERN, word):
         # Record time/hour format - we don't need to know what time
         value = '_TIME_'
 
@@ -113,7 +114,7 @@ def normalize_token(word: str, language: str = "any"):
         # We have a mix of digits and something else. Weird stuff, count it as digit.
         value = '_NUMBER_'
 
-    elif re.match(r"(https?\:)?\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", word):
+    elif re.match(URL_PATTERN, word):
         # Contains url - we don't need to know which site
         value = '_URL_'
 
