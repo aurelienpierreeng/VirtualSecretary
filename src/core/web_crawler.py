@@ -42,6 +42,10 @@ def get_page_markup(page: BeautifulSoup, markup: str|list) -> str:
 
         if elements:
             for body in elements:
+                # Remove pre and code markup from the HTML doctree because we want natural language only
+                for element in body.select('code, pre'):
+                    element.decompose()
+
                 body = body.get_text()
 
                 # Replace special unicode spaces
@@ -50,10 +54,23 @@ def get_page_markup(page: BeautifulSoup, markup: str|list) -> str:
                 body = body.replace("\u202f", " ")
                 body = body.replace("\xa0", " ")
 
+                # Append each element as a new line
                 output += "\n\n" + body
 
     return output
 
+def parse_page(page: BeautifulSoup, url: str, lang: str, markup) -> list[tuple[str, str, str]]:
+    """Get the requested markup from the requested page URL.
+
+    Returns:
+        A tuple containing the page parsed content, the page lang and the page URL, ready for machine-learning.
+    """
+    content = get_page_markup(page, markup=markup)
+
+    if content:
+        return [(content, lang, url)]
+    else:
+        return []
 
 class Crawler:
     def __init__(self):
@@ -65,35 +82,42 @@ class Crawler:
                                   child: str = "/",
                                   langs: tuple = ("en", "fr"),
                                   markup: str = "body",
-                                  contains_str: str = "") -> list[tuple[str, str, str]]:
+                                  contains_str: str = "",
+                                  recurse: bool = True) -> list[tuple[str, str, str]]:
         """Crawl all found pages of a website from the index. Intended for word2vec training.
 
         Arguments:
-          website (str): root of the website, including `https://` or `http://`
+          website (str): root of the website, including `https://` or `http://` without trailing slash.
           sitemap (str): relative path of the sitemap
           langs (tuple[str]): ISO-something 2-letters code for alternate language
           default_lang (str): the ISO-something 2-letters code for the base language of the website
+          contains_str (str): a string that should be contained in a page URL for the page to be indexed.
+          recurse (bool): crawl recursively all the links found from the given `website/child` page. If `False`, we fetch only the top-level page and return.
 
         Returns:
           list of tuples: `(page content, page language, page URL)`
         """
-
-        urls = get_page_content(website + child).find_all('a', href=True)
+        domain = re.search(r"(https?://[a-z0-9]+?\.[a-z0-9]{2,})", website).group(0)
+        index_url = website + child
+        index = get_page_content(index_url)
         output = []
-        domain = re.search(
-            r"(https?://[a-z0-9]+?\.[a-z0-9]{2,})", website).group(0)
 
-        for url in urls:
+        # Parse index page
+        if index_url not in self.crawled_URL:
+            output += parse_page(index, index_url, default_lang, markup)
+            self.crawled_URL.append(index_url)
+
+        # Don't recurse : crawl index/top-most page and return
+        if not recurse:
+            return output
+
+        # Recurse
+        for url in index.find_all('a', href=True):
             currentURL = relative_to_absolute(url["href"], domain)
-
             if website in currentURL and currentURL not in self.crawled_URL:
                 if contains_str in currentURL:
-                    print(f"{currentURL} contains {contains_str}")
-
                     page = get_page_content(currentURL)
-                    content = get_page_markup(page, markup=markup)
-                    print(content)
-                    output.append((content, default_lang, currentURL))
+                    output += parse_page(page, currentURL, default_lang, markup)
 
                     # Find translations if any
                     for lang in langs:
@@ -102,11 +126,8 @@ class Crawler:
 
                         if link_tag and link_tag["href"]:
                             translatedURL = relative_to_absolute(link_tag["href"], domain)
-
                             t_page = get_page_content(translatedURL)
-                            content = get_page_markup(t_page, markup=markup)
-                            output.append(
-                                (content, lang, translatedURL))
+                            output += parse_page(t_page, translatedURL, lang, markup)
 
                 # Remember we crawled this
                 self.crawled_URL.append(currentURL)
@@ -114,7 +135,7 @@ class Crawler:
                 # Follow internal links once content is scraped
                 _child = currentURL.replace(website, "")
                 output += self.get_website_from_crawling(
-                    website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str)
+                    website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str, recurse=recurse)
 
         return output
 
