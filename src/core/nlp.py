@@ -34,6 +34,20 @@ def get_models_folder(filename: str) -> str:
     return os.path.abspath(os.path.join(models_path, filename))
 
 
+def get_data_folder(filename: str) -> str:
+    """Resolve the path of a machine-learning training data saved under `filename`. These are stored in `../../data/`.
+
+    Warning:
+        This does not check the existence of the file and root folder.
+    """
+    current_path = os.path.abspath(__file__)
+    install_path = os.path.dirname(
+                        os.path.dirname(
+                            os.path.dirname(current_path)))
+    models_path = os.path.join(install_path, "data")
+    return os.path.abspath(os.path.join(models_path, filename))
+
+
 # Day/month tokens and their abbreviations
 DATES = {
     "english": [
@@ -99,7 +113,7 @@ def normalize_token(word: str, language: str = "any"):
         # We have a mix of digits and something else. Weird stuff, count it as digit.
         value = '_NUMBER_'
 
-    elif re.match(r"https?\:\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", word):
+    elif re.match(r"(https?\:)?\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", word):
         # Contains url - we don't need to know which site
         value = '_URL_'
 
