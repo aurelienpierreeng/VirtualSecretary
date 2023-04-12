@@ -66,7 +66,7 @@ def get_page_markup(page: BeautifulSoup, markup: str|list) -> str:
         if elements:
             for body in elements:
                 # Remove pre and code markup from the HTML doctree because we want natural language only
-                for element in body.select('code, pre'):
+                for element in body.select('code, pre, math'):
                     element.decompose()
 
                 body = body.get_text()
