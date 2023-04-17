@@ -11,7 +11,9 @@ The core of the framework knows only these abstract classes.
 from __future__ import annotations
 import typing
 import inspect
-import core.nlp as nlp
+from core import nlp
+from core import utils
+
 from abc import ABC, abstractmethod
 
 
@@ -40,7 +42,10 @@ class Server(ABC, ServerType):
   """
 
   nlp = nlp
-  """Reference to the `nlp` (Natural Language Processing) internal module, to allow access in filters without importing the module"""
+  """Reference the [natural language processing module][core.nlp] for reuse in filters without imports."""
+
+  utils = utils
+  """Reference the [utility module][core.utils] for reuse in filters without imports."""
 
   def calling_file(self) -> str:
     """Output the name of the calling filter from the stack. Allows to find the path of the folder containing filter, to perform actions like writing logs.
