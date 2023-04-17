@@ -4,51 +4,25 @@ High-level natural language processing module for message-like (emails, comments
 © 2023 - Aurélien Pierre
 """
 
-import os
 import random
 import re
+import os
+from multiprocessing import Pool
 
 import gensim
 import joblib
+
 import numpy as np
+
 import nltk
 from nltk.classify import SklearnClassifier
-from nltk.data import find
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
-from core.patterns import *
-
+from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN
+from core.utils import get_models_folder
 
 #nltk.download('punkt')
-
-def get_models_folder(filename: str) -> str:
-    """Resolve the path of a machine-learning model saved under `filename`. These are stored in `../../models/`.
-
-    Warning:
-        This does not check the existence of the file and root folder.
-    """
-    current_path = os.path.abspath(__file__)
-    install_path = os.path.dirname(
-                        os.path.dirname(
-                            os.path.dirname(current_path)))
-    models_path = os.path.join(install_path, "models")
-    return os.path.abspath(os.path.join(models_path, filename))
-
-
-def get_data_folder(filename: str) -> str:
-    """Resolve the path of a machine-learning training data saved under `filename`. These are stored in `../../data/`.
-
-    Warning:
-        This does not check the existence of the file and root folder.
-    """
-    current_path = os.path.abspath(__file__)
-    install_path = os.path.dirname(
-                        os.path.dirname(
-                            os.path.dirname(current_path)))
-    models_path = os.path.join(install_path, "data")
-    return os.path.abspath(os.path.join(models_path, filename))
-
 
 # Day/month tokens and their abbreviations
 DATES = {
@@ -139,10 +113,8 @@ def normalize_token(word: str, language: str = "any"):
 
 def tokenize_sentences(sentence, language: str = "any") -> list[str]:
     """Split a sentence into word tokens"""
-    if language == "any":
-        language = "english"
     return [normalize_token(token.lower(), language)
-            for token in nltk.word_tokenize(sentence, language=language)]
+            for token in nltk.word_tokenize(sentence, language=(language if language != "any" else "english"))]
 
 
 def split_sentences(text, language: str = "any") -> list[str]:
@@ -169,6 +141,18 @@ class Data():
         self.label = label
 
 
+def get_wordvec(wv: gensim.models.KeyedVectors, word: str, language: str = "any") -> np.array:
+    """Return the vector associated to a word, through a dictionnary of words.
+
+    Returns:
+        the 1D vector.
+    """
+    if word in wv:
+        return wv[normalize_token(word.lower(), language)]
+    else:
+        return np.zeros(wv.vector_size)
+
+
 class Word2Vec(gensim.models.Word2Vec):
     def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, language: str = "any"):
         """Train or retrieve an existing word2vec word embedding model
@@ -185,6 +169,7 @@ class Word2Vec(gensim.models.Word2Vec):
         training = [tokenize_sentences(sentence, language=language) for sentence in sentences]
         super().__init__(training, vector_size=vector_size, window=20, min_count=5, workers=8, epochs=100, ns_exponent=-0.5)
         self.save(self.pathname)
+        self.wv.save(self.pathname + "_vectors")
 
 
     @classmethod
@@ -193,19 +178,7 @@ class Word2Vec(gensim.models.Word2Vec):
         return cls.load(get_models_folder(name))
 
 
-    def wordvec(self, word: str, language: str = "any") -> np.array:
-        """Return the vector associated to a word
-
-        Returns:
-            the 1D vector.
-        """
-        if word in self.wv:
-            return self.wv[normalize_token(word.lower(), language)]
-        else:
-            return np.zeros(self.vector_size)
-
-
-def get_features(post: str, num_features: int, word2vec: Word2Vec, external_data: dict = {}, language: str = 'any') -> dict:
+def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, external_data: dict = {}, language: str = 'any') -> dict:
     """Extract word features from the text of `post`.
 
     We use meta-features like date, prices, time, number that discard the actual value but retain the property.
@@ -233,7 +206,7 @@ def get_features(post: str, num_features: int, word2vec: Word2Vec, external_data
         language = "english"
 
     for word in nltk.word_tokenize(post, language=language):
-        __update_dict(features, word2vec.wordvec(word, language))
+        __update_dict(features, get_wordvec(wv, word, language))
         i += 1
 
     # Normalize (average)
@@ -248,8 +221,14 @@ def get_features(post: str, num_features: int, word2vec: Word2Vec, external_data
     return features
 
 
-class Classifier(nltk.SklearnClassifier):
-    def __init__(self, training_set: list[Data], name: str, word2vec: Word2Vec, validate: bool = True, language: str = "any", variant: str = "svm"):
+class Classifier(SklearnClassifier):
+    def __init__(self,
+                 training_set: list[Data],
+                 name: str,
+                 wv: gensim.models.KeyedVectors,
+                 validate: bool = True,
+                 language: str = "any",
+                 variant: str = "svm"):
         """Handle the word2vec and SVM machine-learning
 
         Arguments:
@@ -264,13 +243,25 @@ class Classifier(nltk.SklearnClassifier):
                 - `forest`: Random Forest Classifier, which is a set of decision trees. It runs about 15-20% faster than linear SVM but tends to perform marginally better in some contexts, however it produces very large models (several GB to save on disk, where SVM needs a few dozens of MB).
             features (int): the number of model features (dimensions) to retain. This sets the number of dimensions for word vectors found by word2vec, which will also be the dimensions in the last training layer.
         """
+        print("init")
 
-        self.word2vec = word2vec
-        print(word2vec.wv)
+        if wv and isinstance(wv, gensim.models.KeyedVectors):
+            self.wv = wv
+            self.vector_size = wv.vector_size
+        else:
+            raise ValueError("wv needs to be a dictionnary-like map")
 
-        # Get all features in featureset into a flat list
-        new_featureset = [(get_features(post.text, self.word2vec.vector_size, self.word2vec, language=language), post.label)
-                          for post in training_set]
+        self.language = language
+
+        # Single-threaded variant :
+        # new_featureset = [(get_features(post.text, self.vector_size, self.wv, language=self.language), post.label)
+        #                   for post in training_set]
+
+        # Multi-threaded variant :
+        with Pool() as pool:
+            new_featureset: list = pool.map(self.get_features_parallel, training_set)
+
+        print("feature set :", len(new_featureset), "/", len(training_set))
 
         # If validation is on, split the set into a training and a test subsets
         if validate:
@@ -292,12 +283,13 @@ class Classifier(nltk.SklearnClassifier):
                              C=15, gamma='scale')
         elif variant == "forest":
             # n_jobs = -1 means use all available cores
-            classifier = RandomForestClassifier(n_jobs=-1)
+            classifier = RandomForestClassifier(n_jobs=os.cpu_count())
         else:
             raise ValueError("Invalid classifier")
 
         super().__init__(classifier)
         self.train(train_set)
+        print("model trained")
 
         if validate:
             print("accuracy against test set:", nltk.classify.accuracy(self, test_set))
@@ -307,6 +299,12 @@ class Classifier(nltk.SklearnClassifier):
         # Save the model to a reusable object
         joblib.dump(self, get_models_folder(name + ".joblib"))
 
+
+    def get_features_parallel(self, post: Data) -> tuple[str, str]:
+        """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
+        return (get_features(post.text, self.vector_size, self.wv, language=self.language), post.label)
+
+
     @classmethod
     def load(cls, name: str):
         """Load an existing trained model by its name from the `../models` folder."""
@@ -314,16 +312,16 @@ class Classifier(nltk.SklearnClassifier):
         if isinstance(model, nltk.SklearnClassifier):
             return model
         else:
-            raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(self)))
+            raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
 
-    def classify(self, post: str, external_data: dict = None, language='english') -> str:
+    def classify(self, post: str, external_data: dict = None) -> str:
         """Apply a label on a post based on the trained model."""
-        item = get_features(post, self.word2vec.vector_size, self.word2vec, language=language, external_data=external_data)
+        item = get_features(post, self.vector_size, self.wv, language=self.language, external_data=external_data)
         return super().classify(item)
 
-    def prob_classify(self, post: str, external_data: dict = None, language='english') -> tuple[str, float]:
+    def prob_classify(self, post: str, external_data: dict = None) -> tuple[str, float]:
         """Apply a label on a post based on the trained model and output the probability too."""
-        item = get_features(post, self.word2vec.vector_size, self.word2vec, language=language, external_data=external_data)
+        item = get_features(post, self.vector_size, self.wv, language=self.language, external_data=external_data)
 
         # This returns a weird distribution of probabilities for each label that is not quite a dict
         proba_distro = super().prob_classify(item)
