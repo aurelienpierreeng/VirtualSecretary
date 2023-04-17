@@ -9,6 +9,7 @@ from datetime import datetime
 import os
 import re
 import errno
+import pickle
 
 from typing import TypedDict
 
@@ -271,3 +272,53 @@ def imap_decode(value: bytes) -> str:
     if decode_arr:
         res.append(_modified_unbase64(decode_arr[1:]))
     return ''.join(res)
+
+
+## Default files and pathes
+
+def get_data_folder(filename: str) -> str:
+    """Resolve the path of a training data saved under `filename`. These are stored in `../../data/`.
+    The `.pickle` extension is added automatically to the filename.
+
+    Warning:
+        This does not check the existence of the file and root folder.
+    """
+    current_path = os.path.abspath(__file__)
+    install_path = os.path.dirname(
+                        os.path.dirname(
+                            os.path.dirname(current_path)))
+    models_path = os.path.join(install_path, "data")
+    return os.path.abspath(os.path.join(models_path, filename + ".pickle"))
+
+
+def save_data(data: list, filename: str):
+    """Save scraped data to a pickle file in data folder. Folder and file extension are handled automatically."""
+    with open(get_data_folder(filename), 'wb') as f:
+        pickle.dump(data, f, pickle.HIGHEST_PROTOCOL)
+
+
+def open_data(filename: str) -> list:
+    """Open scraped data from a pickle file stored in data folder. Folder and file extension are handled automatically.
+    An empty list is returned is the file does not exist.
+    """
+    path = get_data_folder(filename)
+    if os.path.exists(path):
+      with open(path, 'rb') as f:
+        dataset = pickle.load(f)
+    else:
+       dataset = []
+    return dataset
+
+
+def get_models_folder(filename: str) -> str:
+    """Resolve the path of a machine-learning model saved under `filename`. These are stored in `../../models/`.
+
+    Warning:
+        This does not check the existence of the file and root folder.
+    """
+    current_path = os.path.abspath(__file__)
+    install_path = os.path.dirname(
+                        os.path.dirname(
+                            os.path.dirname(current_path)))
+    models_path = os.path.join(install_path, "models")
+    return os.path.abspath(os.path.join(models_path, filename))
