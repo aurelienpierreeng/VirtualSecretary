@@ -171,8 +171,10 @@ class Crawler:
 
         Supports recursion through sitemaps of sitemaps.
 
+        [get_website_from_crawling][.Crawler.get_website_from_crawling]
+
         Arguments:
-          website (str): root of the website, including `https://` or `http://`
+          website (str): root of the website, including `https://` or `http://` but without trailing slash.
           sitemap (str): relative path of the sitemap
           langs (list[str]): ISO-something 2-letters code for alternate language
 
