@@ -1,6 +1,8 @@
 """
 High-level natural language processing module for message-like (emails, comments, posts) input.
 
+Supports automatic language detection, word tokenization and stemming for `'danish', 'dutch', 'english', 'finnish', 'french', 'german', 'italian', 'norwegian', 'portuguese', 'spanish', 'swedish'`.
+
 © 2023 - Aurélien Pierre
 """
 
@@ -16,41 +18,121 @@ import numpy as np
 
 import nltk
 from nltk.classify import SklearnClassifier
+from nltk.stem.snowball import SnowballStemmer
+from nltk.corpus import stopwords
+from nltk.tokenize import RegexpTokenizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
 from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN
-from core.utils import get_models_folder
+from core.utils import get_models_folder, typography_undo
 
-#nltk.download('punkt')
+nltk.download('punkt')
+#nltk.download('stopwords')
+
+# The set of languages supported at the same time by NLTK tokenizer, stemmer and stopwords data is not consistent.
+# We build the least common denominator here, that is languages supported in the 3 modules.
+# See SnowballStemmer.languages and stopwords.fileids()
+_supported_lang = {'danish', 'dutch', 'english', 'finnish', 'french', 'german', 'italian', 'norwegian', 'portuguese', 'spanish', 'swedish'}
 
 # Day/month tokens and their abbreviations
-DATES = {
-    "english": [
-        "january", "february", "march", "april", "may", "june",
-        "july", "august", "september", "october", "november", "december",
-        "jan", "feb", "mar", "apr", "aug", "sept", "oct", "nov", "dec",
-        "jan.", "feb.", "mar.", "apr.", "aug.", "sept.", "oct.", "nov.", "dec.",
-        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-        "mon", "tue", "wed", "thu", "fri", "sat", "sun",
-        "mon.", "tue.", "wed.", "thu.", "fri.", "sat.", "sun.",
-    ],
-    "french": [
-        "janvier", "février", "mars", "avril", "mai", "juin",
-        "juillet", "août", "septembre", "octobre", "novembre", "décembre",
-        "jan", "fév", "mars", "avr", "jui", "juil", "aou", "sept", "oct", "nov", "déc",
-        "jan.", "fév.", "mars.", "avr.", "jui.", "juil.", "aou.", "sept.", "oct.", "nov.", "déc.",
-        "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
-        "lun", "mar", "mer", "jeu", "ven", "sam", "dim",
-        "lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.",
-    ]
+DATES = dict.fromkeys(_supported_lang, {})
+
+DATES["english"] = {
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+    "jan", "feb", "mar", "apr", "aug", "sept", "oct", "nov", "dec",
+    "jan.", "feb.", "mar.", "apr.", "aug.", "sept.", "oct.", "nov.", "dec.",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+    "mon.", "tue.", "wed.", "thu.", "fri.", "sat.", "sun.",
 }
 
-DATES["any"] = DATES["english"] + DATES["french"]
+DATES["french"] =  {
+    "janvier", "février", "mars", "avril", "mai", "juin",
+    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
+    "jan", "fév", "mar", "avr", "jui", "juil", "aou", "sept", "oct", "nov", "déc",
+    "jan.", "fév.", "mar.", "avr.", "jui.", "juil.", "aou.", "sept.", "oct.", "nov.", "déc.",
+    "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
+    "lun", "mar", "mer", "jeu", "ven", "sam", "dim",
+    "lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.",
+}
+
+# We remove stopwords only if they are grammatical operators not briging semantic meaning.
+# NLTK stopwords lists are too aggressive and will remove auxiliaries and wh- tags
+STOPWORDS = {
+    "it", "it's", "that", "this", "these", "those", "that'll",
+    "the", "a", "an", "any", "such", "to", "which", "whose",
+    "my", "mine", "your", "yours", "their", "theirs", "his", "hers",
+    "ça", "à", "au", "aux", "que", "qu'il", "qu'elle", "qu'", "ce", "cette", "ces", "cettes", "cela", "ceci",
+    "le", "la", "les", "l", "l'", "de", "du", "d'", "un", "une",
+    "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "leur", "leurs", "votre", "vos", "c'est à dire", "c'est-à-dire",
+    "y"
+}
 
 
-def normalize_token(word: str, language: str = "any"):
-    """Return normalized word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type.
+# Static dict of stopwords for language detection, inited from NLTK corpus
+STOPWORDS_DICT = { language: list(stopwords.words(language)) for language in stopwords.fileids() if language in _supported_lang }
+
+# Some stopwords are missing from the corpus for some languages, add them
+STOPWORDS_DICT["french"] += ["ça", "ceci", "cela", "tout", "tous", "toutes", "toute",
+                             "plusieurs", "certain", "certaine", "certains", "certaines",
+                             "meilleur", "meilleure", "meilleurs", "meilleures", "plus",
+                             "aujourd'hui", "demain", "hier", "tôt", "tard",
+                             "salut", "bonjour", "va", "aller", "venir", "viens", "vient", "viennent", "vienne",
+                             "oui", "non",
+                             "gauche", "droite", "droit", "haut", "bas", "devant", "derrière", "avant", "après",
+                             "clair", "claire",
+                             "sûr", "sûre", "sûrement",
+                             "cordialement", "salutations",
+                             "qui", "que", "quoi", "dont", "où", "pourquoi", "comment", "duquel", "auquel", "lequel", "auxquels", "auxquelles", "lesquelles",
+                             "dehors", "hors", "chez", "avec", "vers", "tant", "si", "de",
+                             "à", "travers", "pour", "contre", "sans", "afin"]
+STOPWORDS_DICT["english"] += ["best", "better", "more", "all", "every",
+                              "some", "any", "many", "few", "little",
+                              "today", "tomorrow", "yesterday", "early", "late", "earlier", "later",
+                              "hi", "hello", "good", "morning", "go", "come", "coming", "going",
+                              "yes", "no", "yeah",
+                              "left", "right", "ahead", "top", "bottom", "before", "behind", "front", "after",
+                              "clear",
+                              "sure", "surely",
+                              "greetings",
+                              "who", "which", "where", "whose", "why", "what", "how", "that",
+                              "out", "by", "at", "with", "toward", "long", "as", "if", "of",
+                              "through", "for", "against", "without"]
+STOPWORDS_DICT["german"] += ["best", "beste", "besten", "besser", "mehr", "alle", "ganz", "ganze",
+                             "mehrere", "etwa", "etwas", "manche", "klein", "groß",
+                             "heute", "morgen", "gestern", "früh", "spät", "früher", "später",
+                             "hallo", "guten", "tag", "geht", "gehen", "kom", "kommen", "komt",
+                             "ja", "nein",
+                             "links", "rechts", "gerade", "oben", "unten", "vor", "hinter", "nach",
+                             "werde", "werden", "wurde", "würde", "stimmt", "klar",
+                             "sicher", "sicherlich",
+                             "herzlich", "herzliche", "grüße",
+                             "wer", "wo", "wann", "wenn", "als", "ob", "was", "warum",
+                             "aus", "bei", "mit", "nach", "seit", "von", "zu",
+                             "durch", "für", "gegen", "ohne", "um"]
+
+# Build a dict of sets
+STOPWORDS_DICT = { language: set(STOPWORDS_DICT[language]) for language in STOPWORDS_DICT}
+
+
+def guess_language(string: str) -> str:
+    """Basic language guesser based on stopwords detection. Stopwords are the most common words of a language: for each language, we count how many stopwords we found and return the language having the most matches. It is not perfect but the rutime vs. accuracy ratio is good.
+    """
+
+    tokenizer = RegexpTokenizer(r'\w+|[\d\.\,]+|\S+')
+    words = {token.lower() for token in tokenizer.tokenize(string)}
+    scores = []
+    for lang in STOPWORDS_DICT:
+        scores.append(len(words.intersection(STOPWORDS_DICT[lang])))
+
+    index_max = max(range(len(scores)), key=scores.__getitem__)
+    return list(STOPWORDS_DICT.keys())[index_max]
+
+
+def normalize_token(word: str, language: str):
+    """Return normalized word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.) are removed and words are stemmed ("marketing" becomes "market", "apples" becomes "apple").
 
     Arguments:
         word (str): tokenized word
@@ -58,7 +140,6 @@ def normalize_token(word: str, language: str = "any"):
 
     Examples:
         `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
-
         `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
     """
     value = word
@@ -108,26 +189,27 @@ def normalize_token(word: str, language: str = "any"):
         # Record textual dates - we don't need to know which date
         value = '_DATE_'
 
+    elif word in STOPWORDS:
+        value = ''
+
+    else:
+        # Stem the word
+        stemmer = SnowballStemmer(language)
+        value = stemmer.stem(value)
+
     return value
 
 
-def tokenize_sentences(sentence, language: str = "any") -> list[str]:
+def tokenize_sentences(sentence, language: str) -> list[str]:
     """Split a sentence into word tokens"""
     return [normalize_token(token.lower(), language)
-            for token in nltk.word_tokenize(sentence, language=(language if language != "any" else "english"))]
+            for token in nltk.word_tokenize(sentence, language=language)]
 
 
-def split_sentences(text, language: str = "any") -> list[str]:
+def split_sentences(text, language: str) -> list[str]:
     """Split a text into sentences"""
-    if language == "any":
-        language = "english"
     return nltk.sent_tokenize(text, language=language)
 
-
-def __update_dict(dt: dict, vector: list):
-    # Increment the number of occurences for each feature
-    for key, value in zip(dt.keys(), vector):
-        dt[key] += value
 
 class Data():
     def __init__(self, text: str, label: str):
@@ -141,35 +223,50 @@ class Data():
         self.label = label
 
 
-def get_wordvec(wv: gensim.models.KeyedVectors, word: str, language: str = "any") -> np.array:
+def get_wordvec(wv: gensim.models.KeyedVectors, word: str, language: str) -> np.array:
     """Return the vector associated to a word, through a dictionnary of words.
 
     Returns:
-        the 1D vector.
+        the nD vector.
     """
-    if word in wv:
-        return wv[normalize_token(word.lower(), language)]
+    normalized = normalize_token(word.lower(), language)
+
+    if normalized and normalized in wv:
+        return wv[normalized]
     else:
         return np.zeros(wv.vector_size)
 
 
 class Word2Vec(gensim.models.Word2Vec):
-    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, language: str = "any"):
+    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300):
         """Train or retrieve an existing word2vec word embedding model
 
         Arguments:
             name (str): filename of the model to save and retrieve. If the model exists already, we automatically load it. Note that this will override the `vector_size` with the parameter defined in the saved model.
             vector_size (int): number of dimensions of the word vectors
             force_recompute (bool): if `True`, don't load an existing model matching `name`.
-            language (str): The language used to detect months/days in dates. Supports `"french"`, "`english`" or `"any" (all languages will be tried).
         """
         self.pathname = get_models_folder(name)
         self.vector_size = vector_size
+        print(f"got {len(sentences)} sentences")
 
-        training = [tokenize_sentences(sentence, language=language) for sentence in sentences]
-        super().__init__(training, vector_size=vector_size, window=20, min_count=5, workers=8, epochs=100, ns_exponent=-0.5)
+        # training = [tokenize_sentences(sentence, language=language) for sentence in set(sentences)]
+        with Pool() as pool:
+            training: list = pool.map(self.tokenize_sentences_parallel, set(sentences))
+
+        print("tokenization done")
+        super().__init__(training, vector_size=vector_size, window=7, min_count=5, workers=os.cpu_count(), epochs=150, ns_exponent=-0.5, sample=5e-5)
+        print("training done")
         self.save(self.pathname)
         self.wv.save(self.pathname + "_vectors")
+        print("saving done")
+
+
+    def tokenize_sentences_parallel(self, sentence):
+        """Thread-safe call to `.tokenize_sentences()` to be called in multiprocessing.Pool map"""
+        clean_sentence = typography_undo(sentence)
+        language = guess_language(clean_sentence)
+        return tokenize_sentences(clean_sentence, language)
 
 
     @classmethod
@@ -178,7 +275,7 @@ class Word2Vec(gensim.models.Word2Vec):
         return cls.load(get_models_folder(name))
 
 
-def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, external_data: dict = {}, language: str = 'any') -> dict:
+def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, language: str) -> dict:
     """Extract word features from the text of `post`.
 
     We use meta-features like date, prices, time, number that discard the actual value but retain the property.
@@ -196,30 +293,20 @@ def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, e
     Return:
         (dict): dictionnary of features, where keys are initialized with the positional number of vector elements and their value, plus the optional external data.
     """
-
-    # The dict is not the best suited data representation for us here
-    # we create bullshit keys from integer indices of the word2vec vector size
-    features = dict.fromkeys(range(num_features), 0.)
+    features = np.zeros(num_features)
 
     i = 0
-    if language == "any":
-        language = "english"
-
     for word in nltk.word_tokenize(post, language=language):
-        __update_dict(features, get_wordvec(wv, word, language))
+        vector = get_wordvec(wv, word, language)
+        features += vector
         i += 1
 
-    # Normalize (average)
+    # Finish the average calculation (so far, only summed)
     if i > 0:
-        for key in features:
-            features[key] /= i
+        features /= i
 
-    # Add the external features if any
-    if external_data:
-        features.update(external_data)
-
-    return features
-
+    # NLTK models take dictionnaries of features as input, so bake that.
+    return dict(enumerate(features, 1))
 
 class Classifier(SklearnClassifier):
     def __init__(self,
@@ -227,7 +314,6 @@ class Classifier(SklearnClassifier):
                  name: str,
                  wv: gensim.models.KeyedVectors,
                  validate: bool = True,
-                 language: str = "any",
                  variant: str = "svm"):
         """Handle the word2vec and SVM machine-learning
 
@@ -250,8 +336,6 @@ class Classifier(SklearnClassifier):
             self.vector_size = wv.vector_size
         else:
             raise ValueError("wv needs to be a dictionnary-like map")
-
-        self.language = language
 
         # Single-threaded variant :
         # new_featureset = [(get_features(post.text, self.vector_size, self.wv, language=self.language), post.label)
@@ -302,7 +386,9 @@ class Classifier(SklearnClassifier):
 
     def get_features_parallel(self, post: Data) -> tuple[str, str]:
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
-        return (get_features(post.text, self.vector_size, self.wv, language=self.language), post.label)
+        clean_sentence = typography_undo(post.text)
+        language = guess_language(clean_sentence)
+        return (get_features(clean_sentence, self.vector_size, self.wv, language), post.label)
 
 
     @classmethod
@@ -314,14 +400,18 @@ class Classifier(SklearnClassifier):
         else:
             raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
 
-    def classify(self, post: str, external_data: dict = None) -> str:
+    def classify(self, post: str) -> str:
         """Apply a label on a post based on the trained model."""
-        item = get_features(post, self.vector_size, self.wv, language=self.language, external_data=external_data)
+        clean_sentence = typography_undo(post)
+        language = guess_language(clean_sentence)
+        item = get_features(clean_sentence, self.vector_size, self.wv, language)
         return super().classify(item)
 
-    def prob_classify(self, post: str, external_data: dict = None) -> tuple[str, float]:
+    def prob_classify(self, post: str) -> tuple[str, float]:
         """Apply a label on a post based on the trained model and output the probability too."""
-        item = get_features(post, self.vector_size, self.wv, language=self.language, external_data=external_data)
+        clean_sentence = typography_undo(post)
+        language = guess_language(clean_sentence)
+        item = get_features(clean_sentence, self.vector_size, self.wv, language)
 
         # This returns a weird distribution of probabilities for each label that is not quite a dict
         proba_distro = super().prob_classify(item)

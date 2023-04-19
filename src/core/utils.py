@@ -274,6 +274,106 @@ def imap_decode(value: bytes) -> str:
     return ''.join(res)
 
 
+def typography_undo(string:str) -> str:
+    """Break correct typographic Unicode entities into dummy computer characters (ASCII) to produce computer-standard vocabulary and help word tokenizers to properly detect word boundaries.
+
+    This is useful when parsing:
+
+        1. **properly composed** text, like the output of LaTeX or SmartyPants[^1]/WP Scholar[^2],
+        2. text typed with Dvorak-like keyboard layouts (using proper Unicode entities where needed).
+
+    For example, the proper `…` ellipsis entity (Unicode U+2026 symbol) will be converted into 3 regular dots `...`.
+
+    [^1]: https://daringfireball.net/projects/smartypants/
+    [^2]: https://eng.aurelienpierre.com/wp-scholar/
+    """
+    substitutions = {
+        # Ligatures
+        "\u0132": "IJ", # Nederlands & Flanders
+        "\u0133": "ij", # Nederlands & Flanders
+        "\u0152": "OE", # French
+        "\u0153": "oe", # French
+        "\uA7F9": "oe", # French
+        "\uFB00": "ff",
+        "\uFB01": "fi",
+        "\uFB02": "fl",
+        "\uFB03": "ffi",
+        "\uFB04": "ffl",
+        "\uFB05": "st", # Medieval ligature
+        "\uFB06": "st", # Medieval ligature
+        # Punctuation
+        "\u2026": "...",
+        # Spaces
+        "\u2002": " ", # En space
+        "\u2003": " ", # Em space
+        "\u2004": " ", # Three-Per-Em Space
+        "\u2005": " ", # Four-Per-Em Space
+        "\u2006": " ", # Six-Per-Em Space
+        "\u2007": " ", # Figure Space
+        "\u2008": " ", # Punctuation Space
+        "\u2009": " ", # thin space
+        "\u200A": " ", # hair space
+        "\u200B": " ", # Zero Width Space
+        "\u200C": " ", # Zero Width Non-Joiner
+        "\u00A0": " ", # Unbreakable space
+        "\u202f": " ", # Narrow No-Break Space
+        # Hyphens and dashes
+        "\u2010": "-", # Hyphen
+        "\u2011": "-", # Non-Breaking Hyphen
+        "\u2012": "-", # Figure Dash
+        "\u2013": "-", # En Dash
+        "\u2014": "-", # Em Dash
+        "\u2015": "-", # Horizontal Bar
+        "\uFF0D": "-", # Fullwidth Hyphen-Minus
+        "\uFE63": "-", # Small Hyphen-Minus
+        # Quotation marks
+        "\u02BA": "\"", # Modifier Letter Double Prime
+        "\u2018": "\"", # Left Single Quotation Mark
+        "\u2019": "\"", # Right Single Quotation Mark
+        "\u201A": "\"", # Single Low-9 Quotation Mark
+        "\u201B": "\"", # Single High-Reversed-9 Quotation Mark
+        "\u201C": "\"", # Left Double Quotation Mark
+        "\u201D": "\"", # Right Double Quotation Mark
+        "\u201E": "\"", # Double Low-9 Quotation Mark
+        "\u201F": "\"", # Double High-Reversed-9 Quotation Mark
+        "\uFF02": "\"", # Fullwidth Quotation Mar
+        # Apostrophe
+        "\uFF07": "'", # Fullwidth Apostrophe
+        "\u02B9": "'", # Modifier Letter Prime
+        "\u02BB": "'", # Modifier Letter Turned Comma
+        "\u02BC": "'", # Modifier Letter Apostrophe
+        # Fractions
+        "\u2150": "1/7",
+        "\u2151": "1/9",
+        "\u2152": "1/10",
+        "\u2153": "1/3",
+        "\u2154": "2/3",
+        "\u2155": "1/5",
+        "\u2156": "2/5",
+        "\u2157": "3/5",
+        "\u2158": "4/5",
+        "\u2159": "1/6",
+        "\u215A": "5/6",
+        "\u215B": "1/8",
+        "\u215C": "3/8",
+        "\u215D": "5/8",
+        "\u215E": "7/8",
+        "\u215F": "1/",
+        # Arrows
+        "\u2190": "<-",
+        "\u2192": "->",
+        "\u2194": "<->",
+        "\u21D0": "<-",
+        "\u21D2": "->",
+        "\u21D4": "<->",
+    }
+
+    for s in substitutions:
+        string = string.replace(s, substitutions[s])
+
+    return string
+
+
 ## Default files and pathes
 
 def get_data_folder(filename: str) -> str:
