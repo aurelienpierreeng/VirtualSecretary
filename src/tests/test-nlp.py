@@ -33,7 +33,7 @@ print(w2v.wv.most_similar("free"))
 
 # Build the model
 training_set = [nlp.Data(post.text, post.get('class')) for post in nltk.corpus.nps_chat.xml_posts()]
-model = nlp.Classifier(training_set, "chat", w2v.wv, validate=True, language="any")
+model = nlp.Classifier(training_set, "chat", w2v.wv, validate=True)
 
 # Classify test stuff
 l = ["Do you have time to meet at 5 pm ?", "Come with me !", "Nope", "Well, fuck", "What do you think ?"]
