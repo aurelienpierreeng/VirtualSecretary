@@ -24,7 +24,7 @@ from nltk.tokenize import RegexpTokenizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
-from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN
+from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN
 from core.utils import get_models_folder, typography_undo
 
 nltk.download('punkt')
@@ -56,18 +56,6 @@ DATES["french"] =  {
     "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
     "lun", "mar", "mer", "jeu", "ven", "sam", "dim",
     "lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.",
-}
-
-# We remove stopwords only if they are grammatical operators not briging semantic meaning.
-# NLTK stopwords lists are too aggressive and will remove auxiliaries and wh- tags
-STOPWORDS = {
-    "it", "it's", "that", "this", "these", "those", "that'll",
-    "the", "a", "an", "any", "such", "to", "which", "whose",
-    "my", "mine", "your", "yours", "their", "theirs", "his", "hers",
-    "ça", "à", "au", "aux", "que", "qu'il", "qu'elle", "qu'", "ce", "cette", "ces", "cettes", "cela", "ceci",
-    "le", "la", "les", "l", "l'", "de", "du", "d'", "un", "une",
-    "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "leur", "leurs", "votre", "vos", "c'est à dire", "c'est-à-dire",
-    "y"
 }
 
 
@@ -131,11 +119,36 @@ def guess_language(string: str) -> str:
     return list(STOPWORDS_DICT.keys())[index_max]
 
 
+def prefilter_tokenizer(string: str) -> str:
+    """Tokenizers split words based on unsupervised machine-learned models. Sometimes, they work weird.
+    For example, in emails and user handles like `@user`, they would split `@` and `user` as 2 different tokens,
+    making it impossible to detect usernames in single tokens later.
+
+    To avoid that, we replace data of interest by meta-tokens before the tokenization, with regular expressions.
+    """
+
+    # Anonymize users and prevent tokenizers from splitting @ from the username
+    string = re.sub(r"(\S+)?@(\S+)", "_USER_", string)
+
+    # Find English dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
+    string = re.sub(r"([0-9]{1,2})? (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\.?( [0-9]{1,2})?( [0-9]{2,4})(?!:)",
+                    "_DATE_", string, flags=re.IGNORECASE | re.MULTILINE)
+
+    # Find French dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
+    string = re.sub(r"([0-9]{1,2})? (jan|fév|mar|avr|mai|jui|jui|aou|sep|oct|nov|déc)\.?( [0-9]{1,2})?( [0-9]{2,4})(?!:)",
+                    "_DATE_", string, flags=re.IGNORECASE | re.MULTILINE)
+
+    # Note : dates in ISO format like `2022-08-10` will not be split apart in tokens and will be captured
+    # below in `normalize_token()`
+
+    return string
+
+
 def normalize_token(word: str, language: str):
     """Return normalized word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.) are removed and words are stemmed ("marketing" becomes "market", "apples" becomes "apple").
 
     Arguments:
-        word (str): tokenized word
+        word (str): tokenized word in lower case only.
         language (str): the language used to detect dates. Supports `"french"`, `"english"` or `"any"`.
 
     Examples:
@@ -144,11 +157,11 @@ def normalize_token(word: str, language: str):
     """
     value = word
 
-    if re.match(r".*user\d+", word):
-        # Discard the names of chat users
-        value = ''
+    if re.match(r"user\d+", word) or re.match(r"@\S+", word) or "_user_" in word:
+        # Discard usernames
+        value = '_USER_'
 
-    elif re.match(DATE_PATTERN, word):
+    elif re.match(DATE_PATTERN, word) or "_date_" in word:
         # Record dates format - we don't need to know which dateé
         value = '_DATE_'
 
@@ -156,25 +169,53 @@ def normalize_token(word: str, language: str):
         # Record time/hour format - we don't need to know what time
         value = '_TIME_'
 
+    elif re.match(URL_PATTERN, word):
+        # Contains url - we don't need to know which site
+        value = '_URL_'
+
+    elif re.match(CODE_PATTERN, word):
+        # Contains a filename referencing an code extension
+        value = '_CODEFILE_'
+
+    elif re.match(IMAGE_PATTERN, word):
+        # Contains a filename referencing an image extension
+        value = '_IMAGEFILE_'
+
+    elif re.match(DOCUMENT_PATTERN, word):
+        # Contains a filename referencing a document extension
+        value = '_DOCUMENTFILE_'
+
+    elif re.match(TEXT_PATTERN, word):
+        # Contains a filename referencing a text extension
+        value = '_TEXTFILE_'
+
+    elif re.match(ARCHIVE_PATTERN, word):
+        # Contains a filename referencing an archive package extension
+        value = '_ARCHIVEFILE_'
+
+    elif re.match(EXECUTABLE_PATTERN, word):
+        # Contains a filename referencing an executable package extension
+        value = '_BINARYFILE_'
+
+    elif re.match(PATH_PATTERN, word):
+        # Contains path - we don't need to know which file/folder
+        value = '_PATH_'
+
+    elif word in DATES[language]:
+        # Record textual dates - we don't need to know which date
+        value = '_DATE_'
+
     elif re.match(r"(CAD|USD|EUR|€|\$|£)", word):
         # Record price - we don't need to know which one
         # Note that the word tokenizer will split numbers and monetary units, so no need to regex digits + unit
         value = '_PRICE_'
 
-    elif re.match(r"^\d+$", word):
-        # Discard numbers, just record that we have a number
+    elif re.match(r"^\d+", word):
+        # Discard numbers, possibly followed by unit, just record that we have a number
         value = '_NUMBER_'
-
-    elif re.match(r"\d", word):
-        # We have a mix of digits and something else. Weird stuff, count it as digit.
-        value = '_NUMBER_'
-
-    elif re.match(URL_PATTERN, word):
-        # Contains url - we don't need to know which site
-        value = '_URL_'
 
     elif re.match(r"\.{2,}", word):
-        # Teenagers need to calm the fuck down, ellipses need no more than three dots
+        # Teenagers need to calm the fuck down, ellipses need no more than three dots and two dots are not a thing
         value = '...'
 
     elif re.match(r"-{1,}", word):
@@ -184,13 +225,6 @@ def normalize_token(word: str, language: str):
     elif re.match(r"\?{1,}", word):
         # Same with question marks
         return '?'
-
-    elif word in DATES[language]:
-        # Record textual dates - we don't need to know which date
-        value = '_DATE_'
-
-    elif word in STOPWORDS:
-        value = ''
 
     else:
         # Stem the word
@@ -248,13 +282,17 @@ class Word2Vec(gensim.models.Word2Vec):
         """
         self.pathname = get_models_folder(name)
         self.vector_size = vector_size
-        print(f"got {len(sentences)} sentences")
+        print(f"got {len(sentences)} pieces of text")
 
         # training = [tokenize_sentences(sentence, language=language) for sentence in set(sentences)]
         with Pool() as pool:
-            training: list = pool.map(self.tokenize_sentences_parallel, set(sentences))
+            training: list[list[list[str]]] = pool.map(self.tokenize_sentences_parallel, set(sentences))
 
         print("tokenization done")
+
+        # Flatten the first dimension of the list of list of list of strings :
+        training = [sentence for text in training for sentence in text]
+        print(f"got {len(training)} sentences")
         super().__init__(training, vector_size=vector_size, window=7, min_count=5, workers=os.cpu_count(), epochs=150, ns_exponent=-0.5, sample=5e-5)
         print("training done")
         self.save(self.pathname)
@@ -262,11 +300,12 @@ class Word2Vec(gensim.models.Word2Vec):
         print("saving done")
 
 
-    def tokenize_sentences_parallel(self, sentence):
+    def tokenize_sentences_parallel(self, text):
         """Thread-safe call to `.tokenize_sentences()` to be called in multiprocessing.Pool map"""
-        clean_sentence = typography_undo(sentence)
-        language = guess_language(clean_sentence)
-        return tokenize_sentences(clean_sentence, language)
+        clean_text = typography_undo(text)
+        language = guess_language(clean_text)
+        clean_text = prefilter_tokenizer(clean_text)
+        return [tokenize_sentences(sentence, language) for sentence in split_sentences(clean_text, language)]
 
 
     @classmethod
