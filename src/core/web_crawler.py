@@ -1,33 +1,24 @@
 import re
-import pickle
-import os
+import time
 
 import requests
 from bs4 import BeautifulSoup
+from core.utils import typography_undo
 
+from typing import TypedDict
 
-def get_data_folder(filename: str) -> str:
-    """Resolve the path of a training data saved under `filename`. These are stored in `../../data/`.
-    The `.pickle` extension is added automatically.
+web_page = TypedDict("web_page", {"title": str,     # Title of the page
+                                  "url": str,       # Where to find the page on the network
+                                  "date": str,      # Date of last modification of the page, to assess relevance of the content.
+                                  "content": str,   # The actual content of the page. Needs fine-tuning depending of HTML templates.
+                                  "excerpt": str,   # Shortened version of the content for search results previews.
+                                  "h1": set[str],   # Title of the post if any. There should be only one h1 per page, but some templates wrongly use h1 for section titles.
+                                  "h2": set[str],   # Section titles if any
+                                  "lang": str       # 2-letters code of the page language
+                                  })
+"""Dictionnary representing a web page and its metadata"""
 
-    Warning:
-        This does not check the existence of the file and root folder.
-    """
-    current_path = os.path.abspath(__file__)
-    install_path = os.path.dirname(
-                        os.path.dirname(
-                            os.path.dirname(current_path)))
-    models_path = os.path.join(install_path, "data")
-    return os.path.abspath(os.path.join(models_path, filename + ".pickle"))
-
-
-def save_data(data, filename: str):
-    """Save scraped data to a pickle file in data folder. Folder and file extension are handled automtically."""
-    with open(get_data_folder(filename), 'wb') as f:
-        pickle.dump(data, f, pickle.HIGHEST_PROTOCOL)
-
-
-def relative_to_absolute(URL, domain):
+def relative_to_absolute(URL: str, domain: str) -> str:
     """Convert a relative path to absolute by prepending the domain"""
     if URL.startswith("/"):
         # relative URL: prepend domain
@@ -36,12 +27,35 @@ def relative_to_absolute(URL, domain):
         return URL
 
 
+def radical_url(URL: str) -> str:
+    """Trim an URL to the page (radical) part, removing anchors if any (internal links)"""
+    anchor = re.match(r"(.+?)#(.+)", URL)
+    if anchor:
+        URL = anchor.groups()[0]
+    return URL
+
+
 def get_page_content(url) -> BeautifulSoup:
     """Request a page through the network and feed its response to a BeautifulSoup handler"""
+    # Prevent being thresholded on some servers
+    time.sleep(1)
+
     try:
-        page = requests.get(url)
+        page = requests.get(url, timeout=30)
         print(f"{url}: {page.status_code}")
-        return BeautifulSoup(page.content, 'html.parser')
+        handler = BeautifulSoup(page.content, 'html.parser')
+
+        # Remove any kind of machine code and symbols from the HTML doctree because we want natural language only
+        # That will also make subsequent parsing slightly faster
+        [element.decompose() for element in handler.select('code, pre, math, style, script, svg, img, audio, video, iframe, embed')]
+
+        # Remove inline style and useless attributes too
+        for attribute in ["data", "style", "media"]:
+            for tag in handler.find_all(attrs={attribute: True}):
+                del tag[attribute]
+
+        return handler
+
     except Exception as e:
         print(e)
         return BeautifulSoup("<html></html>", 'html.parser')
@@ -64,34 +78,94 @@ def get_page_markup(page: BeautifulSoup, markup: str|list) -> str:
         print(f"found {len(elements)} {item}")
 
         if elements:
-            for body in elements:
-                # Remove pre and code markup from the HTML doctree because we want natural language only
-                for element in body.select('code, pre, math'):
-                    element.decompose()
-
-                body = body.get_text()
-
-                # Replace special unicode spaces
-                body = body.replace("\u2002", " ")
-                body = body.replace("\u2008", " ")
-                body = body.replace("\u202f", " ")
-                body = body.replace("\xa0", " ")
-
-                # Append each element as a new line
-                output += "\n\n" + body
+            # Each HTML tag is semantically equivalent to a "sentence".
+            # When extracting pure text out of HTML markup, we instruct the parser
+            # to separate tags content with dot/space to hint sentences splitters.
+            results = [tag.get_text(separator=". ") for tag in elements]
+            output += "\n\n".join(results)
 
     return output
 
-def parse_page(page: BeautifulSoup, url: str, lang: str, markup) -> list[tuple[str, str, str]]:
+
+def get_excerpt(html: BeautifulSoup):
+    """Find HTML tags possible containing the shortened version of the page content."""
+
+    excerpt_options = [ ("meta", {"property": "og:description"}),
+                        ("meta", {"name": "description"}) ]
+
+    excerpt = None
+    i = 0
+
+    while not excerpt and i < len(excerpt_options):
+        excerpt = html.find(excerpt_options[i][0], excerpt_options[i][1])
+        i += 1
+
+    return excerpt["content"] if excerpt else None
+
+
+def get_date(html: BeautifulSoup):
+    """Find HTML tags possibly containing the page date."""
+
+    def method_1(html: BeautifulSoup):
+        test = html.find("meta", {"property": "article:modified_time", "content": True})
+        return test["content"] if test else None
+
+    def method_2(html: BeautifulSoup):
+        test = html.find("time", {"datetime": True})
+        return test["datetime"] if test else None
+
+    def method_3(html):
+        test = html.find("div", {"class": "dateline"})
+        return test.get_text() if test else None
+
+    date = None
+    bag_of_methods = (method_1, method_2, method_3)
+
+    i = 0
+    while not date and i < len(bag_of_methods):
+        date = bag_of_methods[i](html)
+        i += 1
+
+    return date
+
+
+def parse_page(page: BeautifulSoup, url: str, lang: str, markup, date=None) -> list[tuple[str, str, str]]:
     """Get the requested markup from the requested page URL.
 
     Returns:
         A tuple containing the page parsed content, the page lang and the page URL, ready for machine-learning.
     """
-    content = get_page_markup(page, markup=markup)
+    # Get title - easy : it's standard
+    title = page.find("title")
+    if title:
+        title = title.get_text()
 
-    if content:
-        return [(content, lang, url)]
+    # Get excerpt in metadata - hard : several ways of declaring it.
+    excerpt = get_excerpt(page)
+    if excerpt:
+        excerpt = typography_undo(excerpt)
+
+    # Get date - hard if no sitemap with timestamps.
+    if not date:
+        date = get_date(page)
+
+    h1 = {typography_undo(tag.get_text()) for tag in page.find_all("h1")}
+    h2 = {typography_undo(tag.get_text()) for tag in page.find_all("h2")}
+
+    # Get content - easy : user-request
+    content = typography_undo(get_page_markup(page, markup=markup))
+
+    if content and title:
+        result = web_page(title=title,
+                          url=url,
+                          date=date,
+                          content=content,
+                          excerpt=excerpt,
+                          h1=h1,
+                          h2=h2,
+                          lang=lang)
+        print(result)
+        return [result]
     else:
         return []
 
@@ -136,7 +210,7 @@ class Crawler:
 
         # Recurse
         for url in index.find_all('a', href=True):
-            currentURL = relative_to_absolute(url["href"], domain)
+            currentURL = relative_to_absolute(radical_url(url["href"]), domain)
             if website in currentURL and currentURL not in self.crawled_URL:
                 if contains_str in currentURL:
                     page = get_page_content(currentURL)
@@ -181,21 +255,40 @@ class Crawler:
         Returns:
           list of tuples: `(page content, page language, page URL)`
         """
-
-        urls = get_page_content(website + sitemap).find_all('loc')
-        print("%i URLs found in sitemap" % len(urls))
+        index_page = get_page_content(website + sitemap)
         domain = re.search(
             r"(https?:\/\/[a-z0-9\-\_]+?\.[a-z0-9]{2,})", website).group(0)
+
+        # Sitemaps of sitemaps enclose elements in `<sitemap> </sitemap>`
+        # While sitemaps of pages enclose them in `<url> </url>`.
+        # In both cases, we find URL in `<loc>` and dates in `<lastmod>`
+        # Blindly look for both and concatenate the lists
+        links = index_page.find_all('sitemap') + index_page.find_all('url')
+
+        print("%i URLs found in sitemap" % len(links))
         output = []
 
-        for url in urls:
+        for link in links:
+            url = link.find("loc")
+            date = link.find("lastmod")
+
+            if not url:
+                print("No URL found in ", link)
+                # Nothing to process, ignore this item
+                pass
+
+            if not date:
+                # Defaults to dummy date
+                date = None
+            else:
+                date = date.get_text()
+
             currentURL = relative_to_absolute(url.get_text(), domain)
-            print(currentURL)
+            print(currentURL, date)
 
             if '.xml' not in currentURL:
                 page = get_page_content(currentURL)
-                output.append(
-                    (get_page_markup(page, markup=markup), default_lang, currentURL))
+                output += parse_page(page, currentURL, default_lang, markup=markup, date=date)
 
                 # Find translations if any
                 for lang in langs:
@@ -207,8 +300,7 @@ class Crawler:
                             link_tag["href"], domain)
 
                         t_page = get_page_content(translatedURL)
-                        output.append(
-                            (get_page_markup(t_page, markup=markup), lang, translatedURL))
+                        output += parse_page(page, translatedURL, lang, markup=markup, date=date)
 
                         # Remember we crawled this
                         self.crawled_URL.append(translatedURL)
@@ -217,6 +309,7 @@ class Crawler:
                 self.crawled_URL.append(currentURL)
 
             else:
+                # We got a sitemap of sitemaps, recurse over the sub-sitemaps
                 _sitemap = currentURL.replace(website, "")
                 output += self.get_website_from_sitemap(
                     website, default_lang, sitemap=_sitemap, langs=langs, markup=markup)
