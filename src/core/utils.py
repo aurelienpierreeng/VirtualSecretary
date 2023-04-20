@@ -287,6 +287,10 @@ def typography_undo(string:str) -> str:
     [^1]: https://daringfireball.net/projects/smartypants/
     [^2]: https://eng.aurelienpierre.com/wp-scholar/
     """
+
+    # Note: a quick and dirty way of discarding Unicode entities would be to
+    # encode to ASCII, ignoring errors, and re-encode to UTF-8. But that would
+    # remove valid accented characters too.
     substitutions = {
         # Ligatures
         "\u0132": "IJ", # Nederlands & Flanders
@@ -303,6 +307,8 @@ def typography_undo(string:str) -> str:
         "\uFB06": "st", # Medieval ligature
         # Punctuation
         "\u2026": "...",
+        "|": "\n",
+        "#": " ",
         # Spaces
         "\u2002": " ", # En space
         "\u2003": " ", # Em space
@@ -328,8 +334,6 @@ def typography_undo(string:str) -> str:
         "\uFE63": "-", # Small Hyphen-Minus
         # Quotation marks
         "\u02BA": "\"", # Modifier Letter Double Prime
-        "\u2018": "\"", # Left Single Quotation Mark
-        "\u2019": "\"", # Right Single Quotation Mark
         "\u201A": "\"", # Single Low-9 Quotation Mark
         "\u201B": "\"", # Single High-Reversed-9 Quotation Mark
         "\u201C": "\"", # Left Double Quotation Mark
@@ -337,11 +341,18 @@ def typography_undo(string:str) -> str:
         "\u201E": "\"", # Double Low-9 Quotation Mark
         "\u201F": "\"", # Double High-Reversed-9 Quotation Mark
         "\uFF02": "\"", # Fullwidth Quotation Mar
-        # Apostrophe
+        "« "    : "\"", # This needs spaces to have been decoded before
+        " »"    : "\"", # This needs spaces to have been decoded before
+        "«"     : "\"",
+        "»"     : "\"",
+        # Apostrophes
         "\uFF07": "'", # Fullwidth Apostrophe
         "\u02B9": "'", # Modifier Letter Prime
         "\u02BB": "'", # Modifier Letter Turned Comma
         "\u02BC": "'", # Modifier Letter Apostrophe
+        "\u2018": "'", # Left Single Quotation Mark
+        "\u2019": "'", # Right Single Quotation Mark
+        "`"     : " ", # Backtick
         # Fractions
         "\u2150": "1/7",
         "\u2151": "1/9",
@@ -366,10 +377,31 @@ def typography_undo(string:str) -> str:
         "\u21D0": "<-",
         "\u21D2": "->",
         "\u21D4": "<->",
+        "↑": " ",
+        "↵": " ",
+        "↩︎": " ",
+        # Decorations
+        "☙": " ",
+        "❧": " ",
+        "🔗": " ",
+        # Newlines + space
+        "\n ": "\n",
+        " \n": "\n",
+        "\t ": "\t",
+        " \t": "\t",
     }
 
     for s in substitutions:
         string = string.replace(s, substitutions[s])
+
+    string = re.sub(r"\.?[\n\r\t]\.?", "\n", string)
+    string = string.replace(" .", " ")
+
+    # Remove multiple spaces
+    string = re.sub(r"[ ]{2,}", " ", string)
+
+    # Limit multiple tabs and newline characters to 2
+    string = re.sub(r"( ?[\t\r\n] ?){2,}", "\n\n", string)
 
     return string
 
