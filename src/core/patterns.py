@@ -18,6 +18,9 @@ EMAIL_PATTERN = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a
 URL_PATTERN = re.compile(r"(?>https?\:)?\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", re.IGNORECASE)
 """URL patterns like `http(s)://domain.ext/page` or `//domain.ext/page` where `domain.ext` is captured as the first group and `/page` is the second group"""
 
+PATH_PATTERN = re.compile(r"^(~?[\/]{1}|[A-Z]:\\\\)([^\r\n\t\f\v ]+)")
+"""File path pattern like `~/file`, `/home/file` or `C:\\windows`"""
+
 # Date/time
 
 DATE_PATTERN = re.compile(r"((\d{2,4})(?:-|\/)(\d{2})(?:-|\/)(\d{2,4}))")
@@ -58,3 +61,18 @@ UID_PATTERN = re.compile(r"UID ([0-9]+)")
 
 FLAGS_PATTERN = re.compile(r"FLAGS \((.*?)\)")
 """Matches email flags from IMAP headers."""
+
+# Filenames patterns
+# Need to be tested BEFORE path pattern if both are used because a path is a more general case
+
+IMAGE_PATTERN = re.compile(r"\S+\.(bmp|jpg|jpeg|jpe|jp2|j2c|j2k|jpc|jpf|jpx|png|ico|svg|webp|heif|heic|tif|tiff|hdr|exr|ppm|pfm|nef|rw2|cr2|cr3|crw|dng|raf|arw|srf|sr2|iiq|3fr|dcr|ari|pef|x3f|erf|raw|rwz)")
+
+CODE_PATTERN = re.compile(r"\S+\.(php|m|py|sh|c|cxx|cpp|h|hxx|a|asm|awk|asp|class|java|yml|yaml|js|css)")
+
+TEXT_PATTERN = re.compile(r"\S+\.(txt|md|html|xml|xhtml|xmp|json|tex|rst|rtf)")
+
+DOCUMENT_PATTERN = re.compile(r"\S+\.(xfc|kra|psd|ai|indd|ps|eps|pdf|xlsx|docx|pptx|doc|xls|ppt|odt|ods|odp|odg|odf|wpd)")
+
+ARCHIVE_PATTERN = re.compile(r"\S+\.(zip|gzip|gz|tar|bz|iso|rar|img)")
+
+EXECUTABLE_PATTERN = re.compile(r"\S+\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin)")
