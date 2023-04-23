@@ -9,6 +9,7 @@ Supports automatic language detection, word tokenization and stemming for `'dani
 import random
 import re
 import os
+import sys
 from multiprocessing import Pool
 
 import gensim
@@ -24,10 +25,12 @@ from nltk.tokenize import RegexpTokenizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
+from rank_bm25 import BM25Okapi
+
 from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN
 from core.utils import get_models_folder, typography_undo
 
-nltk.download('punkt')
+#nltk.download('punkt')
 #nltk.download('stopwords')
 
 # The set of languages supported at the same time by NLTK tokenizer, stemmer and stopwords data is not consistent.
@@ -257,16 +260,33 @@ class Data():
         self.label = label
 
 
-def get_wordvec(wv: gensim.models.KeyedVectors, word: str, language: str) -> np.array:
+def get_wordvec(wv: gensim.models.KeyedVectors, word: str, language: str, syn1neg: np.array = None, normalize = True) -> np.array:
     """Return the vector associated to a word, through a dictionnary of words.
+
+    If `syn1neg` is provided, we used "OUT" matrix of the embedding, for the dual-space embedding scheme.
+    This is useful when using word2vec to build a search-engine, the documents to index are better embedded using
+    the "OUT" matrix (stored in gensim.Word2Vec.syn1neg matrix), while the queries are better embedded using the "IN" matrix
+    (gensim.Word2Vec.wv).
+
+    References:
+        A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana
+        https://arxiv.org/pdf/1602.01137.pdf
+
 
     Returns:
         the nD vector.
     """
-    normalized = normalize_token(word.lower(), language)
+    if normalize:
+        word = normalize_token(word.lower(), language)
 
-    if normalized and normalized in wv:
-        return wv[normalized]
+    if word and word in wv:
+        if syn1neg is not None:
+            vec = syn1neg[wv.key_to_index[word]]
+        else:
+            vec = wv[word]
+
+        norm = np.linalg.norm(vec)
+        return vec / norm if norm > 0. else vec
     else:
         return np.zeros(wv.vector_size)
 
@@ -314,7 +334,7 @@ class Word2Vec(gensim.models.Word2Vec):
         return cls.load(get_models_folder(name))
 
 
-def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, language: str) -> dict:
+def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, language: str, syn1neg: np.array = None, tokens: list = None) -> dict:
     """Extract word features from the text of `post`.
 
     We use meta-features like date, prices, time, number that discard the actual value but retain the property.
@@ -326,19 +346,29 @@ def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, l
     Arguments:
         post (Data): the training text (message or sentence) that will be tokenized and turned into features.
         num_features (int): the number of dimensions of the featureset. This is vector size used in the `Word2Vec` model.
-        external_data (list): optional, arbitrary set of (meta)data that can be added to the feature set. Will be used as extra keys in the output dictionnary, where values are set to boolean `1`.
+        wv (gensim.models.KeyedVector): the dictionnary mapping words with vectors,
+        syn1neg (np.array): the W_out matrix for word embedding, in the Dual Embedding Space Model. [^1] If not provided, embedding uses the default W_in matrix. W_out is better to vectorize documents for search-engine purposes.
         language (str): the language used to detect dates and detect words separators used in tokenization. Supports `"french"` and `"english"`.
+        tokens (list[str]): if given, we discard internal tokenization and normalization and directly use this list of tokens. The need to be normalized already.
+
+    [^1]: https://arxiv.org/pdf/1602.01137.pdf
 
     Return:
         (dict): dictionnary of features, where keys are initialized with the positional number of vector elements and their value, plus the optional external data.
     """
     features = np.zeros(num_features)
 
-    i = 0
-    for word in nltk.word_tokenize(post, language=language):
-        vector = get_wordvec(wv, word, language)
-        features += vector
-        i += 1
+    if tokens is not None:
+        i = len(tokens)
+        for token in tokens:
+            vector = get_wordvec(wv, token, language, normalize=False)
+            features += vector
+    else:
+        i = 0
+        for word in nltk.word_tokenize(post, language=language):
+            vector = get_wordvec(wv, word, language, syn1neg)
+            features += vector
+            i += 1
 
     # Finish the average calculation (so far, only summed)
     if i > 0:
@@ -427,6 +457,7 @@ class Classifier(SklearnClassifier):
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
         clean_sentence = typography_undo(post.text)
         language = guess_language(clean_sentence)
+        clean_sentence = prefilter_tokenizer(clean_sentence)
         return (get_features(clean_sentence, self.vector_size, self.wv, language), post.label)
 
 
@@ -443,6 +474,7 @@ class Classifier(SklearnClassifier):
         """Apply a label on a post based on the trained model."""
         clean_sentence = typography_undo(post)
         language = guess_language(clean_sentence)
+        clean_sentence = prefilter_tokenizer(clean_sentence)
         item = get_features(clean_sentence, self.vector_size, self.wv, language)
         return super().classify(item)
 
@@ -450,6 +482,7 @@ class Classifier(SklearnClassifier):
         """Apply a label on a post based on the trained model and output the probability too."""
         clean_sentence = typography_undo(post)
         language = guess_language(clean_sentence)
+        clean_sentence = prefilter_tokenizer(clean_sentence)
         item = get_features(clean_sentence, self.vector_size, self.wv, language)
 
         # This returns a weird distribution of probabilities for each label that is not quite a dict
@@ -460,3 +493,124 @@ class Classifier(SklearnClassifier):
 
         # Finally, return label and probability only for the max proba of each element
         return (max(output, key=output.get), max(output.values()))
+
+
+class Indexer(SklearnClassifier):
+    def __init__(self,
+                 data_set: list,
+                 name: str,
+                 word2vec: Word2Vec):
+        """Search engine based on word similarity.
+
+        Arguments:
+            training_set (list[Data]): list of Data elements. If the list is empty, it will try to find a pre-trained model matching the `path` name.
+            path : path to save the trained model for reuse, as a Python joblib.
+            name (str): name under which the model will be saved for la ter reuse.
+            word2vec (Word2Vec): the instance of word embedding model.
+            validate (bool): if `True`, split the `feature_list` between a training set (95%) and a testing set (5%) and print in terminal the predictive performance of the model on the testing set. This is useful to choose a classifier.
+            variant (str):
+                - `svm`: use a Support Vector Machine with a radial-basis kernel. This is a well-rounded classifier, robust and stable, that performs well for all kinds of training samples sizes.
+                - `linear svm`: uses a linear Support Vector Machine. It runs faster than the previous and may generalize better for high numbers of features (high dimensionality).
+                - `forest`: Random Forest Classifier, which is a set of decision trees. It runs about 15-20% faster than linear SVM but tends to perform marginally better in some contexts, however it produces very large models (several GB to save on disk, where SVM needs a few dozens of MB).
+            features (int): the number of model features (dimensions) to retain. This sets the number of dimensions for word vectors found by word2vec, which will also be the dimensions in the last training layer.
+        """
+        print(f"Init. Got {len(data_set)} items.")
+
+        if word2vec and isinstance(word2vec, Word2Vec):
+            self.wv = word2vec.wv
+            self.vector_size = word2vec.vector_size
+            self.syn1neg = word2vec.syn1neg
+        else:
+            raise ValueError("wv needs to be a dictionnary-like map")
+
+        # Remove duplicated content if any. May happen with translated content when non-existent translations are inited with the original language.
+        cleaned_set = {}
+        for post in data_set:
+            cleaned_set.setdefault(post["content"], []).append(post)
+
+        data_set = []
+        for value in cleaned_set.values():
+            # Lazy trick : measure memory size of each duplicate and keep the heaviest
+            # assuming it's the most "complete"
+            sizes = [sys.getsizeof(elem) for elem in value]
+            idx_max = sizes.index(max(sizes))
+            data_set.append(value[idx_max])
+
+        print(f"Cleanup. Got {len(data_set)} remaining items.")
+
+        # Build the training set from webpages
+        training_set = [Data(post["title"] + "\n\n" + post["content"] + "\n\n".join(post["h1"]) + "\n\n".join(post["h2"]), post["url"])
+                        for post in data_set
+                        if len(post["content"]) > 50]
+
+        # Prepare the ranker for BM25 : list of tokens for each document
+        with Pool() as pool:
+            ranker_docs: list = pool.map(self.tokenize_parallel, training_set)
+
+        # Turn tokens into features
+        with Pool() as pool:
+            documents: list = pool.map(self.get_features_parallel, ranker_docs)
+
+        docs = [list(document.values()) for document in documents]
+
+        self.vectors_all = np.array(docs)
+        self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
+        self.urls = [post.label for post in training_set]
+
+        # The database of web pages with limited features
+        self.index = {post["url"]: {"title": post["title"], "excerpt": post["excerpt"], "date": post["date"]}
+                      for post in data_set if len(post["content"]) > 50}
+
+        # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
+        self.ranker = BM25Okapi(ranker_docs, k1=1.7, b=0.95)
+
+        # Garbage collection to avoid storing in the saved model stuff we won't need anymore
+        del self.syn1neg
+
+        # Save the model to a reusable object
+        joblib.dump(self, get_models_folder(name + ".joblib"))
+
+
+    def get_features_parallel(self, tokens: list[str]) -> tuple[str, str]:
+        """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
+        # Language doesn't matter, tokenization and normalization are done already
+        return get_features(None, self.vector_size, self.wv, language="english", syn1neg=self.syn1neg, tokens=tokens)
+
+
+    def tokenize_parallel(self, post: Data) -> list[str]:
+        clean_sentence = typography_undo(post.text)
+        language = guess_language(clean_sentence)
+        clean_sentence = prefilter_tokenizer(clean_sentence)
+        return [normalize_token(word.lower(), language) for word in nltk.word_tokenize(clean_sentence, language=language)]
+
+    @classmethod
+    def load(cls, name: str):
+        """Load an existing trained model by its name from the `../models` folder."""
+        model = joblib.load(get_models_folder(name) + ".joblib")
+        if isinstance(model, Indexer):
+            return model
+        else:
+            raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
+
+    def rank(self, post: str) -> str:
+        """Apply a label on a post based on the trained model."""
+        clean_sentence = typography_undo(post)
+        language = guess_language(clean_sentence)
+        clean_sentence = prefilter_tokenizer(clean_sentence)
+        tokenized_query = [normalize_token(word.lower(), language) for word in nltk.word_tokenize(clean_sentence, language=language)]
+
+        # Get the the centroid of the word embedding vector
+        query = get_features(clean_sentence, self.vector_size, self.wv, language=language, tokens=tokenized_query)
+        vector = np.array(list(query.values()))
+        norm = np.linalg.norm(vector)
+        norm = 1.0 if norm == 0.0 else norm
+
+        # Compute the cosine similarity of centroids between query and documents,
+        # then aggregate the ranking from BM25+ to it for each URL.
+        # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
+        aggregates = 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokenized_query)
+
+        results = {(url, similarity) for url, similarity in zip(self.urls, aggregates) if similarity > 0.35}
+
+        # Return the 20 most similar documents
+        return sorted(results, key=lambda x:x[1], reverse=True)[0:50]
