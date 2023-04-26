@@ -64,15 +64,18 @@ FLAGS_PATTERN = re.compile(r"FLAGS \((.*?)\)")
 
 # Filenames patterns
 # Need to be tested BEFORE path pattern if both are used because a path is a more general case
+# See https://stackoverflow.com/a/76113333/7087604
 
-IMAGE_PATTERN = re.compile(r"\S+\.(bmp|jpg|jpeg|jpe|jp2|j2c|j2k|jpc|jpf|jpx|png|ico|svg|webp|heif|heic|tif|tiff|hdr|exr|ppm|pfm|nef|rw2|cr2|cr3|crw|dng|raf|arw|srf|sr2|iiq|3fr|dcr|ari|pef|x3f|erf|raw|rwz)")
+IMAGE_PATTERN = re.compile(r"\.(bmp|jpg|jpeg|jpe|jp2|j2c|j2k|jpc|jpf|jpx|png|ico|svg|webp|heif|heic|tif|tiff|hdr|exr|ppm|pfm|nef|rw2|cr2|cr3|crw|dng|raf|arw|srf|sr2|iiq|3fr|dcr|ari|pef|x3f|erf|raw|rwz)")
 
-CODE_PATTERN = re.compile(r"\S+\.(php|m|py|sh|c|cxx|cpp|h|hxx|a|asm|awk|asp|class|java|yml|yaml|js|css)")
+CODE_PATTERN = re.compile(r"\.(php|m|py|sh|c|cxx|cpp|h|hxx|a|asm|awk|asp|class|java|yml|yaml|js|css)")
 
-TEXT_PATTERN = re.compile(r"\S+\.(txt|md|html|xml|xhtml|xmp|json|tex|rst|rtf)")
+TEXT_PATTERN = re.compile(r"\.(txt|md|html|xml|xhtml|xmp|json|tex|rst|rtf)")
 
-DOCUMENT_PATTERN = re.compile(r"\S+\.(xfc|kra|psd|ai|indd|ps|eps|pdf|xlsx|docx|pptx|doc|xls|ppt|odt|ods|odp|odg|odf|wpd)")
+DOCUMENT_PATTERN = re.compile(r"\.(xfc|kra|psd|ai|indd|ps|eps|pdf|xlsx|docx|pptx|doc|xls|ppt|odt|ods|odp|odg|odf|wpd)")
 
-ARCHIVE_PATTERN = re.compile(r"\S+\.(zip|gzip|gz|tar|bz|iso|rar|img)")
+ARCHIVE_PATTERN = re.compile(r"\.(zip|gzip|gz|tar|bz|iso|rar|img)")
 
-EXECUTABLE_PATTERN = re.compile(r"\S+\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin)")
+EXECUTABLE_PATTERN = re.compile(r"\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin)")
+
+PRICE_PATTERN = re.compile(r"\d* ?(cad|usd|aud|eur|euro|\£|\$|\€|\¥) ?\d*")

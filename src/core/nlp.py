@@ -27,7 +27,7 @@ from sklearn.svm import SVC
 
 from rank_bm25 import BM25Okapi
 
-from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN
+from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN, PRICE_PATTERN
 from core.utils import get_models_folder, typography_undo
 
 #nltk.download('punkt')
@@ -147,12 +147,13 @@ def prefilter_tokenizer(string: str) -> str:
     return string
 
 
-def normalize_token(word: str, language: str):
+def normalize_token(word: str, language: str, remove_stopwords: bool = False):
     """Return normalized word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.) are removed and words are stemmed ("marketing" becomes "market", "apples" becomes "apple").
 
     Arguments:
         word (str): tokenized word in lower case only.
         language (str): the language used to detect dates. Supports `"french"`, `"english"` or `"any"`.
+        remove_stopwords (bool): set to `True` to cleanup tokens for search-engine purpose. Set to `False` for natural language processing.
 
     Examples:
         `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
@@ -160,60 +161,63 @@ def normalize_token(word: str, language: str):
     """
     value = word
 
-    if re.match(r"user\d+", word) or re.match(r"@\S+", word) or "_user_" in word:
+    if word == "(" or word == ")" or word == "{" or word == "}":
+        value = ""
+
+    elif re.search(r"user\d+", word) or re.search(r"@\S+", word) or "_user_" in word:
         # Discard usernames
         value = '_USER_'
 
-    elif re.match(DATE_PATTERN, word) or "_date_" in word:
+    elif re.search(DATE_PATTERN, word) or "_date_" in word:
         # Record dates format - we don't need to know which dateé
         value = '_DATE_'
 
-    elif re.match(TIME_PATTERN, word):
+    elif re.search(TIME_PATTERN, word) or "_time_" in word:
         # Record time/hour format - we don't need to know what time
         value = '_TIME_'
 
-    elif re.match(URL_PATTERN, word):
+    elif re.search(URL_PATTERN, word) or "_url_" in word:
         # Contains url - we don't need to know which site
         value = '_URL_'
 
-    elif re.match(CODE_PATTERN, word):
+    elif re.search(CODE_PATTERN, word) or "_codefile_" in word:
         # Contains a filename referencing an code extension
         value = '_CODEFILE_'
 
-    elif re.match(IMAGE_PATTERN, word):
+    elif re.search(IMAGE_PATTERN, word) or "_imagefile_" in word:
         # Contains a filename referencing an image extension
         value = '_IMAGEFILE_'
 
-    elif re.match(DOCUMENT_PATTERN, word):
+    elif re.search(DOCUMENT_PATTERN, word) or "_documentfile_" in word:
         # Contains a filename referencing a document extension
         value = '_DOCUMENTFILE_'
 
-    elif re.match(TEXT_PATTERN, word):
+    elif re.search(TEXT_PATTERN, word) or "_textfile_" in word:
         # Contains a filename referencing a text extension
         value = '_TEXTFILE_'
 
-    elif re.match(ARCHIVE_PATTERN, word):
+    elif re.search(ARCHIVE_PATTERN, word) or "_archivefile_" in word:
         # Contains a filename referencing an archive package extension
         value = '_ARCHIVEFILE_'
 
-    elif re.match(EXECUTABLE_PATTERN, word):
+    elif re.search(EXECUTABLE_PATTERN, word) or "_binaryfile_" in word:
         # Contains a filename referencing an executable package extension
         value = '_BINARYFILE_'
 
-    elif re.match(PATH_PATTERN, word):
+    elif re.search(PATH_PATTERN, word) or "_path_" in word:
         # Contains path - we don't need to know which file/folder
         value = '_PATH_'
 
-    elif word in DATES[language]:
+    elif word in DATES[language] or "_date_" in word:
         # Record textual dates - we don't need to know which date
         value = '_DATE_'
 
-    elif re.match(r"(CAD|USD|EUR|€|\$|£)", word):
+    elif re.search(PRICE_PATTERN, word) or "_price_" in word:
         # Record price - we don't need to know which one
         # Note that the word tokenizer will split numbers and monetary units, so no need to regex digits + unit
         value = '_PRICE_'
 
-    elif re.match(r"^\d+", word):
+    elif re.search(r"^\d+", word) or "_number_" in word:
         # Discard numbers, possibly followed by unit, just record that we have a number
         value = '_NUMBER_'
 
@@ -227,7 +231,17 @@ def normalize_token(word: str, language: str):
 
     elif re.match(r"\?{1,}", word):
         # Same with question marks
-        return '?'
+        value = '?'
+
+    elif "_" in word or "<" in word or ">" in word or "~" in word or "^" in word:
+        # Does not belong to natural language, but to code and markup.
+        value = ""
+
+    elif "," == word:
+        value = ""
+
+    elif remove_stopwords and word in stopwords.words(language):
+        value = ""
 
     else:
         # Stem the word
