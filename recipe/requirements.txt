@@ -12,3 +12,6 @@ scikit-learn
 gensim
 beautifulsoup4
 pandas
+flask
+rank-bm25
+markupsafe
