@@ -18,8 +18,8 @@ EMAIL_PATTERN = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a
 URL_PATTERN = re.compile(r"(?>https?\:)?\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", re.IGNORECASE)
 """URL patterns like `http(s)://domain.ext/page` or `//domain.ext/page` where `domain.ext` is captured as the first group and `/page` is the second group"""
 
-PATH_PATTERN = re.compile(r"^(~?[\/]{1}|[A-Z]:\\\\)([^\r\n\t\f\v ]+)")
-"""File path pattern like `~/file`, `/home/file` or `C:\\windows`"""
+PATH_PATTERN = re.compile(r"^([~\.]?[\/]{1}|[A-Z]:\\\\)([^\r\n\t\f\v ]+)")
+"""File path pattern like `~/file`, `/home/file`, `./file` or `C:\\windows`"""
 
 # Date/time
 
@@ -76,6 +76,15 @@ DOCUMENT_PATTERN = re.compile(r"\.(xfc|kra|psd|ai|indd|ps|eps|pdf|xlsx|docx|pptx
 
 ARCHIVE_PATTERN = re.compile(r"\.(zip|gzip|gz|tar|bz|iso|rar|img)")
 
-EXECUTABLE_PATTERN = re.compile(r"\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin)")
+EXECUTABLE_PATTERN = re.compile(r"\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin|rpm|deb)")
 
 PRICE_PATTERN = re.compile(r"\d* ?(cad|usd|aud|eur|euro|\£|\$|\€|\¥) ?\d*")
+
+RESOLUTION_PATTERN = re.compile(r"\d+(×|x)\d+")
+"""Pixel resolution like 10x20 or 10×20. Units are discarded."""
+
+NUMBER_PATTERN = re.compile(r"^\d+[\.\,\-\_\/]?\d*$")
+"""Integers and decimals, fractions and numeric IDs with interal dashes and underscores.
+Numbers with starting or trailing units are not considered.
+Warning: this works only in tokens and checks if the whole token is a number.
+"""

@@ -13,6 +13,8 @@ import sys
 from multiprocessing import Pool
 
 import gensim
+from gensim.models.callbacks import CallbackAny2Vec
+
 import joblib
 
 import numpy as np
@@ -27,11 +29,9 @@ from sklearn.svm import SVC
 
 from rank_bm25 import BM25Okapi
 
-from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN, PRICE_PATTERN
-from core.utils import get_models_folder, typography_undo
 
-#nltk.download('punkt')
-#nltk.download('stopwords')
+from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN, PRICE_PATTERN, RESOLUTION_PATTERN, NUMBER_PATTERN
+from core.utils import get_models_folder, typography_undo, guess_date
 
 # The set of languages supported at the same time by NLTK tokenizer, stemmer and stopwords data is not consistent.
 # We build the least common denominator here, that is languages supported in the 3 modules.
@@ -107,6 +107,34 @@ STOPWORDS_DICT["german"] += ["best", "beste", "besten", "besser", "mehr", "alle"
 # Build a dict of sets
 STOPWORDS_DICT = { language: set(STOPWORDS_DICT[language]) for language in STOPWORDS_DICT}
 
+# Stopwords to remove
+# We remove stopwords only if they are grammatical operators not briging semantic meaning.
+# NLTK stopwords lists are too aggressive and will remove auxiliaries and wh- tags
+# We keep nounds, verbs, question and negation markers.
+# We ditch quantifiers, adverbs, pronouns.
+STOPWORDS = {
+    # EN
+    "it", "it's", "that", "this", "these", "those", "that'll", "that's", "there", "here",
+    "the", "a", "an", "one", "any", "all", "none", "such", "to", "which", "whose", "much", "many", "several", "few", "little",
+    "always", "never", "sometimes",
+    "my", "mine", "your", "yours", "their", "theirs", "his", "hers",
+    "i", "you", "he", "she", "her", "them",
+    "also", "could", "would", "n't", "'s", "need", "like", "get",
+    "with", "in", "but", "so", "'m", "just", "and", "only", "because", "of", "as", "very", "from", "other",
+    "if", "then", "however", "maybe", "now", "really", "actually", "something", "everything",
+    "maybe", "probably", "guess", "perhaps", "still", "though", "really", "even",
+    "something", "definitely", "indeed", "however", "for", "all", "some", "sometimes", "everytime", "every", "none",
+    # FR
+    "ça", "à", "au", "aux", "que", "qu'il", "qu'elle", "qu'", "ce", "cette", "ces", "cettes", "cela", "ceci",
+    "le", "la", "les", "l", "l'", "de", "du", "d'", "un", "une", "des",
+    "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "leur", "leurs", "votre", "vos", "c'est à dire", "c'est-à-dire",
+    "y", "là", "ici", "là-bas", "ceci", "cela", "c'est", "bien",
+    "parfois", "certain", "certains", "certaine", "certaines", "quelque", "quelques", "nombreux", "nombreuses", "peu", "plusieurs",
+    "beaucoup", "tout", "toute", "tous", "toutes", "aucun", "aucune", "comme", "si",
+    "en", "dans", "or", "ou", "où", "just", "et", "alors", "parce", "seulement", "ni", "car",
+    "très", "donc", "pas", "mais", "même", "aussi", "avec", "je", "tu", "il", "elle", "nous", "vous", "ils", "elles",
+}
+
 
 def guess_language(string: str) -> str:
     """Basic language guesser based on stopwords detection. Stopwords are the most common words of a language: for each language, we count how many stopwords we found and return the language having the most matches. It is not perfect but the rutime vs. accuracy ratio is good.
@@ -147,13 +175,12 @@ def prefilter_tokenizer(string: str) -> str:
     return string
 
 
-def normalize_token(word: str, language: str, remove_stopwords: bool = False):
-    """Return normalized word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.) are removed and words are stemmed ("marketing" becomes "market", "apples" becomes "apple").
+def normalize_token(word: str, language: str):
+    """Return normalized word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
 
     Arguments:
         word (str): tokenized word in lower case only.
         language (str): the language used to detect dates. Supports `"french"`, `"english"` or `"any"`.
-        remove_stopwords (bool): set to `True` to cleanup tokens for search-engine purpose. Set to `False` for natural language processing.
 
     Examples:
         `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
@@ -161,50 +188,50 @@ def normalize_token(word: str, language: str, remove_stopwords: bool = False):
     """
     value = word
 
-    if word == "(" or word == ")" or word == "{" or word == "}":
-        value = ""
+    if word == "(" or word == ")" or word == "{" or word == "}" or "," == word or ":" == word or "" == word or "/" == word:
+        value = None
 
     elif re.search(r"user\d+", word) or re.search(r"@\S+", word) or "_user_" in word:
         # Discard usernames
         value = '_USER_'
 
-    elif re.search(DATE_PATTERN, word) or "_date_" in word:
+    elif DATE_PATTERN.search(word) or "_date_" in word:
         # Record dates format - we don't need to know which dateé
         value = '_DATE_'
 
-    elif re.search(TIME_PATTERN, word) or "_time_" in word:
+    elif TIME_PATTERN.search(word) or "_time_" in word:
         # Record time/hour format - we don't need to know what time
         value = '_TIME_'
 
-    elif re.search(URL_PATTERN, word) or "_url_" in word:
+    elif URL_PATTERN.search(word) or "_url_" in word:
         # Contains url - we don't need to know which site
         value = '_URL_'
 
-    elif re.search(CODE_PATTERN, word) or "_codefile_" in word:
+    elif CODE_PATTERN.search(word) or "_codefile_" in word:
         # Contains a filename referencing an code extension
         value = '_CODEFILE_'
 
-    elif re.search(IMAGE_PATTERN, word) or "_imagefile_" in word:
+    elif IMAGE_PATTERN.search(word) or "_imagefile_" in word:
         # Contains a filename referencing an image extension
         value = '_IMAGEFILE_'
 
-    elif re.search(DOCUMENT_PATTERN, word) or "_documentfile_" in word:
+    elif DOCUMENT_PATTERN.search(word) or "_documentfile_" in word:
         # Contains a filename referencing a document extension
         value = '_DOCUMENTFILE_'
 
-    elif re.search(TEXT_PATTERN, word) or "_textfile_" in word:
+    elif TEXT_PATTERN.search(word) or "_textfile_" in word:
         # Contains a filename referencing a text extension
         value = '_TEXTFILE_'
 
-    elif re.search(ARCHIVE_PATTERN, word) or "_archivefile_" in word:
+    elif ARCHIVE_PATTERN.search(word) or "_archivefile_" in word:
         # Contains a filename referencing an archive package extension
         value = '_ARCHIVEFILE_'
 
-    elif re.search(EXECUTABLE_PATTERN, word) or "_binaryfile_" in word:
+    elif EXECUTABLE_PATTERN.search(word) or "_binaryfile_" in word:
         # Contains a filename referencing an executable package extension
         value = '_BINARYFILE_'
 
-    elif re.search(PATH_PATTERN, word) or "_path_" in word:
+    elif PATH_PATTERN.search(word) or "_path_" in word:
         # Contains path - we don't need to know which file/folder
         value = '_PATH_'
 
@@ -212,14 +239,17 @@ def normalize_token(word: str, language: str, remove_stopwords: bool = False):
         # Record textual dates - we don't need to know which date
         value = '_DATE_'
 
-    elif re.search(PRICE_PATTERN, word) or "_price_" in word:
+    elif PRICE_PATTERN.search(word) or "_price_" in word:
         # Record price - we don't need to know which one
         # Note that the word tokenizer will split numbers and monetary units, so no need to regex digits + unit
         value = '_PRICE_'
 
-    elif re.search(r"^\d+", word) or "_number_" in word:
+    elif NUMBER_PATTERN.search(word) or "_number_" in word:
         # Discard numbers, possibly followed by unit, just record that we have a number
         value = '_NUMBER_'
+
+    elif RESOLUTION_PATTERN.search(word) or "_resolution_" in word:
+        value = '_RESOLUTION_'
 
     elif re.match(r"\.{2,}", word):
         # Teenagers need to calm the fuck down, ellipses need no more than three dots and two dots are not a thing
@@ -235,26 +265,26 @@ def normalize_token(word: str, language: str, remove_stopwords: bool = False):
 
     elif "_" in word or "<" in word or ">" in word or "~" in word or "^" in word:
         # Does not belong to natural language, but to code and markup.
-        value = ""
+        value = None
 
-    elif "," == word:
-        value = ""
+    elif word in STOPWORDS:
+        value = None
 
-    elif remove_stopwords and word in stopwords.words(language):
-        value = ""
-
-    else:
-        # Stem the word
-        stemmer = SnowballStemmer(language)
-        value = stemmer.stem(value)
+    #else:
+    #    # Stem the word
+    #    stemmer = SnowballStemmer(language)
+    #    value = stemmer.stem(value)
 
     return value
 
 
 def tokenize_sentences(sentence, language: str) -> list[str]:
     """Split a sentence into word tokens"""
-    return [normalize_token(token.lower(), language)
-            for token in nltk.word_tokenize(sentence, language=language)]
+    intermediate = [normalize_token(token.lower(), language)
+                    for token in nltk.word_tokenize(sentence, language=language)]
+
+    # Remove None words
+    return [item for item in intermediate if item is not None]
 
 
 def split_sentences(text, language: str) -> list[str]:
@@ -272,6 +302,21 @@ class Data():
         """
         self.text = text
         self.label = label
+
+class LossLogger(CallbackAny2Vec):
+    '''Output loss at each epoch'''
+    def __init__(self):
+        self.epoch = 1
+        self.losses = []
+
+    def on_epoch_begin(self, model):
+        print(f'Epoch: {self.epoch}', end='\t')
+
+    def on_epoch_end(self, model):
+        loss = model.get_latest_training_loss()
+        self.losses.append(loss)
+        print(f'  Loss: {loss}')
+        self.epoch += 1
 
 
 def get_wordvec(wv: gensim.models.KeyedVectors, word: str, language: str, syn1neg: np.array = None, normalize = True) -> np.array:
@@ -305,8 +350,21 @@ def get_wordvec(wv: gensim.models.KeyedVectors, word: str, language: str, syn1ne
         return np.zeros(wv.vector_size)
 
 
+def tokenize_post(post:str) -> tuple[list[str], str]:
+    clean_sentence = typography_undo(post)
+    language = guess_language(clean_sentence)
+    clean_sentence = prefilter_tokenizer(clean_sentence)
+    tokenized_sentence = tokenize_sentences(clean_sentence, language)
+
+    if not tokenized_sentence or len(tokenized_sentence) == 1:
+        # Tokenization seems to fail on single-word queries, try again without it
+        tokenized_sentence = [normalize_token(clean_sentence.lower(), "english")]
+
+    return tokenized_sentence, language
+
+
 class Word2Vec(gensim.models.Word2Vec):
-    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300):
+    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200):
         """Train or retrieve an existing word2vec word embedding model
 
         Arguments:
@@ -327,8 +385,11 @@ class Word2Vec(gensim.models.Word2Vec):
         # Flatten the first dimension of the list of list of list of strings :
         training = [sentence for text in training for sentence in text]
         print(f"got {len(training)} sentences")
-        super().__init__(training, vector_size=vector_size, window=7, min_count=5, workers=os.cpu_count(), epochs=150, ns_exponent=-0.5, sample=5e-5)
+
+        loss_logger = LossLogger()
+        super().__init__(training, vector_size=vector_size, window=7, min_count=5, workers=os.cpu_count(), epochs=epochs, ns_exponent=0.75, sample=0.00001, callbacks=[loss_logger], compute_loss=True, sg=1)
         print("training done")
+
         self.save(self.pathname)
         self.wv.save(self.pathname + "_vectors")
         print("saving done")
@@ -348,7 +409,7 @@ class Word2Vec(gensim.models.Word2Vec):
         return cls.load(get_models_folder(name))
 
 
-def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, language: str, syn1neg: np.array = None, tokens: list = None) -> dict:
+def get_features(tokens: list, num_features: int, wv: gensim.models.KeyedVectors, language: str, syn1neg: np.array = None) -> dict:
     """Extract word features from the text of `post`.
 
     We use meta-features like date, prices, time, number that discard the actual value but retain the property.
@@ -358,12 +419,11 @@ def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, l
     For everything else, we use the actual words.
 
     Arguments:
-        post (Data): the training text (message or sentence) that will be tokenized and turned into features.
+        tokens (list[str]): if given, we discard internal tokenization and normalization and directly use this list of tokens. The need to be normalized already.
         num_features (int): the number of dimensions of the featureset. This is vector size used in the `Word2Vec` model.
         wv (gensim.models.KeyedVector): the dictionnary mapping words with vectors,
         syn1neg (np.array): the W_out matrix for word embedding, in the Dual Embedding Space Model. [^1] If not provided, embedding uses the default W_in matrix. W_out is better to vectorize documents for search-engine purposes.
         language (str): the language used to detect dates and detect words separators used in tokenization. Supports `"french"` and `"english"`.
-        tokens (list[str]): if given, we discard internal tokenization and normalization and directly use this list of tokens. The need to be normalized already.
 
     [^1]: https://arxiv.org/pdf/1602.01137.pdf
 
@@ -371,25 +431,19 @@ def get_features(post: str, num_features: int, wv: gensim.models.KeyedVectors, l
         (dict): dictionnary of features, where keys are initialized with the positional number of vector elements and their value, plus the optional external data.
     """
     features = np.zeros(num_features)
+    i = len(tokens)
 
-    if tokens is not None:
-        i = len(tokens)
-        for token in tokens:
-            vector = get_wordvec(wv, token, language, normalize=False)
-            features += vector
-    else:
-        i = 0
-        for word in nltk.word_tokenize(post, language=language):
-            vector = get_wordvec(wv, word, language, syn1neg)
-            features += vector
-            i += 1
+    for token in tokens:
+        vector = get_wordvec(wv, token, language, normalize=False)
+        features += vector
 
     # Finish the average calculation (so far, only summed)
     if i > 0:
         features /= i
 
     # NLTK models take dictionnaries of features as input, so bake that.
-    return dict(enumerate(features, 1))
+    # TODO: in Indexer, we need to revert that to numpy. Fix the API to avoid this useless step
+    return dict(enumerate(features))
 
 class Classifier(SklearnClassifier):
     def __init__(self,
@@ -469,10 +523,8 @@ class Classifier(SklearnClassifier):
 
     def get_features_parallel(self, post: Data) -> tuple[str, str]:
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
-        clean_sentence = typography_undo(post.text)
-        language = guess_language(clean_sentence)
-        clean_sentence = prefilter_tokenizer(clean_sentence)
-        return (get_features(clean_sentence, self.vector_size, self.wv, language), post.label)
+        tokens, language = tokenize_post(post.text)
+        return (get_features(tokens, self.vector_size, self.wv, language), post.label)
 
 
     @classmethod
@@ -486,21 +538,17 @@ class Classifier(SklearnClassifier):
 
     def classify(self, post: str) -> str:
         """Apply a label on a post based on the trained model."""
-        clean_sentence = typography_undo(post)
-        language = guess_language(clean_sentence)
-        clean_sentence = prefilter_tokenizer(clean_sentence)
-        item = get_features(clean_sentence, self.vector_size, self.wv, language)
-        return super().classify(item)
+        tokens, language = tokenize_post(post)
+        items = get_features(tokens, self.vector_size, self.wv, language)
+        return super().classify(items)
 
     def prob_classify(self, post: str) -> tuple[str, float]:
         """Apply a label on a post based on the trained model and output the probability too."""
-        clean_sentence = typography_undo(post)
-        language = guess_language(clean_sentence)
-        clean_sentence = prefilter_tokenizer(clean_sentence)
-        item = get_features(clean_sentence, self.vector_size, self.wv, language)
+        tokens, language = tokenize_post(post)
+        items = get_features(tokens, self.vector_size, self.wv, language)
 
         # This returns a weird distribution of probabilities for each label that is not quite a dict
-        proba_distro = super().prob_classify(item)
+        proba_distro = super().prob_classify(items)
 
         # Build the list of dictionnaries like `label: probability`
         output = {i: proba_distro.prob(i) for i in proba_distro.samples()}
@@ -537,7 +585,8 @@ class Indexer(SklearnClassifier):
         else:
             raise ValueError("wv needs to be a dictionnary-like map")
 
-        # Remove duplicated content if any. May happen with translated content when non-existent translations are inited with the original language.
+        # Remove duplicated content if any.
+        # For example, translated content when non-existent translations are inited with the original language.
         cleaned_set = {}
         for post in data_set:
             cleaned_set.setdefault(post["content"], []).append(post)
@@ -552,10 +601,19 @@ class Indexer(SklearnClassifier):
 
         print(f"Cleanup. Got {len(data_set)} remaining items.")
 
+        # The database of web pages with limited features.
+        # Keep only pages having at least 250 letters in their content
+        self.index = {post["url"]:
+                        {"title": post["title"],
+                         "excerpt": post["excerpt"] if post["excerpt"] else post["content"][0:250],
+                         "date": guess_date(post["date"]) if post["date"] else None,
+                         "url": post["url"]}
+                      for post in data_set if len(post["content"]) > 250}
+
         # Build the training set from webpages
         training_set = [Data(post["title"] + "\n\n" + post["content"] + "\n\n".join(post["h1"]) + "\n\n".join(post["h2"]), post["url"])
                         for post in data_set
-                        if len(post["content"]) > 50]
+                        if len(post["content"]) > 250]
 
         # Prepare the ranker for BM25 : list of tokens for each document
         with Pool() as pool:
@@ -571,10 +629,6 @@ class Indexer(SklearnClassifier):
         self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
         self.urls = [post.label for post in training_set]
 
-        # The database of web pages with limited features
-        self.index = {post["url"]: {"title": post["title"], "excerpt": post["excerpt"], "date": post["date"]}
-                      for post in data_set if len(post["content"]) > 50}
-
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
         self.ranker = BM25Okapi(ranker_docs, k1=1.7, b=0.95)
 
@@ -588,14 +642,12 @@ class Indexer(SklearnClassifier):
     def get_features_parallel(self, tokens: list[str]) -> tuple[str, str]:
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
         # Language doesn't matter, tokenization and normalization are done already
-        return get_features(None, self.vector_size, self.wv, language="english", syn1neg=self.syn1neg, tokens=tokens)
+        return get_features(tokens, self.vector_size, self.wv, language="english", syn1neg=self.syn1neg)
 
 
     def tokenize_parallel(self, post: Data) -> list[str]:
-        clean_sentence = typography_undo(post.text)
-        language = guess_language(clean_sentence)
-        clean_sentence = prefilter_tokenizer(clean_sentence)
-        return [normalize_token(word.lower(), language) for word in nltk.word_tokenize(clean_sentence, language=language)]
+        tokens, language = tokenize_post(post.text)
+        return tokens
 
     @classmethod
     def load(cls, name: str):
@@ -606,25 +658,63 @@ class Indexer(SklearnClassifier):
         else:
             raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
 
-    def rank(self, post: str) -> str:
-        """Apply a label on a post based on the trained model."""
-        clean_sentence = typography_undo(post)
-        language = guess_language(clean_sentence)
-        clean_sentence = prefilter_tokenizer(clean_sentence)
-        tokenized_query = [normalize_token(word.lower(), language) for word in nltk.word_tokenize(clean_sentence, language=language)]
+
+    def vectorize_query(self, post: str) -> tuple[np.array, float, list[str]]:
+        """Prepare a text search query: cleanup, tokenize and get the centroid vector.
+
+        Returns:
+            tuple[vector, norm, tokens]
+        """
+        tokenized_query, language = tokenize_post(post)
+
+        if not tokenized_query:
+            return np.array([]), 0., []
 
         # Get the the centroid of the word embedding vector
-        query = get_features(clean_sentence, self.vector_size, self.wv, language=language, tokens=tokenized_query)
+        query = get_features(tokenized_query, self.vector_size, self.wv, language=language)
         vector = np.array(list(query.values()))
         norm = np.linalg.norm(vector)
         norm = 1.0 if norm == 0.0 else norm
 
+        return vector, norm, tokenized_query
+
+
+    def rank(self, post: str|tuple) -> list:
+        """Apply a label on a post based on the trained model."""
+
+        if isinstance(post, tuple):
+            # Input is vectorized already, unpack the tuple
+            vector = post[0]
+            norm = post[1]
+            tokens = post[2]
+        elif isinstance(post, str):
+            vector, norm, tokens = self.vectorize_query(post)
+        else:
+            raise TypeError("The argument should be either a (vector, norm) tuple or a string")
+
         # Compute the cosine similarity of centroids between query and documents,
         # then aggregate the ranking from BM25+ to it for each URL.
         # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
-        aggregates = 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokenized_query)
+        aggregates = 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
 
-        results = {(url, similarity) for url, similarity in zip(self.urls, aggregates) if similarity > 0.35}
+        results = {(url, similarity) for url, similarity in zip(self.urls, aggregates) if similarity > 0.}
 
         # Return the 20 most similar documents
-        return sorted(results, key=lambda x:x[1], reverse=True)[0:50]
+        return sorted(results, key=lambda x:x[1], reverse=True)[0:100]
+
+
+    def get_related(self, post: str|tuple, n:int = 15) -> list:
+        """Get the n closest keywords from the query."""
+
+        if isinstance(post, tuple):
+            # Input is vectorized already, unpack the tuple
+            vector = post[0]
+            norm = post[1]
+            tokens = post[2]
+        elif isinstance(post, str):
+            vector, norm, tokens = self.vectorize_query(post)
+        else:
+            raise TypeError("The argument should be either a (vector, norm) tuple or a string")
+
+        # wv.similar_by_vector returns a list of (word, distance) tuples
+        return [elem[0] for elem in self.wv.similar_by_vector(vector, topn=n) if elem[0] not in tokens]
