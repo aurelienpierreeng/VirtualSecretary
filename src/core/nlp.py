@@ -251,18 +251,6 @@ def normalize_token(word: str, language: str):
     elif RESOLUTION_PATTERN.search(word) or "_resolution_" in word:
         value = '_RESOLUTION_'
 
-    elif re.match(r"\.{2,}", word):
-        # Teenagers need to calm the fuck down, ellipses need no more than three dots and two dots are not a thing
-        value = '...'
-
-    elif re.match(r"-{1,}", word):
-        # Same with dashes
-        value = '-'
-
-    elif re.match(r"\?{1,}", word):
-        # Same with question marks
-        value = '?'
-
     elif "_" in word or "<" in word or ">" in word or "~" in word or "^" in word:
         # Does not belong to natural language, but to code and markup.
         value = None
