@@ -3,7 +3,6 @@ import time
 
 import requests
 from bs4 import BeautifulSoup
-from core.utils import typography_undo
 
 from typing import TypedDict
 
@@ -43,11 +42,33 @@ def get_page_content(url) -> BeautifulSoup:
     try:
         page = requests.get(url, timeout=30)
         print(f"{url}: {page.status_code}")
-        handler = BeautifulSoup(page.content, 'html.parser')
+
+        # Of course some institutionnal websites don't use UTF-8, so let's guess
+        content = page.content
+        try:
+            # Try UTF-8
+            content = content.decode()
+        except (UnicodeDecodeError, AttributeError):
+            try:
+                content = content.decode(page.apparent_encoding)
+            except (UnicodeDecodeError, AttributeError):
+                # We just have to hope it's pure text
+                pass
+
+
+        # Minified HTML doesn't have line breaks after block-level tags.
+        # This is going to make sentence tokenization a nightmare because BeautifulSoup doesn't add them in get_text()
+        # Re-introduce here 2 carriage-returns after those tags to create paragraphs.
+        unminified = re.sub(r"(\<\/(?:div|section|main|section|aside|header|footer|nav|time|article|h[1-6]|p|ol|ul|li|details|pre|dl|dt|dd|table|tr|th|td|blockquote|style|img|audio|video|iframe|embed|figure|canvas|fieldset|hr|caption|figcaption|address|form|noscript)\>)",
+                            r"\1\n\n", content)
+
+        handler = BeautifulSoup(unminified, "html5lib")
 
         # Remove any kind of machine code and symbols from the HTML doctree because we want natural language only
-        # That will also make subsequent parsing slightly faster
-        [element.decompose() for element in handler.select('code, pre, math, style, script, svg, img, audio, video, iframe, embed')]
+        # That will also make subsequent parsing slightly faster.
+        # Remove blockquotes too because they can duplicate content of forum pages
+        for element in handler.select('code, pre, math, style, script, svg, img, audio, video, iframe, embed, blockquote, quote'):
+            element.decompose()
 
         # Remove inline style and useless attributes too
         for attribute in ["data", "style", "media"]:
@@ -79,9 +100,7 @@ def get_page_markup(page: BeautifulSoup, markup: str|list) -> str:
 
         if elements:
             # Each HTML tag is semantically equivalent to a "sentence".
-            # When extracting pure text out of HTML markup, we instruct the parser
-            # to separate tags content with dot/space to hint sentences splitters.
-            results = [tag.get_text(separator=". ") for tag in elements]
+            results = [tag.get_text() for tag in elements]
             output += "\n\n".join(results)
 
     return output
@@ -142,18 +161,16 @@ def parse_page(page: BeautifulSoup, url: str, lang: str, markup, date=None) -> l
 
     # Get excerpt in metadata - hard : several ways of declaring it.
     excerpt = get_excerpt(page)
-    if excerpt:
-        excerpt = typography_undo(excerpt)
 
     # Get date - hard if no sitemap with timestamps.
     if not date:
         date = get_date(page)
 
-    h1 = {typography_undo(tag.get_text()) for tag in page.find_all("h1")}
-    h2 = {typography_undo(tag.get_text()) for tag in page.find_all("h2")}
+    h1 = {tag.get_text() for tag in page.find_all("h1")}
+    h2 = {tag.get_text() for tag in page.find_all("h2")}
 
     # Get content - easy : user-request
-    content = typography_undo(get_page_markup(page, markup=markup))
+    content = get_page_markup(page, markup=markup)
 
     if content and title:
         result = web_page(title=title,
@@ -211,7 +228,7 @@ class Crawler:
         # Recurse
         for url in index.find_all('a', href=True):
             currentURL = relative_to_absolute(radical_url(url["href"]), domain)
-            if website in currentURL and currentURL not in self.crawled_URL:
+            if domain in currentURL and currentURL not in self.crawled_URL:
                 if contains_str in currentURL:
                     page = get_page_content(currentURL)
                     output += parse_page(page, currentURL, default_lang, markup)
