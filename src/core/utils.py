@@ -12,6 +12,8 @@ import errno
 import pickle
 
 from typing import TypedDict
+from dateutil import parser
+
 
 filter_entry = TypedDict("filter_entry", {"path": str, "filter": str, "protocol": str })
 """Dictionnary type representating a Virtual Secretary filter
@@ -405,6 +407,17 @@ def typography_undo(string:str) -> str:
 
     return string
 
+
+def guess_date(string: str) -> datetime:
+    """Best effort to guess a date from a string using typical date/time formats"""
+
+    date = None
+    try:
+        date = parser.parse(string)
+    except Exception as e:
+        print(e)
+
+    return date
 
 ## Default files and pathes
 
