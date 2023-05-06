@@ -681,6 +681,8 @@ class Indexer(SklearnClassifier):
         else:
             raise TypeError("The argument should be either a (vector, norm) tuple or a string")
 
+        norm *= len(tokens)
+
         # Compute the cosine similarity of centroids between query and documents,
         # then aggregate the ranking from BM25+ to it for each URL.
         # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
