@@ -9,17 +9,25 @@ import re
 
 # Internet-specific patterns
 
-IP_PATTERN = re.compile(r"from.*?((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))", re.IGNORECASE)
+IP_PATTERN = re.compile(r"(?=^|\s|\[|\(|\{|\<)((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))(?=$|\s|\]|\)|\}|\>)", re.IGNORECASE)
 """IPv4 and IPv6 patterns where the whole IP is captured in the first group."""
 
 EMAIL_PATTERN = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?", re.IGNORECASE)
 """Emails patterns like `<me@mail.com>` or `me@mail.com` where the whole address is captured in the first group."""
 
-URL_PATTERN = re.compile(r"(?>https?\:)?\/\/([^:\/?#\s\\]*)(?:\:[0-9])?([\/]{0,1}[^?#\s\"\,\;\:>]*)", re.IGNORECASE)
-"""URL patterns like `http(s)://domain.ext/page` or `//domain.ext/page` where `domain.ext` is captured as the first group and `/page` is the second group"""
+URL_PATTERN = re.compile(r"(?=^|\s|\[|\(|\{|\<)(?:https?\:)?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?([\/]{0,1}[^?#\s\"\,\;\:>]*)(\?[a-z]+[\=\,\+\&\%\-\.a-zA-Z0-9]*)?(?=$|\s|\]|\)|\}|\>)", re.IGNORECASE)
+"""URL patterns like `http(s)://domain.ext/page?q=x&r=0` or `//domain.ext/page`.
 
-PATH_PATTERN = re.compile(r"^([~\.]?[\/]{1}|[A-Z]:\\\\)([^\r\n\t\f\v ]+)")
-"""File path pattern like `~/file`, `/home/file`, `./file` or `C:\\windows`"""
+- `domain.ext` is captured as the first group,
+- `/page` is the second group,
+- page query parameters `?s=x&r=0` are captured in the 3rd.
+
+URLs are captured if they are:
+
+ - alone on their own line,
+ - enclosed in {}, [], ()
+ - enclosed in whitespaces.
+ """
 
 # Date/time
 
@@ -66,25 +74,37 @@ FLAGS_PATTERN = re.compile(r"FLAGS \((.*?)\)")
 # Need to be tested BEFORE path pattern if both are used because a path is a more general case
 # See https://stackoverflow.com/a/76113333/7087604
 
-IMAGE_PATTERN = re.compile(r"\.(bmp|jpg|jpeg|jpe|jp2|j2c|j2k|jpc|jpf|jpx|png|ico|svg|webp|heif|heic|tif|tiff|hdr|exr|ppm|pfm|nef|rw2|cr2|cr3|crw|dng|raf|arw|srf|sr2|iiq|3fr|dcr|ari|pef|x3f|erf|raw|rwz)")
+# All characters allowed in file names, aka not the following:
+filename = r"[^\#\%\<\>\&\*\{\}\\\/\?\$\!\|\=\"\'\@\s]"
 
-CODE_PATTERN = re.compile(r"\.(php|m|py|sh|c|cxx|cpp|h|hxx|a|asm|awk|asp|class|java|yml|yaml|js|css)")
+PATH_PATTERN = re.compile(r"([A-Z]:|\.)?(\\\\|\/)(%s+(\\\\|\/)?)+" % filename)
+"""File path pattern like `~/file`, `/home/file`, `./file` or `C:\\windows`"""
 
-TEXT_PATTERN = re.compile(r"\.(txt|md|html|xml|xhtml|xmp|json|tex|rst|rtf)")
+IMAGE_PATTERN = re.compile(r"%s\.(bmp|jpg|jpeg|jpe|jp2|j2c|j2k|jpc|jpf|jpx|png|ico|svg|webp|heif|heic|tif|tiff|hdr|exr|ppm|pfm|nef|rw2|cr2|cr3|crw|dng|raf|arw|srf|sr2|iiq|3fr|dcr|ari|pef|x3f|erf|raw|rwz)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
-DOCUMENT_PATTERN = re.compile(r"\.(xfc|kra|psd|ai|indd|ps|eps|pdf|xlsx|docx|pptx|doc|xls|ppt|odt|ods|odp|odg|odf|wpd)")
+CODE_PATTERN = re.compile(r"%s\.(php|m|py|sh|c|cxx|cpp|h|hxx|a|asm|awk|asp|class|java|yml|yaml|js|css)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
-ARCHIVE_PATTERN = re.compile(r"\.(zip|gzip|gz|tar|bz|iso|rar|img)")
+TEXT_PATTERN = re.compile(r"%s\.(txt|md|html|xml|xhtml|xmp|json|tex|rst|rtf)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
-EXECUTABLE_PATTERN = re.compile(r"\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin|rpm|deb)")
+DOCUMENT_PATTERN = re.compile(r"\.(xfc|kra|psd|ai|indd|ps|eps|pdf|xlsx|docx|pptx|doc|xls|ppt|odt|ods|odp|odg|odf|wpd)(?![\.\S]\S)", re.IGNORECASE)
 
-PRICE_PATTERN = re.compile(r"\d* ?(cad|usd|aud|eur|euro|\£|\$|\€|\¥) ?\d*")
+ARCHIVE_PATTERN = re.compile(r"%s\.(zip|gzip|gz|tar|bz|iso|rar|img)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
-RESOLUTION_PATTERN = re.compile(r"\d+(×|x)\d+")
+DATABASE_PATTERN = re.compile(r"%s\.(db|sql|sqlite)(?![\.\S]\S)" % filename, re.IGNORECASE)
+
+EXECUTABLE_PATTERN = re.compile(r"%s\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin|rpm|deb)(?![\.\S]\S)" % filename, re.IGNORECASE)
+
+# For some reason, merging both patterns in the same triggers infinite loop, so split it…
+PRICE_US_PATTERN = re.compile(r"(?=^|\s)((usd|eur|USD|EUR|\€|\$|\£) ?\d+(?:[.,-]\d+)*)")
+PRICE_EU_PATTERN = re.compile(r"(?=^|\s)(\d+(?:[.,-]\d+)* ?(usd|eur|USD|EUR|\€|\$|\£))")
+
+RESOLUTION_PATTERN = re.compile(r"\d+(×|x|X)\d+")
 """Pixel resolution like 10x20 or 10×20. Units are discarded."""
 
-NUMBER_PATTERN = re.compile(r"^\d+[\.\,\-\_\/]?\d*$")
-"""Integers and decimals, fractions and numeric IDs with interal dashes and underscores.
-Numbers with starting or trailing units are not considered.
-Warning: this works only in tokens and checks if the whole token is a number.
+NUMBER_PATTERN = re.compile(r"(?=^|\s)([\.\,\-\_\/\+\-±]?(?:\d+[\.\,\-\_\/\+\-]?)+)(?=$|\s)")
+"""Signed integers and decimals, fractions and numeric IDs with interal dashes and underscores.
+Numbers with starting or trailing units are not considered. Lazy decimals (.1 and 1.) are considered.
 """
+
+HASH_PATTERN = re.compile(r"([0-9a-f]){8,}", re.IGNORECASE)
+"""Cryptographic hexadecimal hashes and fingerprints, of a min length of 8 characters."""
