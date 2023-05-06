@@ -276,6 +276,97 @@ def imap_decode(value: bytes) -> str:
     return ''.join(res)
 
 
+REPLACEMENT_MAP = {
+    "|": "\n",
+    "#": " ",
+    # Spaces
+    "\u2002": " ",  # En space
+    "\u2003": " ",  # Em space
+    "\u2004": " ",  # Three-Per-Em Space
+    "\u2005": " ",  # Four-Per-Em Space
+    "\u2006": " ",  # Six-Per-Em Space
+    "\u2007": " ",  # Figure Space
+    "\u2008": " ",  # Punctuation Space
+    "\u2009": " ",  # thin space
+    "\u200A": " ",  # hair space
+    "\u200B": " ",  # Zero Width Space
+    "\u200C": " ",  # Zero Width Non-Joiner
+    "\u00A0": " ",  # Unbreakable space
+    "\u202f": " ",  # Narrow No-Break Space
+    # Hyphens and dashes
+    "\u2010": "-",  # Hyphen
+    "\u2011": "-",  # Non-Breaking Hyphen
+    "\u2012": "-",  # Figure Dash
+    "\u2013": "-",  # En Dash
+    "\u2014": "-",  # Em Dash
+    "\u2015": "-",  # Horizontal Bar
+    "\uFF0D": "-",  # Fullwidth Hyphen-Minus
+    "\uFE63": "-",  # Small Hyphen-Minus
+    "↑": " ",
+    "↵": " ",
+    # Decorations
+    "☙": " ",
+    "❧": " ",
+    "🔗": " ",
+}
+
+# For 1:1 character replacement, we can use a fast character map
+CHAR_TO_REPLACE = "".join(REPLACEMENT_MAP.keys())
+CHAR_REPLACING = "".join(REPLACEMENT_MAP.values())
+UNICODE_TO_ASCII = str.maketrans(CHAR_TO_REPLACE, CHAR_REPLACING, "")
+
+# For 1:many character replacment, we will have to use slow loops
+SUBSTITUTIONS = {
+    # Ligatures
+    "\u0132": "IJ", # Nederlands & Flanders
+    "\u0133": "ij", # Nederlands & Flanders
+    "\u0152": "OE", # French
+    "\u0153": "oe", # French
+    "\uA7F9": "oe", # French
+    "\uFB00": "ff",
+    "\uFB01": "fi",
+    "\uFB02": "fl",
+    "\uFB03": "ffi",
+    "\uFB04": "ffl",
+    "\uFB05": "st", # Medieval ligature
+    "\uFB06": "st", # Medieval ligature
+    # Punctuation
+    "\u2026": "...",
+    "« "    : "\"", # This needs spaces to have been decoded before
+    " »"    : "\"", # This needs spaces to have been decoded before
+    "«"     : "\"",
+    "»"     : "\"",
+    # Fractions
+    "\u2150": "1/7",
+    "\u2151": "1/9",
+    "\u2152": "1/10",
+    "\u2153": "1/3",
+    "\u2154": "2/3",
+    "\u2155": "1/5",
+    "\u2156": "2/5",
+    "\u2157": "3/5",
+    "\u2158": "4/5",
+    "\u2159": "1/6",
+    "\u215A": "5/6",
+    "\u215B": "1/8",
+    "\u215C": "3/8",
+    "\u215D": "5/8",
+    "\u215E": "7/8",
+    "\u215F": "1/",
+    # Arrows
+    "\u2190": "<-",
+    "\u2192": "->",
+    "\u2194": "<->",
+    "\u21D0": "<-",
+    "\u21D2": "->",
+    "\u21D4": "<->",
+    # Newlines + space
+    "\n ": "\n",
+    " \n": "\n",
+    "\t ": "\t",
+    " \t": "\t",
+}
+
 def typography_undo(string:str) -> str:
     """Break correct typographic Unicode entities into dummy computer characters (ASCII) to produce computer-standard vocabulary and help word tokenizers to properly detect word boundaries.
 
@@ -293,119 +384,15 @@ def typography_undo(string:str) -> str:
     # Note: a quick and dirty way of discarding Unicode entities would be to
     # encode to ASCII, ignoring errors, and re-encode to UTF-8. But that would
     # remove valid accented characters too.
-    substitutions = {
-        # Ligatures
-        "\u0132": "IJ", # Nederlands & Flanders
-        "\u0133": "ij", # Nederlands & Flanders
-        "\u0152": "OE", # French
-        "\u0153": "oe", # French
-        "\uA7F9": "oe", # French
-        "\uFB00": "ff",
-        "\uFB01": "fi",
-        "\uFB02": "fl",
-        "\uFB03": "ffi",
-        "\uFB04": "ffl",
-        "\uFB05": "st", # Medieval ligature
-        "\uFB06": "st", # Medieval ligature
-        # Punctuation
-        "\u2026": "...",
-        "|": "\n",
-        "#": " ",
-        # Spaces
-        "\u2002": " ", # En space
-        "\u2003": " ", # Em space
-        "\u2004": " ", # Three-Per-Em Space
-        "\u2005": " ", # Four-Per-Em Space
-        "\u2006": " ", # Six-Per-Em Space
-        "\u2007": " ", # Figure Space
-        "\u2008": " ", # Punctuation Space
-        "\u2009": " ", # thin space
-        "\u200A": " ", # hair space
-        "\u200B": " ", # Zero Width Space
-        "\u200C": " ", # Zero Width Non-Joiner
-        "\u00A0": " ", # Unbreakable space
-        "\u202f": " ", # Narrow No-Break Space
-        # Hyphens and dashes
-        "\u2010": "-", # Hyphen
-        "\u2011": "-", # Non-Breaking Hyphen
-        "\u2012": "-", # Figure Dash
-        "\u2013": "-", # En Dash
-        "\u2014": "-", # Em Dash
-        "\u2015": "-", # Horizontal Bar
-        "\uFF0D": "-", # Fullwidth Hyphen-Minus
-        "\uFE63": "-", # Small Hyphen-Minus
-        # Quotation marks
-        "\u02BA": "\"", # Modifier Letter Double Prime
-        "\u201A": "\"", # Single Low-9 Quotation Mark
-        "\u201B": "\"", # Single High-Reversed-9 Quotation Mark
-        "\u201C": "\"", # Left Double Quotation Mark
-        "\u201D": "\"", # Right Double Quotation Mark
-        "\u201E": "\"", # Double Low-9 Quotation Mark
-        "\u201F": "\"", # Double High-Reversed-9 Quotation Mark
-        "\uFF02": "\"", # Fullwidth Quotation Mar
-        "« "    : "\"", # This needs spaces to have been decoded before
-        " »"    : "\"", # This needs spaces to have been decoded before
-        "«"     : "\"",
-        "»"     : "\"",
-        # Apostrophes
-        "\uFF07": "'", # Fullwidth Apostrophe
-        "\u02B9": "'", # Modifier Letter Prime
-        "\u02BB": "'", # Modifier Letter Turned Comma
-        "\u02BC": "'", # Modifier Letter Apostrophe
-        "\u2018": "'", # Left Single Quotation Mark
-        "\u2019": "'", # Right Single Quotation Mark
-        "`"     : " ", # Backtick
-        # Fractions
-        "\u2150": "1/7",
-        "\u2151": "1/9",
-        "\u2152": "1/10",
-        "\u2153": "1/3",
-        "\u2154": "2/3",
-        "\u2155": "1/5",
-        "\u2156": "2/5",
-        "\u2157": "3/5",
-        "\u2158": "4/5",
-        "\u2159": "1/6",
-        "\u215A": "5/6",
-        "\u215B": "1/8",
-        "\u215C": "3/8",
-        "\u215D": "5/8",
-        "\u215E": "7/8",
-        "\u215F": "1/",
-        # Arrows
-        "\u2190": "<-",
-        "\u2192": "->",
-        "\u2194": "<->",
-        "\u21D0": "<-",
-        "\u21D2": "->",
-        "\u21D4": "<->",
-        "↑": " ",
-        "↵": " ",
-        "↩︎": " ",
-        # Decorations
-        "☙": " ",
-        "❧": " ",
-        "🔗": " ",
-        # Newlines + space
-        "\n ": "\n",
-        " \n": "\n",
-        "\t ": "\t",
-        " \t": "\t",
-    }
+    string = string.translate(UNICODE_TO_ASCII)
+    for key, value in SUBSTITUTIONS.items():
+        string = string.replace(key, value)
 
-    for s in substitutions:
-        string = string.replace(s, substitutions[s])
+    # If we have 2 \n (new paragraph) following some alphanumeric string which has no ending punctuation,
+    # add a trailing period for proper sentence detection.
+    string = re.sub(r"([a-zA-Z0-9])(?![\.\!\?])\n{2}", r"\1. \n\n", string)
 
-    string = re.sub(r"\.?[\n\r\t]\.?", "\n", string)
-    string = string.replace(" .", " ")
-
-    # Remove multiple spaces
-    string = re.sub(r"[ ]{2,}", " ", string)
-
-    # Limit multiple tabs and newline characters to 2
-    string = re.sub(r"( ?[\t\r\n] ?){2,}", "\n\n", string)
-
-    return string
+    return string.strip()
 
 
 def guess_date(string: str) -> datetime:
