@@ -108,3 +108,6 @@ Numbers with starting or trailing units are not considered. Lazy decimals (.1 an
 
 HASH_PATTERN = re.compile(r"([0-9a-f]){8,}", re.IGNORECASE)
 """Cryptographic hexadecimal hashes and fingerprints, of a min length of 8 characters."""
+
+MULTIPLE_LINES = re.compile(r"( ?[\t\r\n] ?){2,}")
+MULTIPLE_SPACES = re.compile(r"( )+")
