@@ -30,37 +30,13 @@ from sklearn.svm import SVC
 from rank_bm25 import BM25Okapi
 
 
-from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN, PRICE_PATTERN, RESOLUTION_PATTERN, NUMBER_PATTERN
+from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, DATABASE_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN, PRICE_US_PATTERN, PRICE_EU_PATTERN, RESOLUTION_PATTERN, NUMBER_PATTERN, HASH_PATTERN, IP_PATTERN
 from core.utils import get_models_folder, typography_undo, guess_date
 
 # The set of languages supported at the same time by NLTK tokenizer, stemmer and stopwords data is not consistent.
 # We build the least common denominator here, that is languages supported in the 3 modules.
 # See SnowballStemmer.languages and stopwords.fileids()
 _supported_lang = {'danish', 'dutch', 'english', 'finnish', 'french', 'german', 'italian', 'norwegian', 'portuguese', 'spanish', 'swedish'}
-
-# Day/month tokens and their abbreviations
-DATES = dict.fromkeys(_supported_lang, {})
-
-DATES["english"] = {
-    "january", "february", "march", "april", "may", "june",
-    "july", "august", "september", "october", "november", "december",
-    "jan", "feb", "mar", "apr", "aug", "sept", "oct", "nov", "dec",
-    "jan.", "feb.", "mar.", "apr.", "aug.", "sept.", "oct.", "nov.", "dec.",
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-    "mon", "tue", "wed", "thu", "fri", "sat", "sun",
-    "mon.", "tue.", "wed.", "thu.", "fri.", "sat.", "sun.",
-}
-
-DATES["french"] =  {
-    "janvier", "février", "mars", "avril", "mai", "juin",
-    "juillet", "août", "septembre", "octobre", "novembre", "décembre",
-    "jan", "fév", "mar", "avr", "jui", "juil", "aou", "sept", "oct", "nov", "déc",
-    "jan.", "fév.", "mar.", "avr.", "jui.", "juil.", "aou.", "sept.", "oct.", "nov.", "déc.",
-    "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche",
-    "lun", "mar", "mer", "jeu", "ven", "sam", "dim",
-    "lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim.",
-}
-
 
 # Static dict of stopwords for language detection, inited from NLTK corpus
 STOPWORDS_DICT = { language: list(stopwords.words(language)) for language in stopwords.fileids() if language in _supported_lang }
@@ -133,6 +109,9 @@ STOPWORDS = {
     "beaucoup", "tout", "toute", "tous", "toutes", "aucun", "aucune", "comme", "si",
     "en", "dans", "or", "ou", "où", "just", "et", "alors", "parce", "seulement", "ni", "car",
     "très", "donc", "pas", "mais", "même", "aussi", "avec", "je", "tu", "il", "elle", "nous", "vous", "ils", "elles",
+    # Lonely punctuation
+     "(", ")", "{", "}", "[", "]", ",", ":", "/", ";", "_", "-", "\\", '“', '”', '‘', '’', "<", ">", "*", "'", '"',
+     "''", "``"
 }
 
 
@@ -150,6 +129,22 @@ def guess_language(string: str) -> str:
     return list(STOPWORDS_DICT.keys())[index_max]
 
 
+# Find English dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
+# Find French dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
+TEXT_DATES = re.compile(r"([0-9]{1,2})? (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|jan|fév|mar|avr|mai|jui|jui|aou|sep|oct|nov|déc|janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|january|february|march|april|may|june|july|august|september|october|november|december)\.?( [0-9]{1,2})?( [0-9]{2,4})(?!:)",
+                        flags=re.IGNORECASE | re.MULTILINE)
+BASE_64 = re.compile(r"((?:[A-Za-z0-9+\/]{4}){64,}(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=)?)")
+BB_CODE = re.compile(r"\[(img|quote)[a-zA-Z0-9 =\"]*?\].*?\[\/\1\]")
+MARKUP = re.compile(r"(?:\[|\{|\<)([^\n\r]+?)(?:\]|\}|\>)")
+USER = re.compile(r"(\S+)?@(\S+)|(user\-?\d+)")
+MULTIPLE_SPACES = re.compile(r"[ ]{2, }")
+REPEATED_CHARACTERS = re.compile(r"(.)\1{9,}")
+MULTIPLE_LINES = re.compile(r"( ?[\t\r\n] ?){2,}")
+UNFINISHED_SENTENCES = re.compile(r"(?<![?!.])\n\n")
+MULTIPLE_DOTS = re.compile(r"\.{2,}")
+MULTIPLE_DASHES = re.compile(r"-{1,}")
+MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
+
 def prefilter_tokenizer(string: str) -> str:
     """Tokenizers split words based on unsupervised machine-learned models. Sometimes, they work weird.
     For example, in emails and user handles like `@user`, they would split `@` and `user` as 2 different tokens,
@@ -158,21 +153,68 @@ def prefilter_tokenizer(string: str) -> str:
     To avoid that, we replace data of interest by meta-tokens before the tokenization, with regular expressions.
     """
 
-    # Anonymize users and prevent tokenizers from splitting @ from the username
-    string = re.sub(r"(\S+)?@(\S+)", "_USER_", string)
+    # Limit multiple tabs and newline characters to 2
+    string = MULTIPLE_LINES.sub("\n\n", string)
 
-    # Find English dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
-    string = re.sub(r"([0-9]{1,2})? (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\.?( [0-9]{1,2})?( [0-9]{2,4})(?!:)",
-                    "_DATE_", string, flags=re.IGNORECASE | re.MULTILINE)
+    # Teenagers need to calm the fuck down, ellipses need no more than three dots and two dots are not a thing
+    string = MULTIPLE_DOTS.sub("...", string)
 
-    # Find French dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
-    string = re.sub(r"([0-9]{1,2})? (jan|fév|mar|avr|mai|jui|jui|aou|sep|oct|nov|déc)\.?( [0-9]{1,2})?( [0-9]{2,4})(?!:)",
-                    "_DATE_", string, flags=re.IGNORECASE | re.MULTILINE)
+    # Same with dashes
+    string = MULTIPLE_DASHES.sub("-", string)
 
-    # Note : dates in ISO format like `2022-08-10` will not be split apart in tokens and will be captured
-    # below in `normalize_token()`
+    # Same with question marks
+    string = MULTIPLE_QUESTIONS.sub("?", string)
 
-    return string
+    # Paragraphs (ended with \n\n) that don't have ending punctuation should have one.
+    string = UNFINISHED_SENTENCES.sub(".\n\n", string)
+
+    # Remove non-punctuational repeated characters like xxxxxxxxxxx, or =============
+    # (redacted text or ASCII line-like separators)
+    string = REPEATED_CHARACTERS.sub(' ', string)
+
+    string = BB_CODE.sub(" ", string)
+    string = BASE_64.sub(' _BASE64_ ', string)
+    string = MARKUP.sub(r" \1 ", string)
+
+    # Anonymize users/emails and prevent tokenizers from splitting @ from the username
+    string = USER.sub(" _USER_ ", string)
+
+    # URLs and IPs - need to go before pathes
+    string = URL_PATTERN.sub(' _URL_ ', string)
+    string = IP_PATTERN.sub(' _IP_ ', string)
+
+    # File types - need to go before pathes
+    string = CODE_PATTERN.sub(' _CODEFILE_ ', string)
+    string = DATABASE_PATTERN.sub(' _DATABASEFILE_ ', string)
+    string = IMAGE_PATTERN.sub(' _IMAGEFILE_ ', string)
+    string = DOCUMENT_PATTERN.sub(' _DOCUMENTFILE_ ', string)
+    string = TEXT_PATTERN.sub(" _TEXTFILE_ ", string)
+    string = ARCHIVE_PATTERN.sub(" _ARCHIVEFILE_ ", string)
+    string = EXECUTABLE_PATTERN.sub(" _BINARYFILE_ ", string)
+
+    # Local pathes - get everything with / or \ left over by the previous
+    string = PATH_PATTERN.sub(' _PATH_ ', string)
+
+    # Dates
+    string = TEXT_DATES.sub(" _DATE_ ", string)
+    string = DATE_PATTERN.sub(" _DATE_ ", string)
+    string = TIME_PATTERN.sub(" _TIME_ ", string)
+
+    # Numerical : prices and resolutions
+    string = PRICE_US_PATTERN.sub(" _PRICE_ ", string)
+    string = PRICE_EU_PATTERN.sub(" _PRICE_ ", string)
+    string = RESOLUTION_PATTERN.sub(" _RESOLUTION_ ", string)
+
+    # Remove HEX hashes, like IDs and commit names
+    string = HASH_PATTERN.sub(' _HASH_ ', string)
+
+    # Remove numbers
+    string = NUMBER_PATTERN.sub(' _NUMBER_ ', string)
+
+    # Remove multiple spaces
+    string = MULTIPLE_SPACES.sub(" ", string)
+
+    return string.strip()
 
 
 def normalize_token(word: str, language: str):
@@ -188,77 +230,21 @@ def normalize_token(word: str, language: str):
     """
     value = word
 
-    if word == "(" or word == ")" or word == "{" or word == "}" or "," == word or ":" == word or "" == word or "/" == word:
-        value = None
+    meta_tokens = ["_user_", "_date_", "_time_", "_url_", "_ip_", "_hash_", "_databasefile_", "_codefile_", "_imagefile_", "_documentfile_", "_textfile_", "_archivefile_", "_binaryfile_", "_path_", "_price_", "_resolution_", "_date_"]
 
-    elif re.search(r"user\d+", word) or re.search(r"@\S+", word) or "_user_" in word:
-        # Discard usernames
-        value = '_USER_'
-
-    elif DATE_PATTERN.search(word) or "_date_" in word:
-        # Record dates format - we don't need to know which dateé
-        value = '_DATE_'
-
-    elif TIME_PATTERN.search(word) or "_time_" in word:
-        # Record time/hour format - we don't need to know what time
-        value = '_TIME_'
-
-    elif URL_PATTERN.search(word) or "_url_" in word:
-        # Contains url - we don't need to know which site
-        value = '_URL_'
-
-    elif CODE_PATTERN.search(word) or "_codefile_" in word:
-        # Contains a filename referencing an code extension
-        value = '_CODEFILE_'
-
-    elif IMAGE_PATTERN.search(word) or "_imagefile_" in word:
-        # Contains a filename referencing an image extension
-        value = '_IMAGEFILE_'
-
-    elif DOCUMENT_PATTERN.search(word) or "_documentfile_" in word:
-        # Contains a filename referencing a document extension
-        value = '_DOCUMENTFILE_'
-
-    elif TEXT_PATTERN.search(word) or "_textfile_" in word:
-        # Contains a filename referencing a text extension
-        value = '_TEXTFILE_'
-
-    elif ARCHIVE_PATTERN.search(word) or "_archivefile_" in word:
-        # Contains a filename referencing an archive package extension
-        value = '_ARCHIVEFILE_'
-
-    elif EXECUTABLE_PATTERN.search(word) or "_binaryfile_" in word:
-        # Contains a filename referencing an executable package extension
-        value = '_BINARYFILE_'
-
-    elif PATH_PATTERN.search(word) or "_path_" in word:
-        # Contains path - we don't need to know which file/folder
-        value = '_PATH_'
-
-    elif word in DATES[language] or "_date_" in word:
-        # Record textual dates - we don't need to know which date
-        value = '_DATE_'
-
-    elif PRICE_PATTERN.search(word) or "_price_" in word:
-        # Record price - we don't need to know which one
-        # Note that the word tokenizer will split numbers and monetary units, so no need to regex digits + unit
-        value = '_PRICE_'
-
-    elif NUMBER_PATTERN.search(word) or "_number_" in word:
-        # Discard numbers, possibly followed by unit, just record that we have a number
-        value = '_NUMBER_'
-
-    elif RESOLUTION_PATTERN.search(word) or "_resolution_" in word:
-        value = '_RESOLUTION_'
-
-    elif "_" in word or "<" in word or ">" in word or "~" in word or "^" in word:
-        # Does not belong to natural language, but to code and markup.
-        value = None
-
+    if word in meta_tokens:
+        # Input is lowercase.
+        value = word.upper()
     elif word in STOPWORDS:
         value = None
+    elif NUMBER_PATTERN.match(word):
+        # Tokenizer may have split apart number from other stuff, in which case we have token numbers
+        value = "_NUMBER_"
+    elif "_" in word or "<" in word or ">" in word or "\\" in word or "=" in word:
+        # Technical stuff
+        value = None
 
-    #else:
+    # else:
     #    # Stem the word
     #    stemmer = SnowballStemmer(language)
     #    value = stemmer.stem(value)
@@ -275,14 +261,20 @@ def tokenize_sentences(sentence, language: str) -> list[str]:
     return [item for item in intermediate if item is not None]
 
 
-def split_sentences(text, language: str) -> list[str]:
-    """Split a text into sentences"""
+def split_sentences(text: str, language: str) -> list[str]:
+    """Split a text into sentences using an unsupervised machine learning model.
+
+    Arguments:
+        text (str): the paragraph to break into sentences
+        language (str): the language of the text, used to select what pre-trained model will be used
+        punkt (PunktSentenceTokenizer): if provided, use this sentence tokenizer model. If not, use NLTK factory models.
+    """
     return nltk.sent_tokenize(text, language=language)
 
 
 class Data():
     def __init__(self, text: str, label: str):
-        """Represent an item of training data
+        """Represent an item of tagged training data.
 
         Arguments:
             text (str): the content to label, which will be vectorized
@@ -358,15 +350,17 @@ class Word2Vec(gensim.models.Word2Vec):
         Arguments:
             name (str): filename of the model to save and retrieve. If the model exists already, we automatically load it. Note that this will override the `vector_size` with the parameter defined in the saved model.
             vector_size (int): number of dimensions of the word vectors
-            force_recompute (bool): if `True`, don't load an existing model matching `name`.
+            epochs (int): number of iterations of training for the machine learning. Small corpora need 2000 and more epochs. Increases the learning time.
         """
         self.pathname = get_models_folder(name)
         self.vector_size = vector_size
         print(f"got {len(sentences)} pieces of text")
 
         # training = [tokenize_sentences(sentence, language=language) for sentence in set(sentences)]
-        with Pool() as pool:
-            training: list[list[list[str]]] = pool.map(self.tokenize_sentences_parallel, set(sentences))
+        sentences = set(sentences)
+        processes = os.cpu_count()
+        with Pool(processes=processes) as pool:
+            training: list[list[list[str]]] = pool.map(self.tokenize_sentences_parallel, sentences, chunksize=1)
 
         print("tokenization done")
 
@@ -375,19 +369,18 @@ class Word2Vec(gensim.models.Word2Vec):
         print(f"got {len(training)} sentences")
 
         loss_logger = LossLogger()
-        super().__init__(training, vector_size=vector_size, window=7, min_count=5, workers=os.cpu_count(), epochs=epochs, ns_exponent=0.75, sample=0.00001, callbacks=[loss_logger], compute_loss=True, sg=1)
+        super().__init__(training, vector_size=vector_size, window=7, min_count=5, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=0.001, callbacks=[loss_logger], compute_loss=True, sg=1)
         print("training done")
 
         self.save(self.pathname)
-        self.wv.save(self.pathname + "_vectors")
         print("saving done")
 
 
     def tokenize_sentences_parallel(self, text):
         """Thread-safe call to `.tokenize_sentences()` to be called in multiprocessing.Pool map"""
-        clean_text = typography_undo(text)
-        language = guess_language(clean_text)
-        clean_text = prefilter_tokenizer(clean_text)
+        # clean_text = typography_undo(text) # already done when baking corpus
+        language = guess_language(text)
+        clean_text = prefilter_tokenizer(text)
         return [tokenize_sentences(sentence, language) for sentence in split_sentences(clean_text, language)]
 
 
