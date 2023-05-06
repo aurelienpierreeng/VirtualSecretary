@@ -3,6 +3,7 @@ import time
 
 import requests
 from bs4 import BeautifulSoup
+from core import patterns
 
 from typing import TypedDict
 
@@ -22,6 +23,9 @@ def relative_to_absolute(URL: str, domain: str) -> str:
     if URL.startswith("/"):
         # relative URL: prepend domain
         return domain + URL
+    elif not URL.startswith("http"):
+        # relative URL without /
+        return domain + "/" + URL
     else:
         return URL
 
@@ -37,11 +41,14 @@ def radical_url(URL: str) -> str:
 def get_page_content(url) -> BeautifulSoup:
     """Request a page through the network and feed its response to a BeautifulSoup handler"""
     # Prevent being thresholded on some servers
-    time.sleep(1)
+    #time.sleep(0.5)
 
     try:
         page = requests.get(url, timeout=30)
         print(f"{url}: {page.status_code}")
+
+        if page.status_code != 200:
+            return BeautifulSoup("<html></html>", 'html.parser')
 
         # Of course some institutionnal websites don't use UTF-8, so let's guess
         content = page.content
@@ -55,19 +62,21 @@ def get_page_content(url) -> BeautifulSoup:
                 # We just have to hope it's pure text
                 pass
 
-
         # Minified HTML doesn't have line breaks after block-level tags.
         # This is going to make sentence tokenization a nightmare because BeautifulSoup doesn't add them in get_text()
         # Re-introduce here 2 carriage-returns after those tags to create paragraphs.
         unminified = re.sub(r"(\<\/(?:div|section|main|section|aside|header|footer|nav|time|article|h[1-6]|p|ol|ul|li|details|pre|dl|dt|dd|table|tr|th|td|blockquote|style|img|audio|video|iframe|embed|figure|canvas|fieldset|hr|caption|figcaption|address|form|noscript)\>)",
                             r"\1\n\n", content)
+        # Same with inline-level tags, but only insert space, except for superscript and subscript
+        unminified = re.sub(r"(\<\/(?:a|span|time|abbr|b|i|em|strong|code|dfn|big|kbd|label|textarea|input|var|q|tt)\>)",
+                            r"\1 ", unminified)
 
-        handler = BeautifulSoup(unminified, "html5lib")
+        handler = BeautifulSoup(unminified, "html.parser")
 
         # Remove any kind of machine code and symbols from the HTML doctree because we want natural language only
         # That will also make subsequent parsing slightly faster.
         # Remove blockquotes too because they can duplicate content of forum pages
-        for element in handler.select('code, pre, math, style, script, svg, img, audio, video, iframe, embed, blockquote, quote'):
+        for element in handler.select('code, pre, math, style, script, svg, img, audio, video, iframe, embed, blockquote, quote, aside, nav'):
             element.decompose()
 
         # Remove inline style and useless attributes too
@@ -99,8 +108,8 @@ def get_page_markup(page: BeautifulSoup, markup: str|list) -> str:
         print(f"found {len(elements)} {item}")
 
         if elements:
-            # Each HTML tag is semantically equivalent to a "sentence".
-            results = [tag.get_text() for tag in elements]
+            # Get the inner text and limit the number of whitespaces to 2 to spare some MB
+            results = [re.sub(r"( ?[\t\r\n] ?){2,}", "\n\n", tag.get_text()) for tag in elements]
             output += "\n\n".join(results)
 
     return output
@@ -211,7 +220,8 @@ class Crawler:
         Returns:
           list of tuples: `(page content, page language, page URL)`
         """
-        domain = re.search(r"(https?://[a-z0-9]+?\.[a-z0-9]{2,})", website).group(0)
+        split_domain = patterns.URL_PATTERN.search(website)
+        domain = split_domain.group(0)
         index_url = website + child
         index = get_page_content(index_url)
         output = []
