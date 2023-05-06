@@ -580,6 +580,9 @@ class Indexer(SklearnClassifier):
             idx_max = sizes.index(max(sizes))
             data_set.append(value[idx_max])
 
+        # Posts too short contain probably nothing useful
+        data_set = [post for post in data_set if len(post["content"]) > 250]
+
         print(f"Cleanup. Got {len(data_set)} remaining items.")
 
         # The database of web pages with limited features.
@@ -588,13 +591,17 @@ class Indexer(SklearnClassifier):
                         {"title": post["title"],
                          "excerpt": post["excerpt"] if post["excerpt"] else post["content"][0:250],
                          "date": guess_date(post["date"]) if post["date"] else None,
-                         "url": post["url"]}
-                      for post in data_set if len(post["content"]) > 250}
+                         "url": post["url"],
+                         "language": guess_language(post["content"]),
+                         "sentences": list({ typography_undo(s)
+                                            for s in set(split_sentences(post["content"], guess_language(post["content"])))
+                                            if len(s) > 60 })
+                         }
+                      for post in data_set}
 
         # Build the training set from webpages
-        training_set = [Data(post["title"] + "\n\n" + post["content"] + "\n\n".join(post["h1"]) + "\n\n".join(post["h2"]), post["url"])
-                        for post in data_set
-                        if len(post["content"]) > 250]
+        training_set = [Data(post["title"] + "\n\n" + post["content"], post["url"])
+                        for post in data_set]
 
         # Prepare the ranker for BM25 : list of tokens for each document
         with Pool() as pool:
@@ -614,7 +621,8 @@ class Indexer(SklearnClassifier):
         self.ranker = BM25Okapi(ranker_docs, k1=1.7, b=0.95)
 
         # Garbage collection to avoid storing in the saved model stuff we won't need anymore
-        del self.syn1neg
+        # Can't do that anymore if we need to embed document at run time
+        #del self.syn1neg
 
         # Save the model to a reusable object
         joblib.dump(self, get_models_folder(name + ".joblib"))
