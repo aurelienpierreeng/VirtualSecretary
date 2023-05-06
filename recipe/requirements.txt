@@ -13,5 +13,9 @@ gensim
 beautifulsoup4
 pandas
 flask
+Flask-Caching
 rank-bm25
 markupsafe
+html5lib
+python-memcached
+redis
