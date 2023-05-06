@@ -11,6 +11,7 @@ import re
 import os
 import sys
 from multiprocessing import Pool
+from os import getpid
 
 import gensim
 from gensim.models.callbacks import CallbackAny2Vec
@@ -546,7 +547,7 @@ class Indexer(SklearnClassifier):
         """Search engine based on word similarity.
 
         Arguments:
-            training_set (list[Data]): list of Data elements. If the list is empty, it will try to find a pre-trained model matching the `path` name.
+            training_set (list): list of Data elements. If the list is empty, it will try to find a pre-trained model matching the `path` name.
             path : path to save the trained model for reuse, as a Python joblib.
             name (str): name under which the model will be saved for la ter reuse.
             word2vec (Word2Vec): the instance of word embedding model.
@@ -690,8 +691,60 @@ class Indexer(SklearnClassifier):
 
         results = {(url, similarity) for url, similarity in zip(self.urls, aggregates) if similarity > 0.}
 
-        # Return the 20 most similar documents
+        # Return the 100 most similar documents by (url, similarity)
         return sorted(results, key=lambda x:x[1], reverse=True)[0:100]
+
+
+    def get_page(self, url:str) -> dict:
+        """Retrieve the requested page data object from the index by url.
+
+        Warning:
+            For performance, it doesn't check if the url exists in the index. This is no issue if you feed it the output of `self.rank()`.
+        """
+        return self.index[url]
+
+
+    def get_snippet(self, page:dict, query: tuple):
+        vector = query[0]
+        norm = query[1]
+        tokens_query = query[2]
+
+        sentences = page['sentences']
+        language = page['language']
+
+        vectors_all = []
+        penalties = []
+
+        for sentence in sentences:
+            tokens = tokenize_sentences(prefilter_tokenizer(sentence), language)
+
+            # Count how many times the tokens of the query appear in the tokens of the sentence.
+            # Since the similarity relies on averaging word vectors, a short section title containing only the query keyword
+            # would cheat the metric and get a very high score, despite being irrelevant.
+            # This penalty ensures word typically associated through embedding count enough in the mix too.
+            penalty = 0
+            for token in tokens_query:
+                penalty += tokens.count(token)
+
+            penalties.append(np.sqrt(penalty) if penalty > 0. else 1.)
+            vectors_all.append(list(get_features(tokens, self.vector_size, self.wv, language=language, syn1neg=self.syn1neg).values()))
+
+        if vectors_all:
+            vectors_all = np.array(vectors_all)
+            all_norms = np.linalg.norm(vectors_all, axis=1)
+            similarities = np.dot(vectors_all, vector) / (norm * all_norms) / np.array(penalties)
+
+            # Return the n most similar sentences in the document in descending order of similarity
+            # That is, if we have at least n sentences
+            num_elem = min(similarities.size, 5)
+            index_best = list(np.argpartition(similarities, -num_elem)[-num_elem:])
+
+            if len(index_best) > 0:
+                return [(sentences[i], similarities[i]) for i in sorted(index_best) if similarities[i]]
+            else:
+                return []
+        else:
+            return []
 
 
     def get_related(self, post: str|tuple, n:int = 15) -> list:
