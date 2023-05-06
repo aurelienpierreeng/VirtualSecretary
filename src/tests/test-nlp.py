@@ -20,7 +20,7 @@ from core import nlp
 embedding_set = [post.text for post in nltk.corpus.nps_chat.xml_posts()]
 
 # Build the word2vec language model
-w2v = nlp.Word2Vec(embedding_set, "word2vec_chat", epochs=2000)
+w2v = nlp.Word2Vec(embedding_set, "word2vec_chat", epochs=4000)
 
 # Test word2vec
 print(w2v.wv.most_similar("free"))

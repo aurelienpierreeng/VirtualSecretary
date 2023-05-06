@@ -204,12 +204,108 @@ Ask @aurelien.
 \n\n
 21 Feb 20 11:27.
 \n\n
+
+I’m trying to get darktable working with opencl. Since all opencl options in preferences are greyed out with the text “not available”,  I made an animated jpg with effects and rotation. But cannot export the sequence into the format mp4 or else. Well it did but only one frame as result.
+
+Project 60 fps
+Duration 60 frames.
+
+What is the process for the exportation?
+
+Please show us a screenshot of the node graph and the write settings.
+
+A small note: Avoid writing mp4 (h264 etc) in Natron, image sequence (png/tiff/exr) or MOV (ProRes) is recommended.
+
+16293784756911503229300057767444032×3024 5.27 MB.
+
+162937881657311877781562819898823024×4032 4.11 MB.
+
+This is the mov version.
+
+I've try all kinds of settings mp4 24 fps 30 fps and 60 fps at different quality and codec hevc and h.264.
+
+And i also tried mov but it takes 3 minutes to render but nothing appear in vlc.
+
+Try to render out image sequences, this is how professionals do it, for example *.png.
+
+@rodlie : maybe we should remove the option to render out *.mp4, since this seems to cause most of the trouble for new users.
+
+magdesign:
+
+Yeah, It's not the container (mp4) that's the issue, but the codec. It's probably easier to enable what works.
+
+You keep asking people to provide project files and snapshot and then you disappear without providing any help whatsoever just like in this thread and so many others.
+
+https://natron.readthedocs.io/en/rb-2.4/guide/tutorials-imagesequence.html how-to-convert-image-sequences-to-video-files.
+
+I've already converted the PNG sequence I exported from natron into a video file using shotcut but nevertherless the instruction provided in the documentation using ffmpeg are simple and can be done, but what I have a problem is that the output file looks nothing like what I had on the viewer.
+Here is the project file
+Water_Ripples.ntp (90.7 KB)
+
+Natron Screenshot2160×1381 761 KB.
+
+SENoise generates also an alpha channel in your graph, and IDistort sets the output alpha to the alpha from the UV input.
+select alpha channel=1 in IDistort and you're done.
+
+always check the alpha channel of your outputs (press the "a" key in the viewer)
+
+dts.bumblebee.sunlight2048×1639 1.09 MB.
+
+bumblebee.sunlight.cr2.xmp (12.8 KB)
+
+Hope you can get some pointers and workflow ideas from all the darktable sidecars that are being posted!
+
+Thanks for sharing.
+
+My attempt with dt 3.6.
+
+3S9A79691920×1282 371 KB.
+
+3S9A7969.CR2.xmp (9.8 KB)
+
+My take. Thanks for sharing!
+Besides my default style, I used a masked instance of exposure and another of color balance rgb in an attempt to draw the eye to the bumblebee and the in-focus flower. Darktable 3.7 (master branch), but I don’t think I used any non-3.6 feature.
+3S9A7969.CR2.xmp (14.2 KB)
+
+3S9A79691620×1080 421 KB.
+
+@bengtfalke Thanks for sharing. Bees among our flowers too but I don’t photograph them.
+
+My try using the Agfa Ultra Color 100 LUT, which I consider cheating...
+
+I think I downloaded this LUT from Film Simulation - RawPedia.
+
+@bengtfalke - note in the processing pipeline I’ve had to move the lut 3d module above filmic for the lut to work properly. I own this lens too and think it’s great for insects and flowers, especially when used with an extension tube.
+
+3S9A7969.CR2.xmp (9.1 KB)
+
+3S9A79691022×1080 402 KB.
+
+darktable 3.6, sharpening using the contrast equalizer with the details slider:
+
+3S9A79693224×3224 1.18 MB.
+
+3S9A7969.CR2.xmp (14.1 KB)
+
+My slightly different play, developing freeware SNS-HDR Lite, then GIMP Lab.
+
+3S9A7969-SNS-HDR Lite-Default_GIMP LAB5496×3670 4.01 MB.
+
+Nice shot, thanks for sharing!
+Sometimes RT’s haze removal does a nice job on non-hazy photos too.
+
+3S9A7969_RT-kl2400×1601 1.33 MB.
+
+3S9A7969_RT.jpg.out.pp3 (14.9 KB)
+
+"base" curve.
+
+contrast brightness "saturation"
 """
 
 clean_text = utils.typography_undo(text)
 language = nlp.guess_language(clean_text)
-clean_text = nlp.prefilter_tokenizer(clean_text)
-sentences = [nlp.tokenize_sentences(sentence, language) for sentence in nlp.split_sentences(clean_text, language)]
+sentences = [nlp.tokenize_sentences(sentence, language) for sentence in nlp.split_sentences(nlp.prefilter_tokenizer(clean_text), language)]
 
 for sentence in sentences:
   print(sentence)
