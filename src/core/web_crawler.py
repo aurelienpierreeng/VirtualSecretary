@@ -66,7 +66,7 @@ def get_page_content(url) -> BeautifulSoup:
         # This is going to make sentence tokenization a nightmare because BeautifulSoup doesn't add them in get_text()
         # Re-introduce here 2 carriage-returns after those tags to create paragraphs.
         unminified = re.sub(r"(\<\/(?:div|section|main|section|aside|header|footer|nav|time|article|h[1-6]|p|ol|ul|li|details|pre|dl|dt|dd|table|tr|th|td|blockquote|style|img|audio|video|iframe|embed|figure|canvas|fieldset|hr|caption|figcaption|address|form|noscript)\>)",
-                            r"\1\n\n", content)
+                            r"\1\n\n\n\n", content)
         # Same with inline-level tags, but only insert space, except for superscript and subscript
         unminified = re.sub(r"(\<\/(?:a|span|time|abbr|b|i|em|strong|code|dfn|big|kbd|label|textarea|input|var|q|tt)\>)",
                             r"\1 ", unminified)
@@ -108,8 +108,8 @@ def get_page_markup(page: BeautifulSoup, markup: str|list) -> str:
         print(f"found {len(elements)} {item}")
 
         if elements:
-            # Get the inner text and limit the number of whitespaces to 2 to spare some MB
-            results = [re.sub(r"( ?[\t\r\n] ?){2,}", "\n\n", tag.get_text()) for tag in elements]
+            # Get the inner text
+            results = [tag.get_text() for tag in elements]
             output += "\n\n".join(results)
 
     return output

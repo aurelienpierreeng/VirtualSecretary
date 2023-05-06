@@ -31,7 +31,7 @@ from sklearn.svm import SVC
 from rank_bm25 import BM25Okapi
 
 
-from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, DATABASE_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN, PRICE_US_PATTERN, PRICE_EU_PATTERN, RESOLUTION_PATTERN, NUMBER_PATTERN, HASH_PATTERN, IP_PATTERN
+from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, DATABASE_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN, PRICE_US_PATTERN, PRICE_EU_PATTERN, RESOLUTION_PATTERN, NUMBER_PATTERN, HASH_PATTERN, IP_PATTERN, MULTIPLE_LINES, MULTIPLE_SPACES
 from core.utils import get_models_folder, typography_undo, guess_date
 
 # The set of languages supported at the same time by NLTK tokenizer, stemmer and stopwords data is not consistent.
@@ -138,9 +138,7 @@ BASE_64 = re.compile(r"((?:[A-Za-z0-9+\/]{4}){64,}(?:[A-Za-z0-9+\/]{2}==|[A-Za-z
 BB_CODE = re.compile(r"\[(img|quote)[a-zA-Z0-9 =\"]*?\].*?\[\/\1\]")
 MARKUP = re.compile(r"(?:\[|\{|\<)([^\n\r]+?)(?:\]|\}|\>)")
 USER = re.compile(r"(\S+)?@(\S+)|(user\-?\d+)")
-MULTIPLE_SPACES = re.compile(r"[ ]{2, }")
 REPEATED_CHARACTERS = re.compile(r"(.)\1{9,}")
-MULTIPLE_LINES = re.compile(r"( ?[\t\r\n] ?){2,}")
 UNFINISHED_SENTENCES = re.compile(r"(?<![?!.])\n\n")
 MULTIPLE_DOTS = re.compile(r"\.{2,}")
 MULTIPLE_DASHES = re.compile(r"-{1,}")
@@ -165,9 +163,6 @@ def prefilter_tokenizer(string: str) -> str:
 
     # Same with question marks
     string = MULTIPLE_QUESTIONS.sub("?", string)
-
-    # Paragraphs (ended with \n\n) that don't have ending punctuation should have one.
-    string = UNFINISHED_SENTENCES.sub(".\n\n", string)
 
     # Remove non-punctuational repeated characters like xxxxxxxxxxx, or =============
     # (redacted text or ASCII line-like separators)
@@ -214,6 +209,9 @@ def prefilter_tokenizer(string: str) -> str:
 
     # Remove multiple spaces
     string = MULTIPLE_SPACES.sub(" ", string)
+
+    # Paragraphs (ended with \n\n) that don't have ending punctuation should have one.
+    string = UNFINISHED_SENTENCES.sub(".\n\n", string)
 
     return string.strip()
 

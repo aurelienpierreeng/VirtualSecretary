@@ -13,6 +13,7 @@ import pickle
 
 from typing import TypedDict
 from dateutil import parser
+from core.patterns import MULTIPLE_SPACES, MULTIPLE_LINES
 
 
 filter_entry = TypedDict("filter_entry", {"path": str, "filter": str, "protocol": str })
@@ -388,9 +389,8 @@ def typography_undo(string:str) -> str:
     for key, value in SUBSTITUTIONS.items():
         string = string.replace(key, value)
 
-    # If we have 2 \n (new paragraph) following some alphanumeric string which has no ending punctuation,
-    # add a trailing period for proper sentence detection.
-    string = re.sub(r"([a-zA-Z0-9])(?![\.\!\?])\n{2}", r"\1. \n\n", string)
+    string = MULTIPLE_LINES.sub("\n\n", string)
+    string = MULTIPLE_SPACES.sub(" ", string)
 
     return string.strip()
 
