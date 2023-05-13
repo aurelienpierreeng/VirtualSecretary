@@ -278,8 +278,6 @@ def imap_decode(value: bytes) -> str:
 
 
 REPLACEMENT_MAP = {
-    "|": "\n",
-    "#": " ",
     # Spaces
     "\u2002": " ",  # En space
     "\u2003": " ",  # Em space
