@@ -94,13 +94,14 @@ STOPWORDS = {
     "it", "it's", "that", "this", "these", "those", "that'll", "that's", "there", "here",
     "the", "a", "an", "one", "any", "all", "none", "such", "to", "which", "whose", "much", "many", "several", "few", "little",
     "always", "never", "sometimes",
-    "my", "mine", "your", "yours", "their", "theirs", "his", "hers",
-    "i", "you", "he", "she", "her", "them",
+    "my", "mine", "your", "yours", "their", "theirs", "his", "hers", "its",
+    "i", "you", "he", "she", "her", "them", "s",
     "also", "could", "would", "n't", "'s", "need", "like", "get",
     "with", "in", "but", "so", "'m", "just", "and", "only", "because", "of", "as", "very", "from", "other",
     "if", "then", "however", "maybe", "now", "really", "actually", "something", "everything",
     "maybe", "probably", "guess", "perhaps", "still", "though", "really", "even",
     "something", "definitely", "indeed", "however", "for", "all", "some", "sometimes", "everytime", "every", "none",
+    "t",
     # FR
     "ça", "à", "au", "aux", "que", "qu'il", "qu'elle", "qu'", "ce", "cette", "ces", "cettes", "cela", "ceci",
     "le", "la", "les", "l", "l'", "de", "du", "d'", "un", "une", "des",
@@ -144,6 +145,20 @@ MULTIPLE_DOTS = re.compile(r"\.{2,}")
 MULTIPLE_DASHES = re.compile(r"-{1,}")
 MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
 
+
+def clean_whitespaces(string:str) -> str:
+    # Limit multiple newlines to 2
+    string = MULTIPLE_LINES.sub("\n\n", string)
+
+    # Remove multiple spaces
+    string = MULTIPLE_SPACES.sub(" ", string)
+
+    # Paragraphs (ended with \n\n) that don't have ending punctuation should have one.
+    string = UNFINISHED_SENTENCES.sub(".\n\n", string)
+
+    return string.strip()
+
+
 def prefilter_tokenizer(string: str) -> str:
     """Tokenizers split words based on unsupervised machine-learned models. Sometimes, they work weird.
     For example, in emails and user handles like `@user`, they would split `@` and `user` as 2 different tokens,
@@ -151,9 +166,6 @@ def prefilter_tokenizer(string: str) -> str:
 
     To avoid that, we replace data of interest by meta-tokens before the tokenization, with regular expressions.
     """
-
-    # Limit multiple tabs and newline characters to 2
-    string = MULTIPLE_LINES.sub("\n\n", string)
 
     # Teenagers need to calm the fuck down, ellipses need no more than three dots and two dots are not a thing
     string = MULTIPLE_DOTS.sub("...", string)
@@ -207,13 +219,7 @@ def prefilter_tokenizer(string: str) -> str:
     # Remove numbers
     string = NUMBER_PATTERN.sub(' _NUMBER_ ', string)
 
-    # Remove multiple spaces
-    string = MULTIPLE_SPACES.sub(" ", string)
-
-    # Paragraphs (ended with \n\n) that don't have ending punctuation should have one.
-    string = UNFINISHED_SENTENCES.sub(".\n\n", string)
-
-    return string.strip()
+    return clean_whitespaces(string)
 
 
 def normalize_token(word: str, language: str):
@@ -239,7 +245,7 @@ def normalize_token(word: str, language: str):
     elif NUMBER_PATTERN.match(word):
         # Tokenizer may have split apart number from other stuff, in which case we have token numbers
         value = "_NUMBER_"
-    elif "_" in word or "<" in word or ">" in word or "\\" in word or "=" in word:
+    elif "_" in word or "<" in word or ">" in word or "\\" in word or "=" in word or "~" in word or "#" in word:
         # Technical stuff
         value = None
 
@@ -343,7 +349,7 @@ def tokenize_post(post:str) -> tuple[list[str], str]:
 
 
 class Word2Vec(gensim.models.Word2Vec):
-    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200):
+    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5):
         """Train or retrieve an existing word2vec word embedding model
 
         Arguments:
@@ -368,7 +374,7 @@ class Word2Vec(gensim.models.Word2Vec):
         print(f"got {len(training)} sentences")
 
         loss_logger = LossLogger()
-        super().__init__(training, vector_size=vector_size, window=7, min_count=5, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=0.001, callbacks=[loss_logger], compute_loss=True, sg=1)
+        super().__init__(training, vector_size=vector_size, window=window, min_count=5, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=0.001, callbacks=[loss_logger], compute_loss=True, sg=1)
         print("training done")
 
         self.save(self.pathname)
@@ -580,22 +586,26 @@ class Indexer(SklearnClassifier):
             data_set.append(value[idx_max])
 
         # Posts too short contain probably nothing useful
-        data_set = [post for post in data_set if len(post["content"]) > 250]
+        data_set = [post for post in data_set if len(clean_whitespaces(post["content"])) > 250]
 
         print(f"Cleanup. Got {len(data_set)} remaining items.")
 
         # The database of web pages with limited features.
         # Keep only pages having at least 250 letters in their content
         self.index = {post["url"]:
-                        {"title": post["title"],
-                         "excerpt": post["excerpt"] if post["excerpt"] else post["content"][0:250],
-                         "date": guess_date(post["date"]) if post["date"] else None,
-                         "url": post["url"],
-                         "language": guess_language(post["content"]),
-                         "sentences": list({ typography_undo(s)
-                                            for s in set(split_sentences(post["content"], guess_language(post["content"])))
-                                            if len(s) > 60 })
-                         }
+                      {"title": post["title"],
+                       "excerpt": post["excerpt"] if post["excerpt"] else post["content"][0:250],
+                       "date": guess_date(post["date"]) if post["date"] else None,
+                       "url": post["url"],
+                       "language": guess_language(post["content"]),
+                       "sentences": list({s
+                                          for s in set(
+                                              split_sentences(
+                                                  clean_whitespaces(
+                                                      post["content"]),
+                                                  guess_language(post["content"])))
+                                          if len(s) > 60})
+                       }
                       for post in data_set}
 
         # Build the training set from webpages
@@ -714,7 +724,7 @@ class Indexer(SklearnClassifier):
         penalties = []
 
         for sentence in sentences:
-            tokens = tokenize_sentences(prefilter_tokenizer(sentence), language)
+            tokens = tokenize_sentences(prefilter_tokenizer(typography_undo(sentence)), language)
 
             # Count how many times the tokens of the query appear in the tokens of the sentence.
             # Since the similarity relies on averaging word vectors, a short section title containing only the query keyword
