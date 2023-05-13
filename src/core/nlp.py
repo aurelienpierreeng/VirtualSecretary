@@ -677,7 +677,7 @@ class Indexer(SklearnClassifier):
         return vector, norm, tokenized_query
 
 
-    def rank(self, post: str|tuple) -> list:
+    def rank(self, post: str|tuple, filter_callback: callable = None) -> list:
         """Apply a label on a post based on the trained model."""
 
         if isinstance(post, tuple):
@@ -696,8 +696,12 @@ class Indexer(SklearnClassifier):
         # then aggregate the ranking from BM25+ to it for each URL.
         # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
         aggregates = 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
+        results = zip(self.urls, aggregates)
 
-        results = {(url, similarity) for url, similarity in zip(self.urls, aggregates) if similarity > 0.}
+        if filter_callback is None:
+            results = {(url, similarity) for url, similarity in results if similarity > 0.}
+        else:
+            results = {(url, similarity) for url, similarity in results if similarity > 0. and filter_callback(url)}
 
         # Return the 100 most similar documents by (url, similarity)
         return sorted(results, key=lambda x:x[1], reverse=True)[0:100]
