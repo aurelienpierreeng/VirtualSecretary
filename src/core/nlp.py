@@ -677,7 +677,7 @@ class Indexer(SklearnClassifier):
         return vector, norm, tokenized_query
 
 
-    def rank(self, post: str|tuple, filter_callback: callable = None) -> list:
+    def rank(self, post: str|tuple, method: str = "ai", filter_callback: callable = None, **kargs) -> list:
         """Apply a label on a post based on the trained model."""
 
         if isinstance(post, tuple):
@@ -690,18 +690,21 @@ class Indexer(SklearnClassifier):
         else:
             raise TypeError("The argument should be either a (vector, norm) tuple or a string")
 
-        norm *= len(tokens)
-
         # Compute the cosine similarity of centroids between query and documents,
         # then aggregate the ranking from BM25+ to it for each URL.
         # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
-        aggregates = 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
+        if method.lower() == "ai":
+            norm *= len(tokens)
+            aggregates = 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
+        else:
+            aggregates = self.ranker.get_scores(tokens)
+
         results = zip(self.urls, aggregates)
 
         if filter_callback is None:
             results = {(url, similarity) for url, similarity in results if similarity > 0.}
         else:
-            results = {(url, similarity) for url, similarity in results if similarity > 0. and filter_callback(url)}
+            results = {(url, similarity) for url, similarity in results if similarity > 0. and filter_callback(url, **kargs)}
 
         # Return the 100 most similar documents by (url, similarity)
         return sorted(results, key=lambda x:x[1], reverse=True)[0:100]
