@@ -44,7 +44,11 @@ def get_page_content(url) -> BeautifulSoup:
     #time.sleep(0.5)
 
     try:
-        page = requests.get(url, timeout=30)
+        headers = {
+            'User-Agent': 'Virtual Secretary 0.1 Unix',
+            'From': 'youremail@domain.example'  # This is another valid field
+        }
+        page = requests.get(url, timeout=30, headers=headers)
         print(f"{url}: {page.status_code}")
 
         if page.status_code != 200:
