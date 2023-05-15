@@ -327,7 +327,7 @@ class Crawler:
                             link_tag["href"], domain)
 
                         t_page = get_page_content(translatedURL)
-                        output += parse_page(page, translatedURL, lang, markup=markup, date=date)
+                        output += parse_page(t_page, translatedURL, lang, markup=markup, date=date)
 
                         # Remember we crawled this
                         self.crawled_URL.append(translatedURL)
