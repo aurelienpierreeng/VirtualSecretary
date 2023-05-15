@@ -11,7 +11,8 @@ import re
 import os
 import sys
 from multiprocessing import Pool
-from os import getpid
+
+from collections import Counter
 
 import gensim
 from gensim.models.callbacks import CallbackAny2Vec
@@ -23,8 +24,8 @@ import numpy as np
 import nltk
 from nltk.classify import SklearnClassifier
 from nltk.stem.snowball import SnowballStemmer
-from nltk.corpus import stopwords
 from nltk.tokenize import RegexpTokenizer
+from nltk.stem import WordNetLemmatizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
@@ -33,88 +34,7 @@ from rank_bm25 import BM25Okapi
 
 from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, DATABASE_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN, PRICE_US_PATTERN, PRICE_EU_PATTERN, RESOLUTION_PATTERN, NUMBER_PATTERN, HASH_PATTERN, IP_PATTERN, MULTIPLE_LINES, MULTIPLE_SPACES
 from core.utils import get_models_folder, typography_undo, guess_date
-
-# The set of languages supported at the same time by NLTK tokenizer, stemmer and stopwords data is not consistent.
-# We build the least common denominator here, that is languages supported in the 3 modules.
-# See SnowballStemmer.languages and stopwords.fileids()
-_supported_lang = {'danish', 'dutch', 'english', 'finnish', 'french', 'german', 'italian', 'norwegian', 'portuguese', 'spanish', 'swedish'}
-
-# Static dict of stopwords for language detection, inited from NLTK corpus
-STOPWORDS_DICT = { language: list(stopwords.words(language)) for language in stopwords.fileids() if language in _supported_lang }
-
-# Some stopwords are missing from the corpus for some languages, add them
-STOPWORDS_DICT["french"] += ["ça", "ceci", "cela", "tout", "tous", "toutes", "toute",
-                             "plusieurs", "certain", "certaine", "certains", "certaines",
-                             "meilleur", "meilleure", "meilleurs", "meilleures", "plus",
-                             "aujourd'hui", "demain", "hier", "tôt", "tard",
-                             "salut", "bonjour", "va", "aller", "venir", "viens", "vient", "viennent", "vienne",
-                             "oui", "non",
-                             "gauche", "droite", "droit", "haut", "bas", "devant", "derrière", "avant", "après",
-                             "clair", "claire",
-                             "sûr", "sûre", "sûrement",
-                             "cordialement", "salutations",
-                             "qui", "que", "quoi", "dont", "où", "pourquoi", "comment", "duquel", "auquel", "lequel", "auxquels", "auxquelles", "lesquelles",
-                             "dehors", "hors", "chez", "avec", "vers", "tant", "si", "de",
-                             "à", "travers", "pour", "contre", "sans", "afin"]
-STOPWORDS_DICT["english"] += ["best", "better", "more", "all", "every",
-                              "some", "any", "many", "few", "little",
-                              "today", "tomorrow", "yesterday", "early", "late", "earlier", "later",
-                              "hi", "hello", "good", "morning", "go", "come", "coming", "going",
-                              "yes", "no", "yeah",
-                              "left", "right", "ahead", "top", "bottom", "before", "behind", "front", "after",
-                              "clear",
-                              "sure", "surely",
-                              "greetings",
-                              "who", "which", "where", "whose", "why", "what", "how", "that",
-                              "out", "by", "at", "with", "toward", "long", "as", "if", "of",
-                              "through", "for", "against", "without"]
-STOPWORDS_DICT["german"] += ["best", "beste", "besten", "besser", "mehr", "alle", "ganz", "ganze",
-                             "mehrere", "etwa", "etwas", "manche", "klein", "groß",
-                             "heute", "morgen", "gestern", "früh", "spät", "früher", "später",
-                             "hallo", "guten", "tag", "geht", "gehen", "kom", "kommen", "komt",
-                             "ja", "nein",
-                             "links", "rechts", "gerade", "oben", "unten", "vor", "hinter", "nach",
-                             "werde", "werden", "wurde", "würde", "stimmt", "klar",
-                             "sicher", "sicherlich",
-                             "herzlich", "herzliche", "grüße",
-                             "wer", "wo", "wann", "wenn", "als", "ob", "was", "warum",
-                             "aus", "bei", "mit", "nach", "seit", "von", "zu",
-                             "durch", "für", "gegen", "ohne", "um"]
-
-# Build a dict of sets
-STOPWORDS_DICT = { language: set(STOPWORDS_DICT[language]) for language in STOPWORDS_DICT}
-
-# Stopwords to remove
-# We remove stopwords only if they are grammatical operators not briging semantic meaning.
-# NLTK stopwords lists are too aggressive and will remove auxiliaries and wh- tags
-# We keep nounds, verbs, question and negation markers.
-# We ditch quantifiers, adverbs, pronouns.
-STOPWORDS = {
-    # EN
-    "it", "it's", "that", "this", "these", "those", "that'll", "that's", "there", "here",
-    "the", "a", "an", "one", "any", "all", "none", "such", "to", "which", "whose", "much", "many", "several", "few", "little",
-    "always", "never", "sometimes",
-    "my", "mine", "your", "yours", "their", "theirs", "his", "hers", "its",
-    "i", "you", "he", "she", "her", "them", "s",
-    "also", "could", "would", "n't", "'s", "need", "like", "get",
-    "with", "in", "but", "so", "'m", "just", "and", "only", "because", "of", "as", "very", "from", "other",
-    "if", "then", "however", "maybe", "now", "really", "actually", "something", "everything",
-    "maybe", "probably", "guess", "perhaps", "still", "though", "really", "even",
-    "something", "definitely", "indeed", "however", "for", "all", "some", "sometimes", "everytime", "every", "none",
-    "t",
-    # FR
-    "ça", "à", "au", "aux", "que", "qu'il", "qu'elle", "qu'", "ce", "cette", "ces", "cettes", "cela", "ceci",
-    "le", "la", "les", "l", "l'", "de", "du", "d'", "un", "une", "des",
-    "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "leur", "leurs", "votre", "vos", "c'est à dire", "c'est-à-dire",
-    "y", "là", "ici", "là-bas", "ceci", "cela", "c'est", "bien",
-    "parfois", "certain", "certains", "certaine", "certaines", "quelque", "quelques", "nombreux", "nombreuses", "peu", "plusieurs",
-    "beaucoup", "tout", "toute", "tous", "toutes", "aucun", "aucune", "comme", "si",
-    "en", "dans", "or", "ou", "où", "just", "et", "alors", "parce", "seulement", "ni", "car",
-    "très", "donc", "pas", "mais", "même", "aussi", "avec", "je", "tu", "il", "elle", "nous", "vous", "ils", "elles",
-    # Lonely punctuation
-     "(", ")", "{", "}", "[", "]", ",", ":", "/", ";", "_", "-", "\\", '“', '”', '‘', '’', "<", ">", "*", "'", '"',
-     "''", "``"
-}
+from core.language import STOPWORDS_DICT, STOPWORDS, REPLACEMENTS
 
 
 def guess_language(string: str) -> str:
@@ -146,6 +66,12 @@ MULTIPLE_DASHES = re.compile(r"-{1,}")
 MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
 ORDINAL = re.compile(r"n° ?[0-9]+")
 
+# Trailing/leading lost punctuation resulting from broken tokenization through composed words
+TRAILING = re.compile(r"^((-|\.|\,)(?=[a-zéèàêâîôûïüäëö]))|((?<=[a-z])(-|\.|\,))", flags=re.IGNORECASE)
+
+# pronoms/déterminants + apostrophes + mot
+FRANCAIS = re.compile(r"^(j|t|s|l|d|qu|m)\'(?=[a-zéèàêâîôûïüäëö])", flags=re.IGNORECASE)
+
 
 def clean_whitespaces(string:str) -> str:
     # Limit multiple newlines to 2
@@ -176,9 +102,6 @@ def prefilter_tokenizer(string: str) -> str:
 
     # Same with question marks
     string = MULTIPLE_QUESTIONS.sub("?", string)
-
-    # Numéro/ordinal numbers
-    string = ORDINAL.sub(" _ORDINAL_ ", string)
 
     # Remove non-punctuational repeated characters like xxxxxxxxxxx, or =============
     # (redacted text or ASCII line-like separators)
@@ -212,6 +135,9 @@ def prefilter_tokenizer(string: str) -> str:
     string = DATE_PATTERN.sub(" _DATE_ ", string)
     string = TIME_PATTERN.sub(" _TIME_ ", string)
 
+    # Numéro/ordinal numbers
+    string = ORDINAL.sub(" _ORDINAL_ ", string)
+
     # Numerical : prices and resolutions
     string = PRICE_US_PATTERN.sub(" _PRICE_ ", string)
     string = PRICE_EU_PATTERN.sub(" _PRICE_ ", string)
@@ -225,40 +151,84 @@ def prefilter_tokenizer(string: str) -> str:
 
     return clean_whitespaces(string)
 
+LEMMATIZER = WordNetLemmatizer()
 
-def normalize_token(word: str, language: str):
-    """Return normalized word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
+def normalize_token(word: str, language: str, vocabulary: dict[str: list] = None):
+    """Return normalized, lemmatized and stemmed word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
 
     Arguments:
         word (str): tokenized word in lower case only.
         language (str): the language used to detect dates. Supports `"french"`, `"english"` or `"any"`.
+        vocabulary (dict): a `token: list` mapping where `token` is the stemmed token and `list` stores all words from corpus which share this stem. Because stemmed tokens are not user-friendly anymore, this vocabulary can be used to build a reverse mapping `normalized token` -> `natural language keyword` for GUI.
 
     Examples:
         `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
         `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
     """
-    value = word
+    value = word.strip(",:'^ ")
 
-    meta_tokens = ["_user_", "_date_", "_time_", "_url_", "_ip_", "_hash_", "_databasefile_", "_codefile_", "_imagefile_", "_documentfile_", "_textfile_", "_archivefile_", "_binaryfile_", "_path_", "_price_", "_resolution_", "_date_"]
+    # Remove leading/trailing characters that may result from faulty tokenization
+    value = TRAILING.sub("", value)
 
-    if word in meta_tokens:
-        # Input is lowercase.
-        value = word.upper()
-    elif word in STOPWORDS:
-        value = None
-    elif NUMBER_PATTERN.match(word):
-        # Tokenizer may have split apart number from other stuff, in which case we have token numbers
-        value = "_NUMBER_"
-    elif "_" in word or "<" in word or ">" in word or "\\" in word or "=" in word or "~" in word or "#" in word:
-        # Technical stuff
-        value = None
+    # Remove leading l', j', t', s'
+    value = FRANCAIS.sub("", value)
 
-    # else:
-    #    # Stem the word
-    #    stemmer = SnowballStemmer(language)
-    #    value = stemmer.stem(value)
+    meta_tokens = ["_user_", "_date_", "_time_", "_url_", "_ip_", "_hash_", "_databasefile_", "_codefile_", "_imagefile_", "_documentfile_", "_textfile_", "_archivefile_", "_binaryfile_", "_path_", "_price_", "_resolution_", "_ordinal_", "_number_"]
 
-    return value
+    if len(value) < 2:
+        # Single letters hold no meaning
+        return None
+
+    if value.lower() in meta_tokens:
+        # Input is lowercase, need to fix that for meta tokens.
+        return value
+
+    if NUMBER_PATTERN.match(value):
+        # Tokenizer may have split apart number from other stuff, in which case we have number tokens: need to parse them again
+        return "_number_"
+
+    if "_" in word or "<" in word or ">" in word or "\\" in word or "=" in word or "~" in word or "#" in word:
+        # Technical stuff, markup/code leftovers and such
+        return None
+
+    if value in STOPWORDS:
+        return None
+
+    # Handle typos and abbreviations
+    if value in REPLACEMENTS:
+        value = REPLACEMENTS[value].lower()
+
+    # Lemmatizer : canonical form of the word, if found
+    # Note : still produces natural language words
+    value = LEMMATIZER.lemmatize(value)
+
+    # Stemmer : remove suffixes
+    # Note : produces machine language words, fucks up human-readable grammar
+    stemmer = SnowballStemmer(language)
+    stemmed = stemmer.stem(value)
+
+    # For some reason, stemming makes number appear, so run it one more time
+    if re.match(r"[0-9]+$", stemmed):
+        return "_number_"
+
+    if len(stemmed) < 2:
+        # Single letters hold no meaning
+        return None
+
+    # Handle typos and abbreviations again
+    if stemmed in REPLACEMENTS:
+        stemmed = REPLACEMENTS[stemmed].lower()
+
+    if stemmed in STOPWORDS:
+        return None
+
+    if vocabulary is not None:
+        if stemmed in vocabulary:
+            vocabulary[stemmed] += [value]
+        else:
+            vocabulary[stemmed] = [value]
+
+    return stemmed
 
 
 def tokenize_sentences(sentence, language: str) -> list[str]:
