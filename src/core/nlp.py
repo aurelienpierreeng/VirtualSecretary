@@ -377,6 +377,16 @@ class Word2Vec(gensim.models.Word2Vec):
         training = [sentence for text in training for sentence in text]
         print(f"got {len(training)} sentences")
 
+        # Dump words to a file to detect stopwords
+        words = [word for sentence in training for word in sentence]
+        counts = Counter(words)
+        # Sort words by frequency
+        counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
+        with open(get_models_folder("stopwords"), 'w', encoding='utf8') as f:
+            for key, value in counts.items():
+                f.write(f"{key}: {value}\n")
+        print("stopwords saved")
+
         loss_logger = LossLogger()
         super().__init__(training, vector_size=vector_size, window=window, min_count=5, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=0.001, callbacks=[loss_logger], compute_loss=True, sg=1)
         print("training done")
