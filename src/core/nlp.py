@@ -713,7 +713,7 @@ class Indexer(SklearnClassifier):
         else:
             aggregates = self.ranker.get_scores(tokens)
 
-        results = zip(self.urls, aggregates)
+        results = zip(self.urls, np.nan_to_num(aggregates))
 
         if filter_callback is None:
             results = {(url, similarity) for url, similarity in results if similarity > 0.}
@@ -762,6 +762,7 @@ class Indexer(SklearnClassifier):
             vectors_all = np.array(vectors_all)
             all_norms = np.linalg.norm(vectors_all, axis=1)
             similarities = np.dot(vectors_all, vector) / (norm * all_norms) / np.array(penalties)
+            similarities = np.nan_to_num(similarities)
 
             # Return the n most similar sentences in the document in descending order of similarity
             # That is, if we have at least n sentences
