@@ -144,6 +144,7 @@ UNFINISHED_SENTENCES = re.compile(r"(?<![?!.])\n\n")
 MULTIPLE_DOTS = re.compile(r"\.{2,}")
 MULTIPLE_DASHES = re.compile(r"-{1,}")
 MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
+ORDINAL = re.compile(r"n° ?[0-9]+")
 
 
 def clean_whitespaces(string:str) -> str:
@@ -175,6 +176,9 @@ def prefilter_tokenizer(string: str) -> str:
 
     # Same with question marks
     string = MULTIPLE_QUESTIONS.sub("?", string)
+
+    # Numéro/ordinal numbers
+    string = ORDINAL.sub(" _ORDINAL_ ", string)
 
     # Remove non-punctuational repeated characters like xxxxxxxxxxx, or =============
     # (redacted text or ASCII line-like separators)
