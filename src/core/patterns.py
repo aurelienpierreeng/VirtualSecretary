@@ -85,7 +85,7 @@ filename = r"(?<=%s)%s" % (non_filename, filename)
 
 IMAGE_PATTERN = re.compile(r"%s\.(bmp|jpg|jpeg|jpe|jp2|j2c|j2k|jpc|jpf|jpx|png|ico|svg|webp|heif|heic|tif|tiff|hdr|exr|ppm|pfm|nef|rw2|cr2|cr3|crw|dng|raf|arw|srf|sr2|iiq|3fr|dcr|ari|pef|x3f|erf|raw|rwz)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
-CODE_PATTERN = re.compile(r"%s\.(php|m|py|sh|c|cxx|cpp|h|hxx|a|asm|awk|asp|class|java|yml|yaml|js|css)(?![\.\S]\S)" % filename, re.IGNORECASE)
+CODE_PATTERN = re.compile(r"%s\.(php|m|py|sh|c|cxx|cpp|h|hxx|a|asm|awk|asp|class|java|yml|yaml|js|css|cl)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
 TEXT_PATTERN = re.compile(r"%s\.(txt|md|html|xml|xhtml|xmp|json|tex|rst|rtf)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
@@ -104,7 +104,7 @@ PRICE_EU_PATTERN = re.compile(r"(?:^|\s)(\d+(?:[.,-]\d+)* ?(usd|eur|USD|EUR|\€
 RESOLUTION_PATTERN = re.compile(r"\d+(×|x|X)\d+")
 """Pixel resolution like 10x20 or 10×20. Units are discarded."""
 
-NUMBER_PATTERN = re.compile(r"(?:^|\s)([\.\,\-\_\/\+\-±]?(?:\d+[\.\,\-\_\/\+\-]?)+)(?=$|\s)")
+NUMBER_PATTERN = re.compile(r"(?:^|\s)([\.\,\-\_\/\+\-±]?(?:\d+[\.\,\-\_\/\+\-]?)+)(?:$|\s)")
 """Signed integers and decimals, fractions and numeric IDs with interal dashes and underscores.
 Numbers with starting or trailing units are not considered. Lazy decimals (.1 and 1.) are considered.
 """
