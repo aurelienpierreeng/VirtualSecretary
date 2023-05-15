@@ -1,5 +1,6 @@
- """Download NLTK corpora"""
+"""Download NLTK corpora"""
 
 import nltk
 nltk.download('stopwords')
 nltk.download('punkt')
+nltk.download('wordnet')
