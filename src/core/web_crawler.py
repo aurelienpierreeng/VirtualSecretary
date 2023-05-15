@@ -128,7 +128,7 @@ def get_excerpt(html: BeautifulSoup):
         excerpt = html.find(excerpt_options[i][0], excerpt_options[i][1])
         i += 1
 
-    return excerpt["content"] if excerpt else None
+    return excerpt["content"] if excerpt and "content" in excerpt else None
 
 
 def get_date(html: BeautifulSoup):
