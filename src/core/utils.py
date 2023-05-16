@@ -311,8 +311,10 @@ REPLACEMENT_MAP = {
     "©": " ",
     "®": " ",
     "|": " ",
+    "¦": " ",
     "™": " ",
     "ᵉ": "e",
+    "👀": " ",
 }
 
 # For 1:1 character replacement, we can use a fast character map

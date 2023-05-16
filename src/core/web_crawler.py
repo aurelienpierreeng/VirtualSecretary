@@ -230,11 +230,6 @@ class Crawler:
         index = get_page_content(index_url)
         output = []
 
-        # Parse index page
-        if index_url not in self.crawled_URL:
-            output += parse_page(index, index_url, default_lang, markup)
-            self.crawled_URL.append(index_url)
-
         # Don't recurse : crawl index/top-most page and return
         if not recurse:
             return output
