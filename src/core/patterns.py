@@ -15,7 +15,7 @@ IP_PATTERN = re.compile(r"(?=^|\s|\[|\(|\{|\<)((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0
 EMAIL_PATTERN = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?", re.IGNORECASE)
 """Emails patterns like `<me@mail.com>` or `me@mail.com` where the whole address is captured in the first group."""
 
-URL_PATTERN = re.compile(r"(?=^|\s|\[|\(|\{|\<)(?:https?\:)?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?([\/]{0,1}[^?#\s\"\,\;\:>]*)(\?[a-z]+[\=\,\+\&\%\-\.a-zA-Z0-9]*)?(?=$|\s|\]|\)|\}|\>)", re.IGNORECASE)
+URL_PATTERN = re.compile(r"(?:https?\:)?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?([\/]{0,1}[^?#\s\"\,\;\:>]*)(\?[a-z]+[\=\,\+\&\%\-\.a-zA-Z0-9]*)?(?=$|\s|\]|\)|\}|\>)", re.IGNORECASE)
 """URL patterns like `http(s)://domain.ext/page?q=x&r=0` or `//domain.ext/page`.
 
 - `domain.ext` is captured as the first group,
@@ -75,15 +75,16 @@ FLAGS_PATTERN = re.compile(r"FLAGS \((.*?)\)")
 # See https://stackoverflow.com/a/76113333/7087604
 
 # All characters allowed in file names, aka not the following:
-filename = r"[^\#\%\<\>\&\*\{\}\\\/\?\$\!\|\=\"\'\@\n\r\t\b]+?"
-non_filename = r"[\#\%\<\>\&\*\{\}\\\/\?\$\!\|\=\"\'\@\n\r\t\b]"
+# Note: whitespace is technically allowed in file names, but it's a mess to include in regexs
+filename = r"[^\#\%\<\>\&\*\{\}\\\/\?\$\!\|\=\"\'\@\n\r\t\b ]+?"
+non_filename = r"[\#\%\<\>\&\*\{\}\\\/\?\$\!\|\=\"\'\@\n\r\t\b ]"
 
 PATH_PATTERN = re.compile(r"([A-Z]:|\.)?(\\\\|\/)(%s(\\\\|\/)?)+" % filename)
 """File path pattern like `~/file`, `/home/file`, `./file` or `C:\\windows`"""
 
 filename = r"(?<=%s)%s" % (non_filename, filename)
 
-IMAGE_PATTERN = re.compile(r"%s\.(bmp|jpg|jpeg|jpe|jp2|j2c|j2k|jpc|jpf|jpx|png|ico|svg|webp|heif|heic|tif|tiff|hdr|exr|ppm|pfm|nef|rw2|cr2|cr3|crw|dng|raf|arw|srf|sr2|iiq|3fr|dcr|ari|pef|x3f|erf|raw|rwz)(?![\.\S]\S)" % filename, re.IGNORECASE)
+IMAGE_PATTERN = re.compile(r"%s\.(bmp|jpg|jpeg|jpe|jp2|j2c|j2k|jpc|jpf|jpx|png|ico|svg|webp|heif|heic|tif|tiff|hdr|exr|ppm|pfm|nef|rw2|cr2|cr3|crw|dng|raf|arw|srf|sr2|iiq|3fr|dcr|ari|pef|x3f|erf|raw|rwz|orf)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
 CODE_PATTERN = re.compile(r"%s\.(php|m|py|sh|c|cxx|cpp|h|hxx|a|asm|awk|asp|class|java|yml|yaml|js|css|cl)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
@@ -95,7 +96,7 @@ ARCHIVE_PATTERN = re.compile(r"%s\.(zip|gzip|gz|tar|bz|iso|rar|img)(?![\.\S]\S)"
 
 DATABASE_PATTERN = re.compile(r"%s\.(db|sql|sqlite)(?![\.\S]\S)" % filename, re.IGNORECASE)
 
-EXECUTABLE_PATTERN = re.compile(r"%s\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin|rpm|deb|distinfo)(?![\.\S]\S)" % filename, re.IGNORECASE)
+EXECUTABLE_PATTERN = re.compile(r"%s\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin|rpm|deb|distinfo)((?:\.[a-z0-9]+)+)?(?![a-zA-Z])" % filename, re.IGNORECASE)
 
 # For some reason, merging both patterns in the same triggers infinite loop, so split it…
 PRICE_US_PATTERN = re.compile(r"(?<=^|[\s\[\(\'])([+-=≠±])?((usd|eur|USD|EUR|\€|\$|\£) ?\d+(?:[.,\-]\d+)*)(k|K)?(?=$|[\s.,?!\-:;\]\)])")
@@ -132,7 +133,7 @@ SENSIBILITY = re.compile(r"(?<=^|[\s\[\(\'])(ISO|ASA) ?([0-9]+(?:[.,\-+\/ ][0-9]
 LUMINANCE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(Cd\/m²|Cd\/m2|Cd\/m\^2|nit|nits)(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
 """Luminance/radiance in nits or Cd/m²"""
 
-GAIN = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(dB|decibel)s?(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
+GAIN = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(dB|decibel|décibels)s?(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
 """Gain, attenuation and PSNR in dB"""
 
 FILE_SIZE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?i?(b|o)s?(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
