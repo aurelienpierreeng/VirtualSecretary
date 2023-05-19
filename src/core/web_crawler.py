@@ -256,9 +256,10 @@ class Crawler:
                 self.crawled_URL.append(currentURL)
 
                 # Follow internal links once content is scraped
-                _child = currentURL.replace(website, "")
-                output += self.get_website_from_crawling(
-                    website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str, recurse=recurse)
+                if contains_str in currentURL:
+                    _child = currentURL.replace(website, "")
+                    output += self.get_website_from_crawling(
+                        website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str, recurse=recurse)
 
         return output
 
