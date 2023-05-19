@@ -24,10 +24,10 @@ STOPWORDS_EN = {
     "with", "in", "but", "so", "just", "and", "only", "because", "of", "as", "very", "from", "other",
     "if", "then", "however", "maybe", "now", "really", "actually", "something", "everything", "later", "sooner", "late", "soon",
     "probably", "guess", "perhaps", "still", "though", "even",
-    "definitely", "indeed", "for", "some", "everytime", "every", "am",
+    "definitely", "indeed", "for", "some", "everytime", "every",
     "on", "at", "by", "out", "they", "than", "up",
     "well", "ok", "me", "please",
-    "either", "both", "lot", "yet", "too", "each", "far", "again", "s",
+    "either", "both", "lot", "yet", "too", "each", "far", "again",
 }
 
 STOPWORDS_FR = {
@@ -43,12 +43,14 @@ STOPWORDS_FR = {
     "pour", "sur", "par", "se", "j'ai", "j", "ai", "suis",
     "d'un", "d'une",
     "ci-dessus", "ci-dessous",
+    "lequel", "duquel", "auquel", "laquelle", "auquel", "lesquels", "duquel",
+    "lesquelles", "auxquels", "auxquelles", "desquels", "desquelles", "desquel",
+    "quelquefois", "parfois", "toujours",
 }
 
 STOPWORDS_PUNCT = {
     # Lonely punctuation without semantic meaning
-    "(", ")", "{", "}", "[", "]", ",", ":", "/", ";", "_", "-", "\\", '“', '”', '‘', '’', "<", ">", "*", "'", '"', "`",
-    "''", "``", "&", "@",
+    "(", ")", "{", "}", "[", "]", ",", ":", "/", ";", "_", "-", "<", ">", "*", "'", '"', "&", "@", "``", "‘",
     # Misc meaningless stuff
     "http", "https",
     "oh", "ah", "ha", "heh", "re", "eh", "huh", "uh", "wow", "ow", "dang", "um",
@@ -129,11 +131,6 @@ REPLACEMENTS = {
     "hiya": "hello",
     "ve": "have",
     "ll": "will",
-
-    "amage": "image",
-    "amages": "image",
-    "amagery": "imagery",
-    "amagerie": "imagerie",
 
     "zero": "_NUMBER_",
     "one": "_NUMBER_",
@@ -235,11 +232,15 @@ REPLACEMENTS = {
     "€": "_MONEY_",
     "£": "_MONEY_",
     "$": "_MONEY_",
+
+    "quelle": "quel",
+    "quelles": "quel",
+    "quels": "quel",
 }
 
 # Normalize contractions and abbreviations
 ABBREVIATIONS = {
-    "n'": "ne ",
+    " n'": " ne ",
 
     "what's": "what is",
     "what're": "what are",
@@ -253,7 +254,6 @@ ABBREVIATIONS = {
     "how're": "how are",
 
     "i'm": "i am",
-    "im": "i am",
     "we're": "we are",
     "you're": "you are",
     "they're": "they are",
@@ -285,7 +285,6 @@ ABBREVIATIONS = {
     "aren't": "are not",
     "weren't": "were not",
     "can't": "can not",
-    "cant": "can not",
     "cannot": "can not",
     "couldn't": "could not",
     "don't": "do not",
@@ -298,11 +297,9 @@ ABBREVIATIONS = {
     "hadn't": "had not",
     "won't": "will not",
 
-    "'m": " am",
-    "'ve": " have",
-    "n't": " not",
-    "'ll": " will",
-    "'d": " would",
+    " didnt ": " did not ",
+    " cant ": " can not ",
+    " wont ": " will not ",
 
     "'cause": "because",
     "'till": "until",
