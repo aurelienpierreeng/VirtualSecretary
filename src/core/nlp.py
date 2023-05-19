@@ -7,7 +7,7 @@ Supports automatic language detection, word tokenization and stemming for `'dani
 """
 
 import random
-import re
+import regex as re
 import os
 import sys
 from multiprocessing import Pool
@@ -31,10 +31,9 @@ from sklearn.svm import SVC
 
 from rank_bm25 import BM25Okapi
 
-
-from core.patterns import DATE_PATTERN, TIME_PATTERN, URL_PATTERN, IMAGE_PATTERN, CODE_PATTERN, DOCUMENT_PATTERN, DATABASE_PATTERN, TEXT_PATTERN, ARCHIVE_PATTERN, EXECUTABLE_PATTERN, PATH_PATTERN, PRICE_US_PATTERN, PRICE_EU_PATTERN, RESOLUTION_PATTERN, NUMBER_PATTERN, HASH_PATTERN, IP_PATTERN, MULTIPLE_LINES, MULTIPLE_SPACES
+from core.patterns import *
 from core.utils import get_models_folder, typography_undo, guess_date
-from core.language import STOPWORDS_DICT, STOPWORDS, REPLACEMENTS
+from core.language import *
 
 
 def guess_language(string: str) -> str:
@@ -60,195 +59,241 @@ BB_CODE = re.compile(r"\[(img|quote)[a-zA-Z0-9 =\"]*?\].*?\[\/\1\]")
 MARKUP = re.compile(r"(?:\[|\{|\<)([^\n\r]+?)(?:\]|\}|\>)")
 USER = re.compile(r"(\S+)?@(\S+)|(user\-?\d+)")
 REPEATED_CHARACTERS = re.compile(r"(.)\1{9,}")
-UNFINISHED_SENTENCES = re.compile(r"(?<![?!.])\n\n")
+UNFINISHED_SENTENCES = re.compile(r"(?<![?!.;:])\n\n")
 MULTIPLE_DOTS = re.compile(r"\.{2,}")
 MULTIPLE_DASHES = re.compile(r"-{1,}")
 MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
-ORDINAL = re.compile(r"n° ?[0-9]+")
+ORDINAL_FR = re.compile(r"n° ?([0-9]+)")
 
 # Trailing/leading lost punctuation resulting from broken tokenization through composed words
-TRAILING = re.compile(r"^((-|\.|\,)(?=[a-zéèàêâîôûïüäëö]))|((?<=[a-z])(-|\.|\,))", flags=re.IGNORECASE)
+TRAILING = re.compile(r"^((-|\.|\,)(?=[a-zéèàêâîôûïüäëö]))|((?<=[a-zéèàêâîôûïüäëö])(-|\.|\,))", flags=re.IGNORECASE)
 
 # pronoms/déterminants + apostrophes + mot
-FRANCAIS = re.compile(r"^(j|t|s|l|d|qu|m)\'(?=[a-zéèàêâîôûïüäëö])", flags=re.IGNORECASE)
+FRANCAIS = re.compile(r"(?<=^|[\s\(\[\:])(j|t|s|l|d|qu|m)\'(?=[a-zéèàêâîôûïüäëö])", flags=re.IGNORECASE)
+
+class Tokenizer():
+    def clean_whitespaces(self, string:str) -> str:
+        # Collapse multiple newlines and spaces
+        string = MULTIPLE_LINES.sub("\n\n", string)
+        string = MULTIPLE_SPACES.sub(" ", string)
+
+        # Paragraphs (ended with \n\n) that don't have ending punctuation should have one.
+        string = UNFINISHED_SENTENCES.sub(".\n\n", string)
+
+        return string.strip()
 
 
-def clean_whitespaces(string:str) -> str:
-    # Limit multiple newlines to 2
-    string = MULTIPLE_LINES.sub("\n\n", string)
+    def prefilter(self, string:str, meta_tokens:bool = True) -> str:
+        """Tokenizers split words based on unsupervised machine-learned models. Sometimes, they work weird.
+        For example, in emails and user handles like `@user`, they would split `@` and `user` as 2 different tokens,
+        making it impossible to detect usernames in single tokens later.
 
-    # Remove multiple spaces
-    string = MULTIPLE_SPACES.sub(" ", string)
+        To avoid that, we replace data of interest by meta-tokens before the tokenization, with regular expressions.
+        """
+        if meta_tokens:
+            for key, value in self.pipeline.items():
+                # Note: since Python 3.8 or so, dictionnaries are ordered.
+                # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
+                string = key.sub(value, string)
 
-    # Paragraphs (ended with \n\n) that don't have ending punctuation should have one.
-    string = UNFINISHED_SENTENCES.sub(".\n\n", string)
+        for key, value in self.abbreviations.items():
+            string = string.replace(key, value)
 
-    return string.strip()
+        return self.clean_whitespaces(string)
 
 
-def prefilter_tokenizer(string: str) -> str:
-    """Tokenizers split words based on unsupervised machine-learned models. Sometimes, they work weird.
-    For example, in emails and user handles like `@user`, they would split `@` and `user` as 2 different tokens,
-    making it impossible to detect usernames in single tokens later.
+    def lemmatize(self, string:str) -> str:
+        return self.lemmatizer.lemmatize(string)
 
-    To avoid that, we replace data of interest by meta-tokens before the tokenization, with regular expressions.
-    """
 
-    # Teenagers need to calm the fuck down, ellipses need no more than three dots and two dots are not a thing
-    string = MULTIPLE_DOTS.sub("...", string)
+    def normalize_token(self, word: str, language: str, meta_tokens: bool = True):
+        """Return normalized, lemmatized and stemmed word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
 
-    # Same with dashes
-    string = MULTIPLE_DASHES.sub("-", string)
+        Arguments:
+            word (str): tokenized word in lower case only.
+            language (str): the language used to detect dates. Supports `"french"`, `"english"` or `"any"`.
+            vocabulary (dict): a `token: list` mapping where `token` is the stemmed token and `list` stores all words from corpus which share this stem. Because stemmed tokens are not user-friendly anymore, this vocabulary can be used to build a reverse mapping `normalized token` -> `natural language keyword` for GUI.
 
-    # Same with question marks
-    string = MULTIPLE_QUESTIONS.sub("?", string)
+        Examples:
+            `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
+            `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
+        """
+        string = word.strip("-,:'^ ")
 
-    # Remove non-punctuational repeated characters like xxxxxxxxxxx, or =============
-    # (redacted text or ASCII line-like separators)
-    string = REPEATED_CHARACTERS.sub(' ', string)
+        # Remove leading/trailing characters that may result from faulty tokenization
+        string = TRAILING.sub("", string)
 
-    string = BB_CODE.sub(" ", string)
-    string = BASE_64.sub(' _BASE64_ ', string)
-    string = MARKUP.sub(r" \1 ", string)
+        if len(string) == 0:
+            # empty string
+            return None
 
-    # Anonymize users/emails and prevent tokenizers from splitting @ from the username
-    string = USER.sub(" _USER_ ", string)
+        if string in self.meta_tokens:
+            # Input is lowercase, need to fix that for meta tokens.
+            return string.upper()
 
-    # URLs and IPs - need to go before pathes
-    string = URL_PATTERN.sub(' _URL_ ', string)
-    string = IP_PATTERN.sub(' _IP_ ', string)
+        if "_" in string or "<" in string or ">" in string or "\\" in string or "=" in string or "~" in string or "#" in string:
+            # Technical stuff, like markup/code leftovers and such
+            return None
 
-    # File types - need to go before pathes
-    string = CODE_PATTERN.sub(' _CODEFILE_ ', string)
-    string = DATABASE_PATTERN.sub(' _DATABASEFILE_ ', string)
-    string = IMAGE_PATTERN.sub(' _IMAGEFILE_ ', string)
-    string = DOCUMENT_PATTERN.sub(' _DOCUMENTFILE_ ', string)
-    string = TEXT_PATTERN.sub(" _TEXTFILE_ ", string)
-    string = ARCHIVE_PATTERN.sub(" _ARCHIVEFILE_ ", string)
-    string = EXECUTABLE_PATTERN.sub(" _BINARYFILE_ ", string)
+        # Lemmatizer : canonical form of the word, if found
+        # Note : still produces natural language words
+        string = self.lemmatize(string)
 
-    # Local pathes - get everything with / or \ left over by the previous
-    string = PATH_PATTERN.sub(' _PATH_ ', string)
+        if re.match(r"^[a-zéèàêâîôûïüäëö]{1}$", string):
+            return None
 
-    # Dates
-    string = TEXT_DATES.sub(" _DATE_ ", string)
-    string = DATE_PATTERN.sub(" _DATE_ ", string)
-    string = TIME_PATTERN.sub(" _TIME_ ", string)
+        if string in REPLACEMENTS:
+            string = REPLACEMENTS[string]
 
-    # Numéro/ordinal numbers
-    string = ORDINAL.sub(" _ORDINAL_ ", string)
+        if string in STOPWORDS:
+            return None
 
-    # Numerical : prices and resolutions
-    string = PRICE_US_PATTERN.sub(" _PRICE_ ", string)
-    string = PRICE_EU_PATTERN.sub(" _PRICE_ ", string)
-    string = RESOLUTION_PATTERN.sub(" _RESOLUTION_ ", string)
+        if meta_tokens:
+            for key, value in self.pipeline.items():
+                # Note: since Python 3.8 or so, dictionnaries are ordered.
+                # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
+                if key.search(string):
+                    return value.strip()
 
-    # Remove HEX hashes, like IDs and commit names
-    string = HASH_PATTERN.sub(' _HASH_ ', string)
+        return string.strip()
 
-    # Remove numbers
-    string = NUMBER_PATTERN.sub(' _NUMBER_ ', string)
 
-    return clean_whitespaces(string)
+    def tokenize_sentence(self, sentence: str, language: str) -> list[str]:
+        """Split a sentence into normalized word tokens and meta-tokens."""
+        tokens = [self.normalize_token(token.lower(), language)
+                  for token in nltk.word_tokenize(sentence, language=language)]
+        tokens = [item for item in tokens
+                  if item is not None]
 
-LEMMATIZER = WordNetLemmatizer()
+        if not tokens or len(tokens) == 1:
+            # Tokenization seems to fail on single-word queries, try again without it
+            tokens = [self.normalize_token(sentence.lower(), "english")]
 
-def normalize_token(word: str, language: str, vocabulary: dict[str: list] = None):
-    """Return normalized, lemmatized and stemmed word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
+        return tokens
 
-    Arguments:
-        word (str): tokenized word in lower case only.
-        language (str): the language used to detect dates. Supports `"french"`, `"english"` or `"any"`.
-        vocabulary (dict): a `token: list` mapping where `token` is the stemmed token and `list` stores all words from corpus which share this stem. Because stemmed tokens are not user-friendly anymore, this vocabulary can be used to build a reverse mapping `normalized token` -> `natural language keyword` for GUI.
 
-    Examples:
-        `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
-        `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
-    """
-    value = word.strip(",:'^ ")
+    def split_sentences(self, document: str, language: str) -> list[str]:
+        """Split a document into sentences using an unsupervised machine learning model.
 
-    # Remove leading/trailing characters that may result from faulty tokenization
-    value = TRAILING.sub("", value)
+        Arguments:
+            text (str): the paragraph to break into sentences.
+            language (str): the language of the text, used to select what pre-trained model will be used.
+        """
+        return nltk.sent_tokenize(document, language=language)
 
-    # Remove leading l', j', t', s'
-    value = FRANCAIS.sub("", value)
 
-    meta_tokens = ["_user_", "_date_", "_time_", "_url_", "_ip_", "_hash_", "_databasefile_", "_codefile_", "_imagefile_", "_documentfile_", "_textfile_", "_archivefile_", "_binaryfile_", "_path_", "_price_", "_resolution_", "_ordinal_", "_number_"]
+    def tokenize_document(self, document:str, language:str = None) -> list[str]:
+        """Cleanup and tokenize a document or a sentence as an atomic element, meaning we don't split it into sentences. Use this either for search-engine purposes (into a document's body) or if the document is already split into sentences.
 
-    if len(value) < 2:
-        # Single letters hold no meaning
-        return None
+        Note:
+            the language is detected internally if not provided as an optional argument. When processing a single sentence extracted from a document, instead of the whole document, it is more accurate to run the language detection on the whole document, ahead of calling this method, and pass on the result here.
 
-    if value.lower() in meta_tokens:
-        # Input is lowercase, need to fix that for meta tokens.
-        return value
+        Arguments:
+            document (str): the text of the document to tokenize
+            language (str): the language of the document. Will be internally inferred if not given.
 
-    if NUMBER_PATTERN.match(value):
-        # Tokenizer may have split apart number from other stuff, in which case we have number tokens: need to parse them again
-        return "_number_"
+        Returns:
+            tokens (list[str]): a 1D list of normalized tokens and meta-tokens.
+        """
+        document = typography_undo(document)
 
-    if "_" in word or "<" in word or ">" in word or "\\" in word or "=" in word or "~" in word or "#" in word:
-        # Technical stuff, markup/code leftovers and such
-        return None
+        if language is None:
+            language = guess_language(document)
 
-    if value in STOPWORDS:
-        return None
+        document = self.prefilter(document)
+        return self.tokenize_sentence(document, language)
 
-    # Handle typos and abbreviations
-    if value in REPLACEMENTS:
-        value = REPLACEMENTS[value].lower()
 
-    # Lemmatizer : canonical form of the word, if found
-    # Note : still produces natural language words
-    value = LEMMATIZER.lemmatize(value)
+    def tokenize_per_sentence(self, document: str) -> list[list[str]]:
+        """Cleanup and tokenize a whole document as a list of sentences, meaning we split it into sentences before tokenizing. Use this to train a Word2Vec (embedding) model so each token is properly embedded into its syntactic context.
 
-    # Stemmer : remove suffixes
-    # Note : produces machine language words, fucks up human-readable grammar
-    stemmer = SnowballStemmer(language)
-    stemmed = stemmer.stem(value)
+        Note:
+            the language is detected internally.
 
-    # For some reason, stemming makes number appear, so run it one more time
-    if re.match(r"[0-9]+$", stemmed):
-        return "_number_"
+        Returns:
+            tokens (list[list[str]]): a 2D list of sentences (1st axis), each containing a list of normalizel tokens and meta-tokens (2nd axis).
+        """
+        clean_text = typography_undo(document)
+        language = guess_language(clean_text)
+        clean_text = self.prefilter(clean_text)
+        return [self.tokenize_sentence(sentence, language)
+                for sentence in self.split_sentences(clean_text, language)]
 
-    if len(stemmed) < 2:
-        # Single letters hold no meaning
-        return None
 
-    # Handle typos and abbreviations again
-    if stemmed in REPLACEMENTS:
-        stemmed = REPLACEMENTS[stemmed].lower()
-
-    if stemmed in STOPWORDS:
-        return None
-
-    if vocabulary is not None:
-        if stemmed in vocabulary:
-            vocabulary[stemmed] += [value]
+    def __init__(self, pipeline:dict[re.Pattern: str] = None, abbreviations:dict[str: str] = None, lemmatizer = None):
+        if pipeline is None:
+            self.pipeline = {
+                MULTIPLE_DOTS: "...",
+                MULTIPLE_DASHES: "-",
+                MULTIPLE_QUESTIONS: "?",
+                # Remove non-punctuational repeated characters like xxxxxxxxxxx, or =============
+                # (redacted text or ASCII line-like separators)
+                REPEATED_CHARACTERS: ' ',
+                BB_CODE: " ",
+                MARKUP: r" \1 ",
+                BASE_64: ' _BASE64_ ',
+                # Remove french contractions: m', j', qu' etc.
+                FRANCAIS: "",
+                # Anonymize users/emails and prevent tokenizers from splitting @ from the username
+                USER: " _USER_ ",
+                # URLs and IPs - need to go before pathes
+                URL_PATTERN: ' _URL_ ',
+                IP_PATTERN: ' _IP_ ',
+                # File types - need to go before pathes
+                CODE_PATTERN: ' _CODEFILE_ ',
+                DATABASE_PATTERN: ' _DATABASEFILE_ ',
+                IMAGE_PATTERN: ' _IMAGEFILE_ ',
+                DOCUMENT_PATTERN: ' _DOCUMENTFILE_ ',
+                TEXT_PATTERN: " _TEXTFILE_ ",
+                ARCHIVE_PATTERN: " _ARCHIVEFILE_ ",
+                EXECUTABLE_PATTERN: " _BINARYFILE_ ",
+                # Dates
+                TEXT_DATES: " _DATE_ ",
+                DATE_PATTERN:" _DATE_ ",
+                TIME_PATTERN: " _TIME_ ",
+                # Local pathes - get everything with / or \ left over by the previous
+                # Need to go after dates for the slash date format
+                PATH_PATTERN: ' _PATH_ ',
+                # Unit numbers/quantities
+                EXPOSURE: " _EXPOSURE_ ",
+                SENSIBILITY: " _SENSIBILITY_ ",
+                LUMINANCE: " _LUMINANCE_ ",
+                FILE_SIZE: " _FILESIZE_ ",
+                DISTANCE: " _DISTANCE_ ",
+                WEIGHT: " _WEIGHT_ ",
+                ANGLE: " _ANGLE_ ",
+                FREQUENCY: " _FREQUENCY_ ",
+                PERCENT: " _PERCENT_ ",
+                GAIN: " _GAIN_ ",
+                TEMPERATURE: " _TEMPERATURE_ ",
+                # Numéro/ordinal numbers
+                ORDINAL: " _ORDINAL_ ",
+                ORDINAL_FR: " _ORDINAL_ ",
+                # Numerical : prices and resolutions
+                PRICE_US_PATTERN: " _PRICE_ ",
+                PRICE_EU_PATTERN: " _PRICE_ ",
+                RESOLUTION_PATTERN: " _RESOLUTION_ ",
+                # Remove HEX hashes, like IDs and commit names
+                HASH_PATTERN: ' _HASH_ ',
+                # Remove numbers
+                NUMBER_PATTERN: ' _NUMBER_ ',
+            }
         else:
-            vocabulary[stemmed] = [value]
+            self.pipeline = pipeline
 
-    return stemmed
+        self.meta_tokens = [value.lower().strip()
+                            for value in self.pipeline.values()
+                            if value.startswith(" _") and value.endswith("_ ")]
 
+        if abbreviations is None:
+            self.abbreviations = ABBREVIATIONS
+        else:
+            self.abbreviations = abbreviations
 
-def tokenize_sentences(sentence, language: str) -> list[str]:
-    """Split a sentence into word tokens"""
-    intermediate = [normalize_token(token.lower(), language)
-                    for token in nltk.word_tokenize(sentence, language=language)]
-
-    # Remove None words
-    return [item for item in intermediate if item is not None]
-
-
-def split_sentences(text: str, language: str) -> list[str]:
-    """Split a text into sentences using an unsupervised machine learning model.
-
-    Arguments:
-        text (str): the paragraph to break into sentences
-        language (str): the language of the text, used to select what pre-trained model will be used
-        punkt (PunktSentenceTokenizer): if provided, use this sentence tokenizer model. If not, use NLTK factory models.
-    """
-    return nltk.sent_tokenize(text, language=language)
+        if lemmatizer is None:
+            self.lemmatizer = WordNetLemmatizer()
+        else:
+            self.lemmatizer = lemmatizer
 
 
 class Data():
@@ -277,69 +322,29 @@ class LossLogger(CallbackAny2Vec):
         print(f'  Loss: {loss}')
         self.epoch += 1
 
-
-def get_wordvec(wv: gensim.models.KeyedVectors, word: str, language: str, syn1neg: np.array = None, normalize = True) -> np.array:
-    """Return the vector associated to a word, through a dictionnary of words.
-
-    If `syn1neg` is provided, we used "OUT" matrix of the embedding, for the dual-space embedding scheme.
-    This is useful when using word2vec to build a search-engine, the documents to index are better embedded using
-    the "OUT" matrix (stored in gensim.Word2Vec.syn1neg matrix), while the queries are better embedded using the "IN" matrix
-    (gensim.Word2Vec.wv).
-
-    References:
-        A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana
-        https://arxiv.org/pdf/1602.01137.pdf
-
-
-    Returns:
-        the nD vector.
-    """
-    if normalize:
-        word = normalize_token(word.lower(), language)
-
-    if word and word in wv:
-        if syn1neg is not None:
-            vec = syn1neg[wv.key_to_index[word]]
-        else:
-            vec = wv[word]
-
-        norm = np.linalg.norm(vec)
-        return vec / norm if norm > 0. else vec
-    else:
-        return np.zeros(wv.vector_size)
-
-
-def tokenize_post(post:str) -> tuple[list[str], str]:
-    clean_sentence = typography_undo(post)
-    language = guess_language(clean_sentence)
-    clean_sentence = prefilter_tokenizer(clean_sentence)
-    tokenized_sentence = tokenize_sentences(clean_sentence, language)
-
-    if not tokenized_sentence or len(tokenized_sentence) == 1:
-        # Tokenization seems to fail on single-word queries, try again without it
-        tokenized_sentence = [normalize_token(clean_sentence.lower(), "english")]
-
-    return tokenized_sentence, language
-
-
 class Word2Vec(gensim.models.Word2Vec):
-    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5):
-        """Train or retrieve an existing word2vec word embedding model
+    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5, tokenizer: Tokenizer = None):
+        """Train, re-train or retrieve an existing word2vec word embedding model
 
         Arguments:
             name (str): filename of the model to save and retrieve. If the model exists already, we automatically load it. Note that this will override the `vector_size` with the parameter defined in the saved model.
             vector_size (int): number of dimensions of the word vectors
             epochs (int): number of iterations of training for the machine learning. Small corpora need 2000 and more epochs. Increases the learning time.
         """
+        if tokenizer is not None:
+            self.tokenizer = tokenizer
+        else:
+            self.tokenizer = Tokenizer()
+
         self.pathname = get_models_folder(name)
         self.vector_size = vector_size
         print(f"got {len(sentences)} pieces of text")
 
-        # training = [tokenize_sentences(sentence, language=language) for sentence in set(sentences)]
+        # training = [tokenize_sentences(sentence, language=language) for sentence in sentences]
         sentences = set(sentences)
         processes = os.cpu_count()
         with Pool(processes=processes) as pool:
-            training: list[list[list[str]]] = pool.map(self.tokenize_sentences_parallel, sentences, chunksize=1)
+            training: list[list[list[str]]] = pool.map(self.tokenizer.tokenize_per_sentence, sentences, chunksize=1)
 
         print("tokenization done")
 
@@ -350,6 +355,7 @@ class Word2Vec(gensim.models.Word2Vec):
         # Dump words to a file to detect stopwords
         words = [word for sentence in training for word in sentence]
         counts = Counter(words)
+
         # Sort words by frequency
         counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
         with open(get_models_folder("stopwords"), 'w', encoding='utf8') as f:
@@ -365,61 +371,83 @@ class Word2Vec(gensim.models.Word2Vec):
         print("saving done")
 
 
-    def tokenize_sentences_parallel(self, text):
-        """Thread-safe call to `.tokenize_sentences()` to be called in multiprocessing.Pool map"""
-        # clean_text = typography_undo(text) # already done when baking corpus
-        language = guess_language(text)
-        clean_text = prefilter_tokenizer(text)
-        return [tokenize_sentences(sentence, language) for sentence in split_sentences(clean_text, language)]
-
-
     @classmethod
     def load_model(cls, name: str):
         """Load a trained model saved in `models` folders"""
         return cls.load(get_models_folder(name))
 
 
-def get_features(tokens: list, num_features: int, wv: gensim.models.KeyedVectors, language: str, syn1neg: np.array = None) -> dict:
-    """Extract word features from the text of `post`.
+    def get_wordvec(self, word: str, embed:str = "IN") -> np.array:
+        """Return the vector associated to a word, through a dictionnary of words.
 
-    We use meta-features like date, prices, time, number that discard the actual value but retain the property.
-    That is, we don't care about the actual date, price or time, we only care that there is a date, price or time.
-    Meta-features are tagged with random hashes as to not be mistaken with text.
+        Arguments:
+            word (str): the word to convert to a vector.
+            embed (str): `IN` or `OUT`. The default, `IN` usis the input embedding matrix (gensim.Word2Vec.wv), useful to vectorize queries and documents for classification training. `OUT` uses `gensim.Word2Vec.syn1neg`, useful for the dual-space embedding scheme, to train search engines.
 
-    For everything else, we use the actual words.
+        References:
+            A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana
+            https://arxiv.org/pdf/1602.01137.pdf
 
-    Arguments:
-        tokens (list[str]): if given, we discard internal tokenization and normalization and directly use this list of tokens. The need to be normalized already.
-        num_features (int): the number of dimensions of the featureset. This is vector size used in the `Word2Vec` model.
-        wv (gensim.models.KeyedVector): the dictionnary mapping words with vectors,
-        syn1neg (np.array): the W_out matrix for word embedding, in the Dual Embedding Space Model. [^1] If not provided, embedding uses the default W_in matrix. W_out is better to vectorize documents for search-engine purposes.
-        language (str): the language used to detect dates and detect words separators used in tokenization. Supports `"french"` and `"english"`.
 
-    [^1]: https://arxiv.org/pdf/1602.01137.pdf
+        Returns:
+            the nD vector.
+        """
+        if word and word in self.wv:
+            if embed == "OUT":
+                vec = self.syn1neg[self.wv.key_to_index[word]]
+            elif embed == "IN":
+                vec = self.wv[word]
+            else:
+                raise ValueError("Invalid option")
 
-    Return:
-        (dict): dictionnary of features, where keys are initialized with the positional number of vector elements and their value, plus the optional external data.
-    """
-    features = np.zeros(num_features)
-    i = len(tokens)
+            norm = np.linalg.norm(vec)
+            return vec / norm if norm > 0. else vec
+        else:
+            return np.zeros(self.wv.vector_size)
 
-    for token in tokens:
-        vector = get_wordvec(wv, token, language, normalize=False)
-        features += vector
 
-    # Finish the average calculation (so far, only summed)
-    if i > 0:
-        features /= i
+    def get_features(self, tokens: list, embed:str = "IN") -> dict:
+        """Extract word features from the text of `post`.
 
-    # NLTK models take dictionnaries of features as input, so bake that.
-    # TODO: in Indexer, we need to revert that to numpy. Fix the API to avoid this useless step
-    return dict(enumerate(features))
+        We use meta-features like date, prices, time, number that discard the actual value but retain the property.
+        That is, we don't care about the actual date, price or time, we only care that there is a date, price or time.
+        Meta-features are tagged with random hashes as to not be mistaken with text.
+
+        For everything else, we use the actual words.
+
+        Arguments:
+            tokens (list[str]): if given, we discard internal tokenization and normalization and directly use this list of tokens. The need to be normalized already.
+            num_features (int): the number of dimensions of the featureset. This is vector size used in the `Word2Vec` model.
+            wv (gensim.models.KeyedVector): the dictionnary mapping words with vectors,
+            syn1neg (np.array): the W_out matrix for word embedding, in the Dual Embedding Space Model. [^1] If not provided, embedding uses the default W_in matrix. W_out is better to vectorize documents for search-engine purposes.
+            language (str): the language used to detect dates and detect words separators used in tokenization. Supports `"french"` and `"english"`.
+
+        [^1]: https://arxiv.org/pdf/1602.01137.pdf
+
+        Return:
+            (dict): dictionnary of features, where keys are initialized with the positional number of vector elements and their value, plus the optional external data.
+        """
+        features = np.zeros(self.vector_size)
+        i = len(tokens)
+
+        for token in tokens:
+            vector = self.get_wordvec(token, embed)
+            features += vector
+
+        # Finish the average calculation (so far, only summed)
+        if i > 0:
+            features /= i
+
+        # NLTK models take dictionnaries of features as input, so bake that.
+        # TODO: in Indexer, we need to revert that to numpy. Fix the API to avoid this useless step
+        #return dict(enumerate(features))
+        return features
 
 class Classifier(SklearnClassifier):
     def __init__(self,
                  training_set: list[Data],
                  name: str,
-                 wv: gensim.models.KeyedVectors,
+                 word2vec: Word2Vec,
                  validate: bool = True,
                  variant: str = "svm"):
         """Handle the word2vec and SVM machine-learning
@@ -438,9 +466,8 @@ class Classifier(SklearnClassifier):
         """
         print("init")
 
-        if wv and isinstance(wv, gensim.models.KeyedVectors):
-            self.wv = wv
-            self.vector_size = wv.vector_size
+        if word2vec:
+            self.word2vec = word2vec
         else:
             raise ValueError("wv needs to be a dictionnary-like map")
 
@@ -487,14 +514,18 @@ class Classifier(SklearnClassifier):
 
         print("accuracy against train set:", nltk.classify.accuracy(self, train_set))
 
+        # We don't need the heavy syn1neg dictionnary of Word2Vec
+        del self.word2vec.syn1neg
+
         # Save the model to a reusable object
         joblib.dump(self, get_models_folder(name + ".joblib"))
 
 
     def get_features_parallel(self, post: Data) -> tuple[str, str]:
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
-        tokens, language = tokenize_post(post.text)
-        return (get_features(tokens, self.vector_size, self.wv, language), post.label)
+        tokens = self.word2vec.tokenizer.tokenize_document(post.text)
+        features = dict(enumerate(self.word2vec.get_features(tokens)))
+        return (features, post.label)
 
 
     @classmethod
@@ -506,19 +537,21 @@ class Classifier(SklearnClassifier):
         else:
             raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
 
+
     def classify(self, post: str) -> str:
         """Apply a label on a post based on the trained model."""
-        tokens, language = tokenize_post(post)
-        items = get_features(tokens, self.vector_size, self.wv, language)
-        return super().classify(items)
+        tokens = self.word2vec.tokenizer.tokenize_document(post)
+        features = dict(enumerate(self.word2vec.get_features(tokens)))
+        return super().classify(features)
+
 
     def prob_classify(self, post: str) -> tuple[str, float]:
         """Apply a label on a post based on the trained model and output the probability too."""
-        tokens, language = tokenize_post(post)
-        items = get_features(tokens, self.vector_size, self.wv, language)
+        tokens = self.word2vec.tokenizer.tokenize_document(post)
+        features = dict(enumerate(self.word2vec.get_features(tokens)))
 
         # This returns a weird distribution of probabilities for each label that is not quite a dict
-        proba_distro = super().prob_classify(items)
+        proba_distro = super().prob_classify(features)
 
         # Build the list of dictionnaries like `label: probability`
         output = {i: proba_distro.prob(i) for i in proba_distro.samples()}
@@ -548,10 +581,8 @@ class Indexer(SklearnClassifier):
         """
         print(f"Init. Got {len(data_set)} items.")
 
-        if word2vec and isinstance(word2vec, Word2Vec):
-            self.wv = word2vec.wv
-            self.vector_size = word2vec.vector_size
-            self.syn1neg = word2vec.syn1neg
+        if word2vec:
+            self.word2vec = word2vec
         else:
             raise ValueError("wv needs to be a dictionnary-like map")
 
@@ -570,7 +601,7 @@ class Indexer(SklearnClassifier):
             data_set.append(value[idx_max])
 
         # Posts too short contain probably nothing useful
-        data_set = [post for post in data_set if len(clean_whitespaces(post["content"])) > 250]
+        data_set = [post for post in data_set if len(self.word2vec.tokenizer.clean_whitespaces(post["content"])) > 250]
 
         print(f"Cleanup. Got {len(data_set)} remaining items.")
 
@@ -584,8 +615,8 @@ class Indexer(SklearnClassifier):
                        "language": guess_language(post["content"]),
                        "sentences": list({s
                                           for s in set(
-                                              split_sentences(
-                                                  clean_whitespaces(
+                                              self.word2vec.tokenizer.split_sentences(
+                                                  self.word2vec.tokenizer.clean_whitespaces(
                                                       post["content"]),
                                                   guess_language(post["content"])))
                                           if len(s) > 60})
@@ -602,9 +633,7 @@ class Indexer(SklearnClassifier):
 
         # Turn tokens into features
         with Pool() as pool:
-            documents: list = pool.map(self.get_features_parallel, ranker_docs)
-
-        docs = [list(document.values()) for document in documents]
+            docs: list = pool.map(self.get_features_parallel, ranker_docs)
 
         self.vectors_all = np.array(docs)
         self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
@@ -624,12 +653,13 @@ class Indexer(SklearnClassifier):
     def get_features_parallel(self, tokens: list[str]) -> tuple[str, str]:
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
         # Language doesn't matter, tokenization and normalization are done already
-        return get_features(tokens, self.vector_size, self.wv, language="english", syn1neg=self.syn1neg)
+        return self.word2vec.get_features(tokens, embed="OUT")
 
 
     def tokenize_parallel(self, post: Data) -> list[str]:
-        tokens, language = tokenize_post(post.text)
+        tokens = self.word2vec.tokenizer.tokenize_document(post.text)
         return tokens
+
 
     @classmethod
     def load(cls, name: str):
@@ -647,14 +677,13 @@ class Indexer(SklearnClassifier):
         Returns:
             tuple[vector, norm, tokens]
         """
-        tokenized_query, language = tokenize_post(post)
+        tokenized_query = self.word2vec.tokenizer.tokenize_document(post)
 
         if not tokenized_query:
             return np.array([]), 0., []
 
         # Get the the centroid of the word embedding vector
-        query = get_features(tokenized_query, self.vector_size, self.wv, language=language)
-        vector = np.array(list(query.values()))
+        vector = self.word2vec.get_features(tokenized_query)
         norm = np.linalg.norm(vector)
         norm = 1.0 if norm == 0.0 else norm
 
@@ -680,8 +709,10 @@ class Indexer(SklearnClassifier):
         if method.lower() == "ai":
             norm *= len(tokens)
             aggregates = 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
-        else:
+        elif method.lower() == "fuzzy":
             aggregates = self.ranker.get_scores(tokens)
+        else:
+            pass
 
         results = zip(self.urls, np.nan_to_num(aggregates))
 
@@ -709,13 +740,12 @@ class Indexer(SklearnClassifier):
         tokens_query = query[2]
 
         sentences = page['sentences']
-        language = page['language']
 
         vectors_all = []
         penalties = []
 
         for sentence in sentences:
-            tokens = tokenize_sentences(prefilter_tokenizer(typography_undo(sentence)), language)
+            tokens = self.word2vec.tokenizer.tokenize_document(sentence)
 
             # Count how many times the tokens of the query appear in the tokens of the sentence.
             # Since the similarity relies on averaging word vectors, a short section title containing only the query keyword
@@ -726,7 +756,7 @@ class Indexer(SklearnClassifier):
                 penalty += tokens.count(token)
 
             penalties.append(np.sqrt(penalty) if penalty > 0. else 1.)
-            vectors_all.append(list(get_features(tokens, self.vector_size, self.wv, language=language, syn1neg=self.syn1neg).values()))
+            vectors_all.append(self.word2vec.get_features(tokens, embed="OUT"))
 
         if vectors_all:
             vectors_all = np.array(vectors_all)
@@ -761,4 +791,4 @@ class Indexer(SklearnClassifier):
             raise TypeError("The argument should be either a (vector, norm) tuple or a string")
 
         # wv.similar_by_vector returns a list of (word, distance) tuples
-        return [elem[0] for elem in self.wv.similar_by_vector(vector, topn=n) if elem[0] not in tokens]
+        return [elem[0] for elem in self.word2vec.wv.similar_by_vector(vector, topn=n) if elem[0] not in tokens]
