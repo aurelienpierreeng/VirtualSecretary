@@ -278,6 +278,12 @@ def imap_decode(value: bytes) -> str:
 
 
 REPLACEMENT_MAP = {
+    # Apostrophes
+    "’": "'",
+    "`": "'",
+    "“": "\"",
+    "”": "\"",
+    "‘": "'",
     # Spaces
     "\u2002": " ",  # En space
     "\u2003": " ",  # Em space
@@ -372,6 +378,11 @@ SUBSTITUTIONS = {
     " \n": "\n",
     "\t ": "\t",
     " \t": "\t",
+    # Quotes
+    "``": "\"",
+    "''": "\"",
+    "“": "\"",
+    "”": "\"",
 }
 
 def typography_undo(string:str) -> str:
@@ -394,9 +405,6 @@ def typography_undo(string:str) -> str:
     string = string.translate(UNICODE_TO_ASCII)
     for key, value in SUBSTITUTIONS.items():
         string = string.replace(key, value)
-
-    string = MULTIPLE_LINES.sub("\n\n", string)
-    string = MULTIPLE_SPACES.sub(" ", string)
 
     return string.strip()
 
