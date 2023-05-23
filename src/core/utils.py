@@ -284,6 +284,9 @@ REPLACEMENT_MAP = {
     "“": "\"",
     "”": "\"",
     "‘": "'",
+    "ʼ": "'",
+    "'": "'",
+    "´": "'",
     # Spaces
     "\u2002": " ",  # En space
     "\u2003": " ",  # Em space
@@ -321,6 +324,9 @@ REPLACEMENT_MAP = {
     "™": " ",
     "ᵉ": "e",
     "👀": " ",
+    "ƒ": "f",
+    "·": " ",
+
 }
 
 # For 1:1 character replacement, we can use a fast character map
@@ -383,6 +389,8 @@ SUBSTITUTIONS = {
     "''": "\"",
     "“": "\"",
     "”": "\"",
+    # Conditional hyphen ???
+    "\u00AD": "",
 }
 
 def typography_undo(string:str) -> str:
