@@ -130,7 +130,9 @@ REPLACEMENTS = {
     "ur": "your",
     "hiya": "hello",
     "ve": "have",
-    "ll": "will",
+    "n't": "not",
+
+    "pdfs": "pdf",
 
     "zero": "_NUMBER_",
     "one": "_NUMBER_",
