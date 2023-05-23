@@ -6,6 +6,7 @@ Supports automatic language detection, word tokenization and stemming for `'dani
 © 2023 - Aurélien Pierre
 """
 
+from enum import IntEnum
 import random
 import regex as re
 import os
@@ -28,6 +29,7 @@ from nltk.tokenize import RegexpTokenizer
 from nltk.stem import WordNetLemmatizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
+from spellchecker import SpellChecker
 
 from rank_bm25 import BM25Okapi
 
@@ -609,6 +611,11 @@ class Classifier(SklearnClassifier):
         # Finally, return label and probability only for the max proba of each element
         return (max(output, key=output.get), max(output.values()))
 
+class search_methods(IntEnum):
+    """Search methods available"""
+    AI = 1
+    FUZZY = 2
+    GREP = 3
 
 class Indexer(SklearnClassifier):
     def __init__(self,
@@ -721,48 +728,83 @@ class Indexer(SklearnClassifier):
             raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
 
 
-    def vectorize_query(self, post: str) -> tuple[np.array, float, list[str]]:
+    def tokenize_query(self, query:str) -> list[str]:
+        return self.word2vec.tokenizer.tokenize_document(query)
+
+
+    def vectorize_tokens(self, tokenized_query: list[str]) -> tuple[np.array, float, list[str]]:
         """Prepare a text search query: cleanup, tokenize and get the centroid vector.
 
         Returns:
             tuple[vector, norm, tokens]
         """
-        tokenized_query = self.word2vec.tokenizer.tokenize_document(post)
 
         if not tokenized_query:
             return np.array([]), 0., []
 
         # Get the the centroid of the word embedding vector
-        vector = self.word2vec.get_features(tokenized_query)
+        vector = self.word2vec.get_features(tokenized_query, embed="IN", spellcheck=False)
         norm = np.linalg.norm(vector)
         norm = 1.0 if norm == 0.0 else norm
 
         return vector, norm, tokenized_query
 
 
-    def rank(self, post: str|tuple, method: str = "ai", filter_callback: callable = None, **kargs) -> list:
-        """Apply a label on a post based on the trained model."""
+    def rank_grep(self, query: re.Pattern|str) -> np.array:
+        if not (isinstance(query, str) or isinstance(query, re.Pattern)):
+            raise ValueError("Wrong query type (%s) for GREP ranking method. Should be string or regular expression pattern" % type(query))
 
-        if isinstance(post, tuple):
-            # Input is vectorized already, unpack the tuple
-            vector = post[0]
-            norm = post[1]
-            tokens = post[2]
-        elif isinstance(post, str):
-            vector, norm, tokens = self.vectorize_query(post)
-        else:
-            raise TypeError("The argument should be either a (vector, norm) tuple or a string")
+        results = np.array([len(re.findall(query, "\n\n".join(document["sentences"])))
+                            for document in self.index.values()], dtype=np.float64)
+        max_rank = np.amax(results)
+        if max_rank > 0.: results /= max_rank
+        return results
+
+
+    def rank_fuzzy(self, tokens: list[str]) -> np.array:
+        if not isinstance(tokens, list):
+            raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(query))
+
+        return self.ranker.get_scores(tokens)
+
+
+    def rank_ai(self, query: tuple) -> np.array:
+        if not isinstance(query, tuple):
+            raise ValueError("Wrong query type (%s) for AI ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
+
+        vector = query[0]
+        norm = query[1]
+        tokens = query[2]
 
         # Compute the cosine similarity of centroids between query and documents,
         # then aggregate the ranking from BM25+ to it for each URL.
         # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
-        if method.lower() == "ai":
-            norm *= len(tokens)
-            aggregates = 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
-        elif method.lower() == "fuzzy":
-            aggregates = self.ranker.get_scores(tokens)
-        else:
-            pass
+        norm *= len(tokens)
+        return 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
+
+
+    def rank(self, query: str|tuple|re.Pattern, method: search_methods, filter_callback: callable = None, **kargs) -> list[tuple[str, float]]:
+        """Apply a label on a post based on the trained model.
+
+        Arguments:
+            query (str | tuple | re.Pattern): the query to search. `re.Pattern` is available only with the `grep` method.
+            method (str): `ai`, `fuzzy` or `grep`. `ai` use word embedding and meta-tokens with dual-embedding space, `fuzzy` uses meta-tokens with BM25Okapi stats model, `grep` uses direct string and regex search.
+            filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker.
+            **kargs: arguments passed as-is to the `filter_callback`
+
+        Returns:
+            list: the list of best-matching results as (url, similarity) tuples.
+        """
+        # Note : match needs at least Python 3.10
+        match method:
+            case search_methods.AI:
+                aggregates = self.rank_ai(query)
+            case search_methods.FUZZY:
+                aggregates = self.rank_fuzzy(query)
+            case search_methods.GREP:
+                aggregates = self.rank_grep(query)
+            case _:
+                raise ValueError("Unknown ranking method (%s)" % method)
 
         results = zip(self.urls, np.nan_to_num(aggregates))
 
@@ -779,66 +821,80 @@ class Indexer(SklearnClassifier):
         """Retrieve the requested page data object from the index by url.
 
         Warning:
-            For performance, it doesn't check if the url exists in the index. This is no issue if you feed it the output of `self.rank()`.
+            For performance's sake, it doesn't check if the url exists in the index.
+            This is no issue if you feed it the output of `self.rank()` but mind that otherwise.
         """
         return self.index[url]
 
 
-    def get_snippet(self, page:dict, query: tuple):
+    def get_snippet_by_vector(self, page, query):
+        if not isinstance(query, tuple):
+            raise ValueError("Wrong query type (%s) for AI/FUZZY ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
+
         vector = query[0]
         norm = query[1]
-        tokens_query = query[2]
-
-        sentences = page['sentences']
+        tokens = query[2]
 
         vectors_all = []
         penalties = []
 
-        for sentence in sentences:
-            tokens = self.word2vec.tokenizer.tokenize_document(sentence)
+        for sentence in page['sentences']:
+            sentence_tokens = self.word2vec.tokenizer.tokenize_document(sentence)
 
             # Count how many times the tokens of the query appear in the tokens of the sentence.
             # Since the similarity relies on averaging word vectors, a short section title containing only the query keyword
             # would cheat the metric and get a very high score, despite being irrelevant.
             # This penalty ensures word typically associated through embedding count enough in the mix too.
             penalty = 0
-            for token in tokens_query:
+            for token in tokens:
                 penalty += tokens.count(token)
 
             penalties.append(np.sqrt(penalty) if penalty > 0. else 1.)
-            vectors_all.append(self.word2vec.get_features(tokens, embed="OUT"))
+            vectors_all.append(self.word2vec.get_features(sentence_tokens, embed="OUT", spellcheck=False))
 
         if vectors_all:
             vectors_all = np.array(vectors_all)
             all_norms = np.linalg.norm(vectors_all, axis=1)
-            similarities = np.dot(vectors_all, vector) / (norm * all_norms) / np.array(penalties)
-            similarities = np.nan_to_num(similarities)
+            return np.nan_to_num(np.dot(vectors_all, vector) / (norm * all_norms) / np.array(penalties))
+        else:
+            return []
 
-            # Return the n most similar sentences in the document in descending order of similarity
-            # That is, if we have at least n sentences
-            num_elem = min(similarities.size, 5)
-            index_best = list(np.argpartition(similarities, -num_elem)[-num_elem:])
+    def get_snippet_by_regex(self, page, query):
+        if not (isinstance(query, str) or isinstance(query, re.Pattern)):
+            raise ValueError("Wrong query type (%s) for GREP ranking method. Should be a string or a regex pattern." % type(query))
 
-            if len(index_best) > 0:
-                return [(sentences[i], similarities[i]) for i in sorted(index_best) if similarities[i]]
-            else:
-                return []
+        return np.array([float(len(re.findall(query, sentence)))
+                         for sentence in page['sentences']])
+
+
+
+    def get_snippet(self, page:dict, query: tuple|str|re.Pattern, method: search_methods):
+        """Return the 5 best-matching sentences from a document with regard to the search query."""
+
+        if method == search_methods.GREP:
+            similarities = self.get_snippet_by_regex(page, query)
+        else:
+            similarities = self.get_snippet_by_vector(page, query)
+
+        # Return the n most similar sentences in the document in descending order of similarity
+        # That is, if we have at least n sentences
+        num_elem = min(similarities.size, 5)
+        index_best = list(np.argpartition(similarities, -num_elem)[-num_elem:])
+
+        if len(index_best) > 0:
+            return [(page['sentences'][i], similarities[i]) for i in sorted(index_best) if similarities[i]]
         else:
             return []
 
 
-    def get_related(self, post: str|tuple, n:int = 15) -> list:
+    def get_related(self, post: tuple, n:int = 15) -> list:
         """Get the n closest keywords from the query."""
 
-        if isinstance(post, tuple):
-            # Input is vectorized already, unpack the tuple
-            vector = post[0]
-            norm = post[1]
-            tokens = post[2]
-        elif isinstance(post, str):
-            vector, norm, tokens = self.vectorize_query(post)
-        else:
+        if not isinstance(post, tuple):
             raise TypeError("The argument should be either a (vector, norm) tuple or a string")
+
+        vector = post[0]
+        tokens = post[2]
 
         # wv.similar_by_vector returns a list of (word, distance) tuples
         return [elem[0] for elem in self.word2vec.wv.similar_by_vector(vector, topn=n) if elem[0] not in tokens]
