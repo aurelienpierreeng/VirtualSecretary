@@ -72,6 +72,20 @@ TRAILING = re.compile(r"^((-|\.|\,)(?=[a-zéèàêâîôûïüäëö]))|((?<=[a-
 FRANCAIS = re.compile(r"(?<=^|[\s\(\[\:])(j|t|s|l|d|qu|m)\'(?=[a-zéèàêâîôûïüäëö])", flags=re.IGNORECASE)
 
 class Tokenizer():
+    characters_cleanup: dict[re.Pattern: str] = {
+        MULTIPLE_DOTS: "...",
+        MULTIPLE_DASHES: "-",
+        MULTIPLE_QUESTIONS: "?",
+        # Remove non-punctuational repeated characters like xxxxxxxxxxx, or =============
+        # (redacted text or ASCII line-like separators)
+        REPEATED_CHARACTERS: ' ',
+        BB_CODE: " ",
+        MARKUP: r" \1 ",
+        BASE_64: " ",
+        # Remove french contractions: m', j', qu', t', s' etc.
+        FRANCAIS: "" }
+    """Dictionnary of regular expressions (keys) to find and replace by the provided strings (values). Cleanup repeated characters, including ellipses and question marks, leftover BBcode and XML markup, base64-encoded strings and French pronominal contractions (e.g "me + a" contracted into "m'a")."""
+
     def clean_whitespaces(self, string:str) -> str:
         # Collapse multiple newlines and spaces
         string = MULTIPLE_LINES.sub("\n\n", string)
@@ -90,8 +104,14 @@ class Tokenizer():
 
         To avoid that, we replace data of interest by meta-tokens before the tokenization, with regular expressions.
         """
+
+        for key, value in self.characters_cleanup.items():
+            # Note: since Python 3.8 or so, dictionnaries are ordered.
+            # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
+            string = key.sub(value, string)
+
         if meta_tokens:
-            for key, value in self.pipeline.items():
+            for key, value in self.meta_tokens_pipe.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
                 string = key.sub(value, string)
@@ -149,7 +169,7 @@ class Tokenizer():
             return None
 
         if meta_tokens:
-            for key, value in self.pipeline.items():
+            for key, value in self.meta_tokens_pipe.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
                 if key.search(string):
@@ -220,20 +240,20 @@ class Tokenizer():
                 for sentence in self.split_sentences(clean_text, language)]
 
 
-    def __init__(self, pipeline:dict[re.Pattern: str] = None, abbreviations:dict[str: str] = None, lemmatizer = None):
-        if pipeline is None:
-            self.pipeline = {
-                MULTIPLE_DOTS: "...",
-                MULTIPLE_DASHES: "-",
-                MULTIPLE_QUESTIONS: "?",
-                # Remove non-punctuational repeated characters like xxxxxxxxxxx, or =============
-                # (redacted text or ASCII line-like separators)
-                REPEATED_CHARACTERS: ' ',
-                BB_CODE: " ",
-                MARKUP: r" \1 ",
-                BASE_64: ' _BASE64_ ',
-                # Remove french contractions: m', j', qu' etc.
-                FRANCAIS: "",
+    def __init__(self,
+                 meta_tokens:dict[re.Pattern: str] = None,
+                 abbreviations:dict[str: str] = None,
+                 lemmatizer = None):
+        """Pre-processing pipeline and tokenizer.
+
+        Arguments:
+            meta_token (dict[re.Pattern: str]): the pipeline of regular expressions to replace with meta-tokens. Keys must be `re.Pattern` declared with `re.compile()`, values must be meta-tokens assumed to be nested in underscores. The pipeline dictionnary will be processed in the order of declaration, which relies on using Python >= 3.7 (making `dict` ordered by default). If not provided, it is inited by default with a pipeline suitable for bilingual English/French language processing on technical writings (see notes).
+            abbreviations (dict[str: str]): pipeline of abbreviations to replace, as `to_replace: replacement` dictionnary. Will be processed in order of declaration.
+            lemmatizer: custom lemmatizer. If not defined, defaults to `nltk.WordNetLemmatizer`.
+
+        """
+        if meta_tokens is None:
+            self.meta_tokens_pipe = {
                 # Anonymize users/emails and prevent tokenizers from splitting @ from the username
                 USER: " _USER_ ",
                 # URLs and IPs - need to go before pathes
@@ -266,6 +286,7 @@ class Tokenizer():
                 PERCENT: " _PERCENT_ ",
                 GAIN: " _GAIN_ ",
                 TEMPERATURE: " _TEMPERATURE_ ",
+                DIAPHRAGM: " _APERTURE_ ",
                 # Numéro/ordinal numbers
                 ORDINAL: " _ORDINAL_ ",
                 ORDINAL_FR: " _ORDINAL_ ",
@@ -273,16 +294,18 @@ class Tokenizer():
                 PRICE_US_PATTERN: " _PRICE_ ",
                 PRICE_EU_PATTERN: " _PRICE_ ",
                 RESOLUTION_PATTERN: " _RESOLUTION_ ",
+                # Key/mouse shortcuts
+                SHORTCUT_PATTERN: " _SHORTCUT_ ",
                 # Remove HEX hashes, like IDs and commit names
                 HASH_PATTERN: ' _HASH_ ',
                 # Remove numbers
                 NUMBER_PATTERN: ' _NUMBER_ ',
             }
         else:
-            self.pipeline = pipeline
+            self.meta_tokens_pipe = meta_tokens
 
         self.meta_tokens = [value.lower().strip()
-                            for value in self.pipeline.values()
+                            for value in self.meta_tokens_pipe.values()
                             if value.startswith(" _") and value.endswith("_ ")]
 
         if abbreviations is None:

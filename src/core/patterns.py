@@ -98,6 +98,8 @@ DATABASE_PATTERN = re.compile(r"%s\.(db|sql|sqlite)(?![\.\S]\S)" % filename, re.
 
 EXECUTABLE_PATTERN = re.compile(r"%s\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin|rpm|deb|distinfo)((?:\.[a-z0-9]+)+)?(?![a-zA-Z])" % filename, re.IGNORECASE)
 
+SHORTCUT_PATTERN = re.compile(r"(?<=^|[\s\[\(\':])(?:(?:fn|tab|ctrl|shift|alt|altgr|maj|command|cmd|option|menu))(?: ?\+ ?(?:tab|ctrl|shift|maj|alt|altgr|command|cmd|option|menu|click|clic|up|down|left|right|top|bottom|enter|return|del|suppr|home|end|pageup|pagedown|fn|home|end|insert|numlock|scroll|drag|[a-z]))+(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
+
 # For some reason, merging both patterns in the same triggers infinite loop, so split it…
 PRICE_US_PATTERN = re.compile(r"(?<=^|[\s\[\(\'])([+-=≠±])?((usd|eur|USD|EUR|\€|\$|\£) ?\d+(?:[.,\-]\d+)*)(k|K)?(?=$|[\s.,?!\-:;\]\)])")
 PRICE_EU_PATTERN = re.compile(r"(?<=^|[\s\[\(\'])([+-=≠±])?(\d+(?:[.,\-]\d+)* ?(k|K)?(usd|eur|USD|EUR|\€|\$|\£))(?=$|[\s.,?!\-:;\]\)])")
@@ -132,6 +134,9 @@ SENSIBILITY = re.compile(r"(?<=^|[\s\[\(\'])(ISO|ASA) ?([0-9]+(?:[.,\-+\/ ][0-9]
 
 LUMINANCE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(Cd\/m²|Cd\/m2|Cd\/m\^2|nit|nits)(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
 """Luminance/radiance in nits or Cd/m²"""
+
+DIAPHRAGM = re.compile(r"(?<=^|[\s\[\(\'])f\/?([0-9]+\.?[0-9]?)(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
+"""Photographic diaph aperture values like f/2.8 or f1.4"""
 
 GAIN = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(dB|decibel|décibels)s?(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
 """Gain, attenuation and PSNR in dB"""
