@@ -390,6 +390,13 @@ class Word2Vec(gensim.models.Word2Vec):
         super().__init__(training, vector_size=vector_size, window=window, min_count=5, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=0.001, callbacks=[loss_logger], compute_loss=True, sg=1)
         print("training done")
 
+        # Initialize the spellchecker, used for words not found in the dictionnary here
+        self.spell = SpellChecker(language=None, case_sensitive=False)
+        frequency = { key: value for key, value in counts.items() if key in self.wv and key is not None }
+        self.spell.word_frequency.load_json(frequency)
+        # Note: we keep only the words occuring at least 5 times, to match the `min_count` arg used to train the model.
+        print("spellchecker initialized")
+
         self.save(self.pathname)
         print("saving done")
 
@@ -400,36 +407,55 @@ class Word2Vec(gensim.models.Word2Vec):
         return cls.load(get_models_folder(name))
 
 
-    def get_wordvec(self, word: str, embed:str = "IN") -> np.array:
+    def get_word(self, word: str, spellcheck: bool = False) -> str:
+        """Find out if word is in dictionary, or attempt spellchecking if not. Return None if nothing worked."""
+        if word:
+            if word in self.wv:
+                # Word exists in dictionnary
+                return word
+            elif spellcheck:
+                # Word does not exist: attempt spellchecking
+                # Return None if speelchecking fails
+                return self.spell.correction(word)
+
+        return None
+
+
+    def get_wordvec(self, word: str, embed:str = "IN", spellcheck: bool = False) -> np.array:
         """Return the vector associated to a word, through a dictionnary of words.
 
         Arguments:
             word (str): the word to convert to a vector.
             embed (str): `IN` or `OUT`. The default, `IN` usis the input embedding matrix (gensim.Word2Vec.wv), useful to vectorize queries and documents for classification training. `OUT` uses `gensim.Word2Vec.syn1neg`, useful for the dual-space embedding scheme, to train search engines.
+            spellcheck (bool): attempt spellchecking through basic letter permutations (Peter Norvig's algo) to find the closest match in dictionnary if the word is not found in the embedding corpus. This is crazy slow, you may want to enable it sparingly. [^1]
+
+        [^1]: https://norvig.com/spell-correct.html
 
         References:
             A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana
             https://arxiv.org/pdf/1602.01137.pdf
 
-
         Returns:
             the nD vector.
         """
-        if word and word in self.wv:
+        x = self.get_word(word, spellcheck)
+
+        # The word or its correction are found in DB
+        if x is not None:
             if embed == "OUT":
-                vec = self.syn1neg[self.wv.key_to_index[word]]
+                vec = self.syn1neg[self.wv.key_to_index[x]]
             elif embed == "IN":
-                vec = self.wv[word]
+                vec = self.wv[x]
             else:
                 raise ValueError("Invalid option")
 
             norm = np.linalg.norm(vec)
             return vec / norm if norm > 0. else vec
         else:
-            return np.zeros(self.wv.vector_size)
+            return None
 
 
-    def get_features(self, tokens: list, embed:str = "IN") -> dict:
+    def get_features(self, tokens: list, embed: str = "IN", spellcheck: bool = False) -> np.array:
         """Extract word features from the text of `post`.
 
         We use meta-features like date, prices, time, number that discard the actual value but retain the property.
@@ -444,26 +470,27 @@ class Word2Vec(gensim.models.Word2Vec):
             wv (gensim.models.KeyedVector): the dictionnary mapping words with vectors,
             syn1neg (np.array): the W_out matrix for word embedding, in the Dual Embedding Space Model. [^1] If not provided, embedding uses the default W_in matrix. W_out is better to vectorize documents for search-engine purposes.
             language (str): the language used to detect dates and detect words separators used in tokenization. Supports `"french"` and `"english"`.
+            spellcheck (bool): attempt spellchecking through basic letter permutations (Peter Norvig's algo) to find the closest match in dictionnary if the word is not found in the embedding corpus. This is crazy slow, you may want to enable it sparingly. [^2]
 
         [^1]: https://arxiv.org/pdf/1602.01137.pdf
+        [^2]: https://norvig.com/spell-correct.html
 
         Return:
-            (dict): dictionnary of features, where keys are initialized with the positional number of vector elements and their value, plus the optional external data.
+            (np.array) list of vectors (2nd axis) for each token (1st axis)
         """
         features = np.zeros(self.vector_size)
-        i = len(tokens)
+        i = 0
 
         for token in tokens:
-            vector = self.get_wordvec(token, embed)
-            features += vector
+            vector = self.get_wordvec(token, embed, spellcheck)
+            if vector is not None:
+                features += vector
+                i += 1
 
         # Finish the average calculation (so far, only summed)
         if i > 0:
             features /= i
 
-        # NLTK models take dictionnaries of features as input, so bake that.
-        # TODO: in Indexer, we need to revert that to numpy. Fix the API to avoid this useless step
-        #return dict(enumerate(features))
         return features
 
 class Classifier(SklearnClassifier):
