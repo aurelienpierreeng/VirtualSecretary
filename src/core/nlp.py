@@ -857,7 +857,7 @@ class Indexer(SklearnClassifier):
             all_norms = np.linalg.norm(vectors_all, axis=1)
             return np.nan_to_num(np.dot(vectors_all, vector) / (norm * all_norms) / np.array(penalties))
         else:
-            return []
+            return np.array([])
 
     def get_snippet_by_regex(self, page, query):
         if not (isinstance(query, str) or isinstance(query, re.Pattern)):
