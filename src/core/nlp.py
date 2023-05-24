@@ -124,10 +124,6 @@ class Tokenizer():
         return self.clean_whitespaces(string)
 
 
-    def lemmatize(self, string:str) -> str:
-        return self.lemmatizer.lemmatize(string)
-
-
     def normalize_token(self, word: str, language: str, meta_tokens: bool = True):
         """Return normalized, lemmatized and stemmed word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
 
@@ -140,7 +136,7 @@ class Tokenizer():
             `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
             `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
         """
-        string = word.strip("-,:'^ ")
+        string = word.strip("-,:'\"^ ")
 
         # Remove leading/trailing characters that may result from faulty tokenization
         string = TRAILING.sub("", string)
@@ -156,10 +152,6 @@ class Tokenizer():
         if "_" in string or "<" in string or ">" in string or "\\" in string or "=" in string or "~" in string or "#" in string:
             # Technical stuff, like markup/code leftovers and such
             return None
-
-        # Lemmatizer : canonical form of the word, if found
-        # Note : still produces natural language words
-        string = self.lemmatize(string)
 
         if re.match(r"^[a-zéèàêâîôûïüäëö]{1}$", string):
             return None
@@ -184,14 +176,13 @@ class Tokenizer():
         """Split a sentence into normalized word tokens and meta-tokens."""
         tokens = [self.normalize_token(token.lower(), language)
                   for token in nltk.word_tokenize(sentence, language=language)]
-        tokens = [item for item in tokens
-                  if item is not None]
+        tokens = [item for item in tokens if isinstance(item, str)]
 
-        if not tokens or len(tokens) == 1:
+        if len(tokens) < 2:
             # Tokenization seems to fail on single-word queries, try again without it
             tokens = [self.normalize_token(sentence.lower(), "english")]
 
-        return tokens
+        return [item for item in tokens if isinstance(item, str)]
 
 
     def split_sentences(self, document: str, language: str) -> list[str]:
@@ -315,11 +306,6 @@ class Tokenizer():
         else:
             self.abbreviations = abbreviations
 
-        if lemmatizer is None:
-            self.lemmatizer = WordNetLemmatizer()
-        else:
-            self.lemmatizer = lemmatizer
-
 
 class Data():
     def __init__(self, text: str, label: str):
@@ -389,7 +375,7 @@ class Word2Vec(gensim.models.Word2Vec):
         print("stopwords saved")
 
         loss_logger = LossLogger()
-        super().__init__(training, vector_size=vector_size, window=window, min_count=5, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=0.001, callbacks=[loss_logger], compute_loss=True, sg=1)
+        super().__init__(training, vector_size=vector_size, window=window, min_count=8, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=0.001, callbacks=[loss_logger], compute_loss=True, sg=1)
         print("training done")
 
         # Initialize the spellchecker, used for words not found in the dictionnary here
