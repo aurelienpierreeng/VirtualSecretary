@@ -203,6 +203,24 @@ class Crawler:
     def __init__(self):
         self.crawled_URL = []
 
+
+    def parse_translations(self, page, domain, markup, date, langs):
+        # Find translations if any
+        output = []
+        for lang in langs:
+            link_tag = page.find('link', {'rel': 'alternate', 'hreflang': lang})
+
+            if link_tag and link_tag["href"]:
+                translatedURL = relative_to_absolute(link_tag["href"], domain)
+                t_page = get_page_content(translatedURL)
+                output += parse_page(t_page, translatedURL, lang, markup=markup, date=date)
+
+                # Remember we crawled this
+                self.crawled_URL.append(translatedURL)
+
+        return output
+
+
     def get_website_from_crawling(self,
                                   website: str,
                                   default_lang,
@@ -241,25 +259,15 @@ class Crawler:
                 if contains_str in currentURL:
                     page = get_page_content(currentURL)
                     output += parse_page(page, currentURL, default_lang, markup)
-
-                    # Find translations if any
-                    for lang in langs:
-                        link_tag = page.find(
-                            'link', {'rel': 'alternate', 'hreflang': lang})
-
-                        if link_tag and link_tag["href"]:
-                            translatedURL = relative_to_absolute(link_tag["href"], domain)
-                            t_page = get_page_content(translatedURL)
-                            output += parse_page(t_page, translatedURL, lang, markup)
+                    output += self.parse_translations(page, domain, markup, None, langs)
 
                 # Remember we crawled this
                 self.crawled_URL.append(currentURL)
 
                 # Follow internal links once content is scraped
-                if contains_str in currentURL:
-                    _child = currentURL.replace(website, "")
-                    output += self.get_website_from_crawling(
-                        website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str, recurse=recurse)
+                _child = currentURL.replace(website, "")
+                output += self.get_website_from_crawling(
+                    website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str, recurse=recurse)
 
         return output
 
@@ -316,21 +324,7 @@ class Crawler:
             if '.xml' not in currentURL:
                 page = get_page_content(currentURL)
                 output += parse_page(page, currentURL, default_lang, markup=markup, date=date)
-
-                # Find translations if any
-                for lang in langs:
-                    link_tag = page.find(
-                        'link', {'rel': 'alternate', 'hreflang': lang})
-
-                    if link_tag and link_tag["href"]:
-                        translatedURL = relative_to_absolute(
-                            link_tag["href"], domain)
-
-                        t_page = get_page_content(translatedURL)
-                        output += parse_page(t_page, translatedURL, lang, markup=markup, date=date)
-
-                        # Remember we crawled this
-                        self.crawled_URL.append(translatedURL)
+                output += self.parse_translations(page, domain, markup, date, langs)
 
                 # Remember we crawled this
                 self.crawled_URL.append(currentURL)
