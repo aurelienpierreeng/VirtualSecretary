@@ -67,11 +67,8 @@ MULTIPLE_DASHES = re.compile(r"-{1,}")
 MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
 ORDINAL_FR = re.compile(r"n° ?([0-9]+)")
 
-# Trailing/leading lost punctuation resulting from broken tokenization through composed words
-TRAILING = re.compile(r"^((-|\.|\,)(?=[a-zéèàêâîôûïüäëö]))|((?<=[a-zéèàêâîôûïüäëö])(-|\.|\,))", flags=re.IGNORECASE)
-
 # pronoms/déterminants + apostrophes + mot
-FRANCAIS = re.compile(r"(?<=^|[\s\(\[\:])(j|t|s|l|d|qu|m)\'(?=[a-zéèàêâîôûïüäëö])", flags=re.IGNORECASE)
+FRANCAIS = re.compile(r"(?<=^|[\s\(\[\:]|lors|quel)(j|t|s|l|d|qu|m|c)\'(?=[aeiouyéèàêâîôûïüäëöh])", flags=re.IGNORECASE)
 
 class Tokenizer():
     characters_cleanup: dict[re.Pattern: str] = {
@@ -87,6 +84,58 @@ class Tokenizer():
         # Remove french contractions: m', j', qu', t', s' etc.
         FRANCAIS: "" }
     """Dictionnary of regular expressions (keys) to find and replace by the provided strings (values). Cleanup repeated characters, including ellipses and question marks, leftover BBcode and XML markup, base64-encoded strings and French pronominal contractions (e.g "me + a" contracted into "m'a")."""
+
+    plural_s = re.compile(r"(?<=\w)s?e{0,2}s(?=\s|$|[.;:,])")
+    """Identify plural form of nouns (French and English), adjectives (French) and third-person present verbs (English) and second-person verbs (French) in -s."""
+
+    feminine_e = re.compile(r"(?<=\w{3,})e{1,2}(?=\s|$|[.;:,])")
+    """Identify feminine form of adjectives (French) in -e."""
+
+    double_consonants = re.compile(r"(?<=\w{2,})([^aeiouy])\1")
+    """Identify double consonants in the middle of words."""
+
+    feminine_trice = re.compile(r"(?<=\w{2,})t(rice|eur|or)(?=\s|$|[.;:,])")
+    """Identify French feminine nouns in -trice."""
+
+    adverb_ment = re.compile(r"(?<=\w)e?ment(?=\s|$|[.;:,])")
+    """Identify French adverbs and English nouns ending en -ment"""
+
+    substantive_tion = re.compile(r"(?<=\w)(t|s)ion(?=\s|$|[.;:,])")
+    """Identify French and English substantives formed from verbs by adding -tion and -sion"""
+
+    substantive_at = re.compile(r"(?<=\w{4,})at(?=\s|$|[.;:,])")
+    """Identify French and English substantives formed from other nouns by adding -at"""
+
+    participle_ing = re.compile(r"(?<=\w{3,})ing(?=\s|$|[.;:,])")
+    """Identify English substantives and present participles formed from verbs by adding -ing"""
+
+    adjective_ed = re.compile(r"(?<=\w{3,})ed(?=\s|$|[.;:,])")
+    """Identify English adjectives formed from verbs by adding -ed"""
+
+    adjective_tif = re.compile(r"(?<=\w{2,})ti(f|v)(?=\s|$|[.;:,])")
+    """Identify English and French adjectives formed from verbs by adding -tif or -tive"""
+
+    substantive_y = re.compile(r"(?<=\w{3,})y(?=\s|$|[.;:,])")
+    """Identify English substantives ending in -y"""
+
+    verb_iz = re.compile(r"(?<=\w{3,})(i|y)z(?=\s|$|[.;:,])")
+    """Identify American verbs ending in -iz that French and Brits write in -is"""
+
+    stuff_er = re.compile(r"(?<=\w{3,})er(?=\s|$|[.;:,])")
+    """Identify French 1st group verb (infinitive) and English substantives ending in -er"""
+
+    british_our = re.compile(r"(?<=\w{3,})our(?=\s|$|[.;:,\-])")
+    """Identify British spelling ending in -our (colour, behaviour)."""
+
+    substantive_ity = re.compile(r"(?<=\w{4,})it(y|e)(?=\s|$|[.;:,])")
+    """Identify substantives in -ity (English) and -ite (French)."""
+
+    substantive_ist = re.compile(r"(?<=\w{3,})is(t|m)(?=\s|$|[.;:,])")
+    """Identify substantives in -ist and -ism."""
+
+    substantive_iqu = re.compile(r"(?<=\w{3,})i(qu|c)(?=\s|$|[.;:,])")
+    """Identify French substantives in -iqu"""
+
 
     def clean_whitespaces(self, string:str) -> str:
         # Collapse multiple newlines and spaces
@@ -123,6 +172,97 @@ class Tokenizer():
 
         return self.clean_whitespaces(string)
 
+    def lemmatize(self, word: str) -> str:
+        """Find the root (lemma) of words to help topical generalization."""
+        # Simplify double consonants. They are irregular, people misspell them and they vary between languages.
+        word = self.double_consonants.sub(r"\1", word)
+
+        # Remove final "s" or "es" as a plural mark.
+        # Ex : lenses -> len, lens -> len
+        word = self.plural_s.sub("", word)
+
+        # Replace British spelling of -our words by American spelling
+        # Ex : colour -> color, behaviour -> behavior,
+        # but tour -> tour, pour -> pour
+        word = self.british_our.sub("or", word)
+
+        # Remove final -ity and -ite from substantives:
+        # Ex : activity -> activ, activite -> activ
+        # but cite -> cite, city -> city
+        # Caveat : due to upstream removal of accents, medical conditions in French
+        # based on inflammations (meningite, hepatite, bronchite, vulvite) will get removed there too.
+        word = self.substantive_ity.sub("", word)
+
+        # Remove final "e" as feminine mark (in French)
+        # Ex : lense -> lens, profile -> profil, manage -> manag, capitale -> capital
+        word = self.feminine_e.sub("", word)
+
+        # Remove -tor, -teur, -tric
+        # Ex : acteur -> act, actor -> act, actric -> act
+        word = self.feminine_trice.sub("t", word)
+
+        # Remove -ing from participle present, maybe used as substantives
+        # Ex : being -> be, acting -> act, managing -> manag
+        word = self.participle_ing.sub("", word)
+
+        # Remove -ed from adjectives
+        # Ex : acted -> act, managed -> manag, aplied -> apli
+        word = self.adjective_ed.sub("", word)
+
+        # Remove -ment and -ement from substantives and adverbs
+        # Ex : management -> manag, imediatement -> imediat
+        word = self.adverb_ment.sub("", word)
+
+        # Remove -tion and -sion
+        # Ex : action -> act, application -> applicat, comision -> comis
+        word = self.substantive_tion.sub(r"\1", word)
+
+        # Remove -tif and -tiv from adjectives
+        # Note : final -e was already removed above.
+        # Ex : actif -> act, activ -> act, optimisation -> optimisat, neutralization -> neutralizat
+        word = self.adjective_tif.sub("t", word)
+
+        # Remove -ism and -ist from substantives
+        # Ex : feminism -> femin, feminist -> femin, artist -> art
+        # but exist -> exist
+        # Caveat : consist -> consi
+        word = self.substantive_ist.sub("", word)
+
+        # Remove -at
+        # Note : may finish the job from previous step for -ation
+        # Ex : reliquat -> reliqu, optimisat -> optimis, neutralizat -> neutraliz
+        word = self.substantive_at.sub("", word)
+
+        # Replace final -y by -i.
+        # Note : This is because applied -> aplied -> apli,
+        # while apply -> aply, so finish aply -> apli for consistency.
+        word = self.substantive_y.sub("i", word)
+
+        # Replace final -er if there is more than 3 letters before
+        # Ex : optimizer -> optimiz, instaler -> instal, player -> play, higher -> high
+        # but power -> power, her -> her, there -> ther -> ther
+        # Caveat : master -> mast and lower -> lower
+        word = self.stuff_er.sub("", word)
+
+        # Replace -iz/-iz by -is/-ys for American English, to unify with British and French
+        # Ex : optimiz -> optimis, neutraliz -> neutralis, analyz -> analys
+        # Caveat : size -> siz -> sis
+        word = self.verb_iz.sub(r"\1s", word)
+
+        # We might be tempted to remove -al here, as in
+        # profesional, tribal, analytical. Problem is collision with
+        # apeal, instal, overal, reveal, portal, gimbal.
+        # Leave it as-is and let the embedding figure it out.
+
+        # Replace -iqu by -ic
+        # This has the double goal of making French closer to English, but
+        # also to stem verbs the same as nouns
+        # Ex : aplique -> aplic (same as aplication -> aplicat -> aplic)
+        # politiqu -> politic, expliqu -> explic
+        word = self.substantive_iqu.sub("i", word)
+
+        return word
+
 
     def normalize_token(self, word: str, language: str, meta_tokens: bool = True):
         """Return normalized, lemmatized and stemmed word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
@@ -136,14 +276,16 @@ class Tokenizer():
             `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
             `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
         """
-        string = word.strip("-,:'\"^ ")
-
-        # Remove leading/trailing characters that may result from faulty tokenization
-        string = TRAILING.sub("", string)
+        string = word.strip("-,:'\"^*. ")
 
         if len(string) == 0:
             # empty string
             return None
+
+        if string in REPLACEMENTS:
+            string = REPLACEMENTS[string]
+
+        # TODO: remove le, la, les, un, une, a, an, the
 
         if string in self.meta_tokens:
             # Input is lowercase, need to fix that for meta tokens.
@@ -153,15 +295,13 @@ class Tokenizer():
             # Technical stuff, like markup/code leftovers and such
             return None
 
-        if re.match(r"^[a-zéèàêâîôûïüäëö]{1}$", string):
-            return None
-
-        if string in REPLACEMENTS:
-            string = REPLACEMENTS[string]
-
         if string in STOPWORDS:
             return None
 
+        # Lemmatize / Stem
+        string = self.lemmatize(string)
+
+        # Last chance of identifying meta-tokens in an atomic way
         if meta_tokens:
             for key, value in self.meta_tokens_pipe.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
@@ -169,16 +309,16 @@ class Tokenizer():
                 if key.search(string):
                     return value.strip()
 
-        return string.strip()
+        return string
 
 
-    def tokenize_sentence(self, sentence: str, language: str) -> list[str]:
+    def tokenize_sentence(self, sentence: str, language: str, meta_tokens: bool = True) -> list[str]:
         """Split a sentence into normalized word tokens and meta-tokens."""
-        tokens = [self.normalize_token(token.lower(), language)
+        tokens = [self.normalize_token(token.lower(), language, meta_tokens=meta_tokens)
                   for token in nltk.word_tokenize(sentence, language=language)]
         tokens = [item for item in tokens if isinstance(item, str)]
 
-        if len(tokens) < 2:
+        if len(tokens) == 0:
             # Tokenization seems to fail on single-word queries, try again without it
             tokens = [self.normalize_token(sentence.lower(), "english")]
 
@@ -195,7 +335,7 @@ class Tokenizer():
         return nltk.sent_tokenize(document, language=language)
 
 
-    def tokenize_document(self, document:str, language:str = None) -> list[str]:
+    def tokenize_document(self, document:str, language:str = None, meta_tokens: bool = True) -> list[str]:
         """Cleanup and tokenize a document or a sentence as an atomic element, meaning we don't split it into sentences. Use this either for search-engine purposes (into a document's body) or if the document is already split into sentences.
 
         Note:
@@ -213,11 +353,11 @@ class Tokenizer():
         if language is None:
             language = guess_language(document)
 
-        document = self.prefilter(document)
-        return self.tokenize_sentence(document, language)
+        document = self.prefilter(document, meta_tokens=meta_tokens)
+        return self.tokenize_sentence(document, language, meta_tokens=meta_tokens)
 
 
-    def tokenize_per_sentence(self, document: str) -> list[list[str]]:
+    def tokenize_per_sentence(self, document: str, meta_tokens: bool = True) -> list[list[str]]:
         """Cleanup and tokenize a whole document as a list of sentences, meaning we split it into sentences before tokenizing. Use this to train a Word2Vec (embedding) model so each token is properly embedded into its syntactic context.
 
         Note:
@@ -228,8 +368,8 @@ class Tokenizer():
         """
         clean_text = typography_undo(document)
         language = guess_language(clean_text)
-        clean_text = self.prefilter(clean_text)
-        return [self.tokenize_sentence(sentence, language)
+        clean_text = self.prefilter(clean_text, meta_tokens=meta_tokens)
+        return [self.tokenize_sentence(sentence, language, meta_tokens=meta_tokens)
                 for sentence in self.split_sentences(clean_text, language)]
 
 
@@ -318,6 +458,7 @@ class Data():
         self.text = text
         self.label = label
 
+
 class LossLogger(CallbackAny2Vec):
     '''Output loss at each epoch'''
     def __init__(self):
@@ -332,6 +473,7 @@ class LossLogger(CallbackAny2Vec):
         self.losses.append(loss)
         print(f'  Loss: {loss}')
         self.epoch += 1
+
 
 class Word2Vec(gensim.models.Word2Vec):
     def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5, tokenizer: Tokenizer = None):
@@ -470,7 +612,7 @@ class Word2Vec(gensim.models.Word2Vec):
         i = 0
 
         for token in tokens:
-            vector = self.get_wordvec(token, embed, spellcheck)
+            vector = self.get_wordvec(token, embed=embed, spellcheck=spellcheck)
             if vector is not None:
                 features += vector
                 i += 1
@@ -696,11 +838,11 @@ class Indexer(SklearnClassifier):
     def get_features_parallel(self, tokens: list[str]) -> tuple[str, str]:
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
         # Language doesn't matter, tokenization and normalization are done already
-        return self.word2vec.get_features(tokens, embed="OUT")
+        return self.word2vec.get_features(tokens, embed="OUT", spellcheck=False)
 
 
     def tokenize_parallel(self, post: Data) -> list[str]:
-        tokens = self.word2vec.tokenizer.tokenize_document(post.text)
+        tokens = self.word2vec.tokenizer.tokenize_document(post.text, meta_tokens=True)
         return tokens
 
 
@@ -715,10 +857,10 @@ class Indexer(SklearnClassifier):
 
 
     def tokenize_query(self, query:str) -> list[str]:
-        return self.word2vec.tokenizer.tokenize_document(query)
+        return self.word2vec.tokenizer.tokenize_document(query, meta_tokens=False)
 
 
-    def vectorize_tokens(self, tokenized_query: list[str]) -> tuple[np.array, float, list[str]]:
+    def vectorize_query(self, tokenized_query: list[str]) -> tuple[np.array, float, list[str]]:
         """Prepare a text search query: cleanup, tokenize and get the centroid vector.
 
         Returns:
@@ -729,7 +871,7 @@ class Indexer(SklearnClassifier):
             return np.array([]), 0., []
 
         # Get the the centroid of the word embedding vector
-        vector = self.word2vec.get_features(tokenized_query, embed="IN", spellcheck=False)
+        vector = self.word2vec.get_features(tokenized_query, embed="IN", spellcheck=True)
         norm = np.linalg.norm(vector)
         norm = 1.0 if norm == 0.0 else norm
 
@@ -769,7 +911,9 @@ class Indexer(SklearnClassifier):
         return 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
 
 
-    def rank(self, query: str|tuple|re.Pattern, method: search_methods, filter_callback: callable = None, **kargs) -> list[tuple[str, float]]:
+    def rank(self, query: str|tuple|re.Pattern, method: search_methods,
+             index_start: int = 0, index_end: int = 50,
+             filter_callback: callable = None, **kargs) -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
@@ -799,8 +943,11 @@ class Indexer(SklearnClassifier):
         else:
             results = {(url, similarity) for url, similarity in results if similarity > 0. and filter_callback(url, **kargs)}
 
-        # Return the 100 most similar documents by (url, similarity)
-        return sorted(results, key=lambda x:x[1], reverse=True)[0:100]
+        # Return the most similar documents by (url, similarity)
+        n_elem = len(results)
+        n_start = max(min(n_elem - 1, index_start), 0)
+        n_end = max(min(n_elem - 1, index_end), 0)
+        return sorted(results, key=lambda x:x[1], reverse=True)[n_start:n_end]
 
 
     def get_page(self, url:str) -> dict:
@@ -822,26 +969,15 @@ class Indexer(SklearnClassifier):
         tokens = query[2]
 
         vectors_all = []
-        penalties = []
 
         for sentence in page['sentences']:
-            sentence_tokens = self.word2vec.tokenizer.tokenize_document(sentence)
-
-            # Count how many times the tokens of the query appear in the tokens of the sentence.
-            # Since the similarity relies on averaging word vectors, a short section title containing only the query keyword
-            # would cheat the metric and get a very high score, despite being irrelevant.
-            # This penalty ensures word typically associated through embedding count enough in the mix too.
-            penalty = 0
-            for token in tokens:
-                penalty += tokens.count(token)
-
-            penalties.append(np.sqrt(penalty) if penalty > 0. else 1.)
+            sentence_tokens = self.word2vec.tokenizer.tokenize_document(sentence, meta_tokens=True)
             vectors_all.append(self.word2vec.get_features(sentence_tokens, embed="OUT", spellcheck=False))
 
         if vectors_all:
             vectors_all = np.array(vectors_all)
             all_norms = np.linalg.norm(vectors_all, axis=1)
-            return np.nan_to_num(np.dot(vectors_all, vector) / (norm * all_norms) / np.array(penalties))
+            return np.nan_to_num(np.dot(vectors_all, vector) / (norm * all_norms))
         else:
             return np.array([])
 

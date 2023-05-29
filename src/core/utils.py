@@ -287,6 +287,24 @@ REPLACEMENT_MAP = {
     "ʼ": "'",
     "'": "'",
     "´": "'",
+    # Accents
+    # The rationale here is some people use them improperly
+    # (meaning they don't at all or use the wrong ones),
+    # so level down for everyone for generalization.
+    # This also makes for better generalization between French and English
+    "é": "e",
+    "è": "e",
+    "ê": "e",
+    "â": "a",
+    "ô": "o",
+    "á": "a", # should not exist in French
+    "à": "a",
+    "î": "i",
+    "û": "u",
+    "ï": "i",
+    "ë": "e",
+    "ü": "u",
+    "ö": "o",
     # Spaces
     "\u2002": " ",  # En space
     "\u2003": " ",  # Em space
@@ -312,7 +330,7 @@ REPLACEMENT_MAP = {
     "\uFE63": "-",  # Small Hyphen-Minus
     "↑": " ",
     "↵": " ",
-    # Decorations
+    # Decorations and fucking emojis
     "☙": " ",
     "❧": " ",
     "🔗": " ",
@@ -326,6 +344,8 @@ REPLACEMENT_MAP = {
     "👀": " ",
     "ƒ": "f",
     "·": " ",
+    "👍": " ",
+    "✔": " ",
 
 }
 
