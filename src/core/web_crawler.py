@@ -4,6 +4,9 @@ import time
 import requests
 from bs4 import BeautifulSoup
 from core import patterns
+from pypdf import PdfReader
+from io import BytesIO
+
 
 from typing import TypedDict
 
@@ -32,10 +35,118 @@ def relative_to_absolute(URL: str, domain: str) -> str:
 
 def radical_url(URL: str) -> str:
     """Trim an URL to the page (radical) part, removing anchors if any (internal links)"""
-    anchor = re.match(r"(.+?)#(.+)", URL)
-    if anchor:
-        URL = anchor.groups()[0]
-    return URL
+    anchor = re.match(r"(.+?)\#(.+)", URL)
+    return anchor.groups()[0] if anchor else URL
+
+
+def _recurse_pdf_outline(reader: PdfReader, outline_elem, document_title: str):
+    chapters_titles = []
+    chapters_bounds = []
+
+    if isinstance(outline_elem, dict):
+        chapters_bounds += [reader._get_page_number_by_indirect(outline_elem.page)]
+        chapters_titles += [document_title + " | " + outline_elem.title]
+
+    elif isinstance(outline_elem, list):
+        for elem in outline_elem:
+            chapters_t, chapters_b = _recurse_pdf_outline(reader, elem, document_title)
+            chapters_titles += chapters_t
+            chapters_bounds += chapters_b
+
+    return chapters_titles, chapters_bounds
+
+
+def _get_pdf_outline(reader: PdfReader, document_title:str) -> tuple[list[str], list[int]]:
+    chapters_titles = []
+    chapters_bounds = []
+
+    for out in reader.outline:
+        chapters_t, chapters_b = _recurse_pdf_outline(reader, out, document_title)
+        chapters_titles += chapters_t
+        chapters_bounds += chapters_b
+
+    # The list of titles and page bounds start at the first section title,
+    # we need to handle the content between that and the very beginning of the document.
+    return [document_title] + chapters_titles, [0] + chapters_bounds
+
+
+def get_pdf_content(url: str, lang: str, file_path: str = None) -> list[web_page]:
+    """Retrieve a PDF document and parse its content.
+
+    Arguments:
+        url: the online address of the document, or the downloading page if the doc is not directly accessible from a GET request (for some old-schools website where downloads are inited from a POST request to some PHP form handler, or publications behind paywall).
+        lang: the ISO code of the language
+        file_path: local path to the PDF file if the URL can't be directly fetched by GET request. The content will be extracted from the local file but the original/remote URL will still be referenced as the source.
+    """
+    try:
+        if not file_path:
+            headers = {
+                'User-Agent': 'Virtual Secretary 0.1 Unix',
+                'From': 'youremail@domain.example'  # This is another valid field
+            }
+            page = requests.get(url, timeout=30, headers=headers)
+            print(f"{url}: {page.status_code}")
+
+            if page.status_code != 200:
+                return ""
+
+            reader = PdfReader(BytesIO(page.content))
+        else:
+            reader = PdfReader(file_path)
+
+        # Beware: pypdf converts date from string assuming fixed format without catching exceptions
+        try:
+            date = reader.metadata.creation_date
+        except:
+            date = None
+
+        title = reader.metadata.title if reader.metadata.title else url.split("/")[-1]
+        print(title)
+
+        if reader.outline:
+            results = []
+            chapters_titles, chapters_bounds = _get_pdf_outline(reader, title)
+
+            for i in range(0, len(chapters_bounds) - 1):
+                print(chapters_titles[i], chapters_bounds[i], chapters_bounds[i + 1])
+                n_start = chapters_bounds[i]
+                n_end = min(chapters_bounds[i + 1] + 1, len(reader.pages) - 1)
+                content = "\n".join([elem.extract_text() for elem in reader.pages[n_start:n_end]])
+
+                if content:
+                    result = web_page(title=chapters_titles[i],
+                                        url=url,
+                                        date=date,
+                                        content=content,
+                                        excerpt=None,
+                                        h1=[],
+                                        h2=[],
+                                        lang=lang)
+                    print(result)
+                    results.append(result)
+
+            return results
+
+        else:
+            excerpt = reader.metadata.subject
+            content = "\n".join([elem.extract_text() for elem in reader.pages])
+
+            if content:
+                result = web_page(title=title,
+                                    url=url,
+                                    date=date,
+                                    content=content,
+                                    excerpt=excerpt,
+                                    h1=[],
+                                    h2=[],
+                                    lang=lang)
+                print(result)
+                return [result]
+            return []
+
+    except Exception as e:
+        print(e)
+        return []
 
 
 def get_page_content(url) -> BeautifulSoup:
@@ -69,10 +180,10 @@ def get_page_content(url) -> BeautifulSoup:
         # Minified HTML doesn't have line breaks after block-level tags.
         # This is going to make sentence tokenization a nightmare because BeautifulSoup doesn't add them in get_text()
         # Re-introduce here 2 carriage-returns after those tags to create paragraphs.
-        unminified = re.sub(r"(\<\/(?:div|section|main|section|aside|header|footer|nav|time|article|h[1-6]|p|ol|ul|li|details|pre|dl|dt|dd|table|tr|th|td|blockquote|style|img|audio|video|iframe|embed|figure|canvas|fieldset|hr|caption|figcaption|address|form|noscript)\>)",
+        unminified = re.sub(r"(\<\/(?:div|section|main|section|aside|header|footer|nav|time|article|h[1-6]|p|ol|ul|li|details|pre|dl|dt|dd|table|tr|th|td|blockquote|style|img|audio|video|iframe|embed|figure|canvas|fieldset|hr|caption|figcaption|address|form|noscript|select)\>)",
                             r"\1\n\n\n\n", content)
         # Same with inline-level tags, but only insert space, except for superscript and subscript
-        unminified = re.sub(r"(\<\/(?:a|span|time|abbr|b|i|em|strong|code|dfn|big|kbd|label|textarea|input|var|q|tt)\>)",
+        unminified = re.sub(r"(\<\/(?:a|span|time|abbr|b|i|em|strong|code|dfn|big|kbd|label|textarea|input|option|var|q|tt)\>)",
                             r"\1 ", unminified)
 
         handler = BeautifulSoup(unminified, "html.parser")
@@ -246,6 +357,8 @@ class Crawler:
         domain = split_domain.group(0)
         index_url = website + child
         index = get_page_content(index_url)
+        self.crawled_URL.append(index_url)
+
         output = []
 
         # Don't recurse : crawl index/top-most page and return
@@ -256,7 +369,16 @@ class Crawler:
         for url in index.find_all('a', href=True):
             currentURL = relative_to_absolute(radical_url(url["href"]), domain)
             if domain in currentURL and currentURL not in self.crawled_URL:
-                if contains_str in currentURL:
+                check_ext = currentURL.lower()
+                if check_ext.endswith(".pdf"):
+                    output += get_pdf_content(currentURL, default_lang)
+                elif check_ext.endswith(".jpg") or \
+                    check_ext.endswith(".jpeg") or \
+                    check_ext.endswith(".mp4") or \
+                    check_ext.endswith(".zip") or \
+                    check_ext.endswith(".exe"):
+                    continue
+                elif contains_str in currentURL:
                     page = get_page_content(currentURL)
                     output += parse_page(page, currentURL, default_lang, markup)
                     output += self.parse_translations(page, domain, markup, None, langs)
@@ -265,9 +387,10 @@ class Crawler:
                 self.crawled_URL.append(currentURL)
 
                 # Follow internal links once content is scraped
-                _child = currentURL.replace(website, "")
-                output += self.get_website_from_crawling(
-                    website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str, recurse=recurse)
+                if not check_ext.endswith(".pdf"):
+                    _child = currentURL.replace(website, "")
+                    output += self.get_website_from_crawling(
+                        website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str, recurse=recurse)
 
         return output
 

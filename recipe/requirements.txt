@@ -2,7 +2,6 @@ python-dateutil
 vobject
 requests
 requests-oauthlib
-PySide6
 py3DNS
 dnspython
 dkimpy
@@ -12,10 +11,7 @@ scikit-learn
 gensim
 beautifulsoup4
 pandas
-flask
-Flask-Caching
 rank-bm25
-markupsafe
-html5lib
-python-memcached
-redis
+regex
+pyspellchecker
+PyPDF
