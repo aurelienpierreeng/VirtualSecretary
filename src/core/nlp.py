@@ -80,12 +80,10 @@ class Tokenizer():
         REPEATED_CHARACTERS: ' ',
         BB_CODE: " ",
         MARKUP: r" \1 ",
-        BASE_64: " ",
-        # Remove french contractions: m', j', qu', t', s' etc.
-        FRANCAIS: "" }
+        BASE_64: " "}
     """Dictionnary of regular expressions (keys) to find and replace by the provided strings (values). Cleanup repeated characters, including ellipses and question marks, leftover BBcode and XML markup, base64-encoded strings and French pronominal contractions (e.g "me + a" contracted into "m'a")."""
 
-    plural_s = re.compile(r"(?<=\w)s?e{0,2}s(?=\s|$|[.;:,])")
+    plural_s = re.compile(r"(?<=\w{3,})s?e{0,2}s(?=\s|$|[.;:,])")
     """Identify plural form of nouns (French and English), adjectives (French) and third-person present verbs (English) and second-person verbs (French) in -s."""
 
     feminine_e = re.compile(r"(?<=\w{3,})e{1,2}(?=\s|$|[.;:,])")
@@ -135,6 +133,9 @@ class Tokenizer():
 
     substantive_iqu = re.compile(r"(?<=\w{3,})i(qu|c)(?=\s|$|[.;:,])")
     """Identify French substantives in -iqu"""
+
+    substantive_eur = re.compile(r"(?<=\w{3,})eur(?=\s|$|[.;:,])")
+    """Identify French substantives -eur"""
 
 
     def clean_whitespaces(self, string:str) -> str:
@@ -197,7 +198,7 @@ class Tokenizer():
         # Ex : lense -> lens, profile -> profil, manage -> manag, capitale -> capital
         word = self.feminine_e.sub("", word)
 
-        # Remove -tor, -teur, -tric
+        # Remove -tor, -teur, -tric,
         # Ex : acteur -> act, actor -> act, actric -> act
         word = self.feminine_trice.sub("t", word)
 
@@ -248,6 +249,10 @@ class Tokenizer():
         # Ex : optimiz -> optimis, neutraliz -> neutralis, analyz -> analys
         # Caveat : size -> siz -> sis
         word = self.verb_iz.sub(r"\1s", word)
+
+        # Replace -eur by -or
+        # Ex: serveur -> servor, curseur -> cursor, meileur -> meilor
+        word = self.substantive_eur.sub("or", word)
 
         # We might be tempted to remove -al here, as in
         # profesional, tribal, analytical. Problem is collision with
