@@ -21,16 +21,37 @@ web_page = TypedDict("web_page", {"title": str,     # Title of the page
                                   })
 """Dictionnary representing a web page and its metadata"""
 
+headers = {
+                'User-Agent': 'Virtual Secretary 0.1 Unix',
+                'From': 'youremail@domain.example'  # This is another valid field
+            }
+
+def get_content_type(url: str) -> tuple[str, bool]:
+    """Probe an URL for headers only to see what type of content it returns.
+
+    Returns:
+        type, status (tuple): the type of content (`str`) and the status state (`bool`). Status is `True` if the URL can be reached and fetched, `False` if there is some kind of error or empty response.
+    """
+    try:
+        response = requests.head(url, timeout=30, headers=headers)
+        content_type = response.headers['content-type']
+        status = response.status_code != 404 and response.status_code != 403
+        print(url, content_type, status)
+        return content_type, status
+    except:
+        return "", False
+
+
 def relative_to_absolute(URL: str, domain: str) -> str:
     """Convert a relative path to absolute by prepending the domain"""
-    if URL.startswith("/"):
-        # relative URL: prepend domain
-        return domain + URL
-    elif not URL.startswith("http"):
-        # relative URL without /
-        return domain + "/" + URL
-    else:
+    if "://" in URL:
         return URL
+    elif URL.startswith("/"):
+        # relative URL: prepend domain
+        return "://" + domain + URL
+    else:
+        # relative URL without /
+        return "://" + domain + "/" + URL
 
 
 def radical_url(URL: str) -> str:
@@ -80,15 +101,11 @@ def get_pdf_content(url: str, lang: str, file_path: str = None) -> list[web_page
     """
     try:
         if not file_path:
-            headers = {
-                'User-Agent': 'Virtual Secretary 0.1 Unix',
-                'From': 'youremail@domain.example'  # This is another valid field
-            }
             page = requests.get(url, timeout=30, headers=headers)
             print(f"{url}: {page.status_code}")
 
             if page.status_code != 200:
-                return ""
+                return []
 
             reader = PdfReader(BytesIO(page.content))
         else:
@@ -114,8 +131,10 @@ def get_pdf_content(url: str, lang: str, file_path: str = None) -> list[web_page
                 content = "\n".join([elem.extract_text() for elem in reader.pages[n_start:n_end]])
 
                 if content:
+                    # Make up a dummy anchor to make URLs to document sections unique
+                    # since that's what is used as key for dictionaries
                     result = web_page(title=chapters_titles[i],
-                                        url=url,
+                                        url=f"{url}#{i}",
                                         date=date,
                                         content=content,
                                         excerpt=None,
@@ -155,15 +174,11 @@ def get_page_content(url) -> BeautifulSoup:
     #time.sleep(0.5)
 
     try:
-        headers = {
-            'User-Agent': 'Virtual Secretary 0.1 Unix',
-            'From': 'youremail@domain.example'  # This is another valid field
-        }
         page = requests.get(url, timeout=30, headers=headers)
         print(f"{url}: {page.status_code}")
 
         if page.status_code != 200:
-            return BeautifulSoup("<html></html>", 'html.parser')
+            return None
 
         # Of course some institutionnal websites don't use UTF-8, so let's guess
         content = page.content
@@ -174,8 +189,11 @@ def get_page_content(url) -> BeautifulSoup:
             try:
                 content = content.decode(page.apparent_encoding)
             except (UnicodeDecodeError, AttributeError):
-                # We just have to hope it's pure text
-                pass
+                try:
+                    content = content.decode(page.encoding)
+                except (UnicodeDecodeError, AttributeError):
+                    # We just have to hope it's pure text
+                    pass
 
         # Minified HTML doesn't have line breaks after block-level tags.
         # This is going to make sentence tokenization a nightmare because BeautifulSoup doesn't add them in get_text()
@@ -186,11 +204,11 @@ def get_page_content(url) -> BeautifulSoup:
         unminified = re.sub(r"(\<\/(?:a|span|time|abbr|b|i|em|strong|code|dfn|big|kbd|label|textarea|input|option|var|q|tt)\>)",
                             r"\1 ", unminified)
 
-        handler = BeautifulSoup(unminified, "html.parser")
+        handler = BeautifulSoup(unminified, "html5lib")
 
         # Remove any kind of machine code and symbols from the HTML doctree because we want natural language only
         # That will also make subsequent parsing slightly faster.
-        # Remove blockquotes too because they can duplicate content of forum pages
+        # Remove blockquotes too because they can duplicate internal content of forum pages
         for element in handler.select('code, pre, math, style, script, svg, img, audio, video, iframe, embed, blockquote, quote, aside, nav'):
             element.decompose()
 
@@ -203,7 +221,7 @@ def get_page_content(url) -> BeautifulSoup:
 
     except Exception as e:
         print(e)
-        return BeautifulSoup("<html></html>", 'html.parser')
+        return None
 
 
 def get_page_markup(page: BeautifulSoup, markup: str|list) -> str:
@@ -310,27 +328,10 @@ def parse_page(page: BeautifulSoup, url: str, lang: str, markup, date=None) -> l
     else:
         return []
 
+
 class Crawler:
     def __init__(self):
         self.crawled_URL = []
-
-
-    def parse_translations(self, page, domain, markup, date, langs):
-        # Find translations if any
-        output = []
-        for lang in langs:
-            link_tag = page.find('link', {'rel': 'alternate', 'hreflang': lang})
-
-            if link_tag and link_tag["href"]:
-                translatedURL = relative_to_absolute(link_tag["href"], domain)
-                t_page = get_page_content(translatedURL)
-                output += parse_page(t_page, translatedURL, lang, markup=markup, date=date)
-
-                # Remember we crawled this
-                self.crawled_URL.append(translatedURL)
-
-        return output
-
 
     def get_website_from_crawling(self,
                                   website: str,
@@ -339,7 +340,8 @@ class Crawler:
                                   langs: tuple = ("en", "fr"),
                                   markup: str = "body",
                                   contains_str: str = "",
-                                  recurse: bool = True) -> list[tuple[str, str, str]]:
+                                  max_recurse_level = -1,
+                                  recursion_level = 0) -> list[tuple[str, str, str]]:
         """Crawl all found pages of a website from the index. Intended for word2vec training.
 
         Arguments:
@@ -353,44 +355,59 @@ class Crawler:
         Returns:
           list of tuples: `(page content, page language, page URL)`
         """
-        split_domain = patterns.URL_PATTERN.search(website)
-        domain = split_domain.group(0)
-        index_url = website + child
-        index = get_page_content(index_url)
-        self.crawled_URL.append(index_url)
-
         output = []
+        index_url = radical_url(website + child)
 
-        # Don't recurse : crawl index/top-most page and return
-        if not recurse:
+        # Abort now if the page was already crawled or recursion level reached
+        if index_url in self.crawled_URL or \
+            (max_recurse_level > -1 and recursion_level >= max_recurse_level):
             return output
 
-        # Recurse
-        for url in index.find_all('a', href=True):
-            currentURL = relative_to_absolute(radical_url(url["href"]), domain)
-            if domain in currentURL and currentURL not in self.crawled_URL:
-                check_ext = currentURL.lower()
-                if check_ext.endswith(".pdf"):
-                    output += get_pdf_content(currentURL, default_lang)
-                elif check_ext.endswith(".jpg") or \
-                    check_ext.endswith(".jpeg") or \
-                    check_ext.endswith(".mp4") or \
-                    check_ext.endswith(".zip") or \
-                    check_ext.endswith(".exe"):
-                    continue
-                elif contains_str in currentURL:
-                    page = get_page_content(currentURL)
-                    output += parse_page(page, currentURL, default_lang, markup)
-                    output += self.parse_translations(page, domain, markup, None, langs)
+        # Extract the domain name, to prepend it if we find relative URL while parsing
+        split_domain = patterns.URL_PATTERN.search(website)
+        domain = split_domain.group(1)
 
-                # Remember we crawled this
-                self.crawled_URL.append(currentURL)
+        # Fetch and parse current (top-most) page
+        content_type, status = get_content_type(index_url)
 
-                # Follow internal links once content is scraped
-                if not check_ext.endswith(".pdf"):
-                    _child = currentURL.replace(website, "")
-                    output += self.get_website_from_crawling(
-                        website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str, recurse=recurse)
+        if "text" in content_type and status:
+            index = get_page_content(index_url)
+
+            if (contains_str in index_url or recursion_level == 0):
+                # For the first recursion level, ignore "url contains" rule to allow parsing index pages
+                if index:
+                    # Valid HTML response
+                    output += self.parse_original(index, index_url, default_lang, markup, None)
+                    output += self.parse_translations(index, domain, markup, None, langs)
+                else:
+                    # Some websites display PDF in web applets on pages
+                    # advertising content-type=text/html but UTF8 codecs
+                    # fail to decode because it's actually PDF.
+                    # If we end up here, it's most likely what we have.
+                    output += get_pdf_content(index_url, default_lang)
+
+            # Recall we passed there, whether or not we actually mined something
+            self.crawled_URL.append(index_url)
+
+            # Follow internal links whether or not this page was mined
+            if index and recursion_level + 1 != max_recurse_level:
+                for url in index.find_all('a', href=True):
+                    currentURL = radical_url(relative_to_absolute(url["href"], domain))
+                    if (domain in currentURL or currentURL.lower().endswith(".pdf")) \
+                        and currentURL not in self.crawled_URL:
+                        # Parse only local pages unless they are PDF docs
+                        _child = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
+                        output += self.get_website_from_crawling(
+                            website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str,
+                            recursion_level=recursion_level + 1, max_recurse_level=max_recurse_level)
+
+        elif "pdf" in content_type and status:
+            output += get_pdf_content(index_url, default_lang)
+            self.crawled_URL.append(index_url)
+            # No link to follow from PDF docmuents
+        else:
+            # Got an image, video, compressed file, binary, etc.
+            self.crawled_URL.append(index_url)
 
         return output
 
@@ -413,9 +430,14 @@ class Crawler:
         Returns:
           list of tuples: `(page content, page language, page URL)`
         """
+        output = []
+
         index_page = get_page_content(website + sitemap)
-        domain = re.search(
-            r"(https?:\/\/[a-z0-9\-\_]+?\.[a-z0-9]{2,})", website).group(0)
+        if not index_page:
+            return output
+
+        split_domain = patterns.URL_PATTERN.search(website)
+        domain = split_domain.group(1)
 
         # Sitemaps of sitemaps enclose elements in `<sitemap> </sitemap>`
         # While sitemaps of pages enclose them in `<url> </url>`.
@@ -424,7 +446,6 @@ class Crawler:
         links = index_page.find_all('sitemap') + index_page.find_all('url')
 
         print("%i URLs found in sitemap" % len(links))
-        output = []
 
         for link in links:
             url = link.find("loc")
@@ -433,29 +454,70 @@ class Crawler:
             if not url:
                 print("No URL found in ", link)
                 # Nothing to process, ignore this item
-                pass
+                continue
 
-            if not date:
-                # Defaults to dummy date
-                date = None
-            else:
-                date = date.get_text()
+            date = date.get_text() if date else None
 
             currentURL = relative_to_absolute(url.get_text(), domain)
             print(currentURL, date)
 
             if '.xml' not in currentURL:
+                # We got a proper web page, parse it
                 page = get_page_content(currentURL)
-                output += parse_page(page, currentURL, default_lang, markup=markup, date=date)
+                self.crawled_URL.append(currentURL)
+                output += self.parse_original(page, currentURL, default_lang, markup, date)
                 output += self.parse_translations(page, domain, markup, date, langs)
 
-                # Remember we crawled this
-                self.crawled_URL.append(currentURL)
-
+                # Follow internal links to PDF documents, not necessarily hosted on the same server
+                output += self.crawl_pdf(page, domain, default_lang)
             else:
                 # We got a sitemap of sitemaps, recurse over the sub-sitemaps
-                _sitemap = currentURL.replace(website, "")
+                _sitemap = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
                 output += self.get_website_from_sitemap(
                     website, default_lang, sitemap=_sitemap, langs=langs, markup=markup)
+
+        return output
+
+
+    def crawl_pdf(self, page, domain, default_lang):
+        """Try to crawl all PDF documents from links referenced in an HTML page."""
+        output = []
+
+        if page:
+            for url in page.find_all('a', href=True):
+                link = radical_url(relative_to_absolute(url["href"], domain))
+                if link not in self.crawled_URL:
+                    content_type, status = get_content_type(link)
+                    if "pdf" in content_type and status:
+                        output += get_pdf_content(link, default_lang)
+
+                    self.crawled_URL.append(link)
+
+        return output
+
+
+    def parse_original(self, page, url, default_lang, markup, date):
+        return parse_page(page, url, default_lang, markup=markup, date=date) if page else []
+
+
+    def parse_translations(self, page, domain, markup, date, langs):
+        """Follow `<link rel="alternate" hreflang="lang" href="url">` tags declaring links to alternative language variants for the current HTML page and crawl the target pages. This works only for pages properly defining alternatives in HTML header."""
+        output = []
+
+        if not page:
+            return output
+
+        for lang in langs:
+            link_tag = page.find('link', {'rel': 'alternate', 'hreflang': lang})
+
+            if link_tag and link_tag["href"]:
+                translatedURL = relative_to_absolute(link_tag["href"], domain)
+                content_type, status = get_content_type(translatedURL)
+
+                if "text" in content_type and status:
+                    translated_page = get_page_content(translatedURL)
+                    output += self.parse_original(translated_page, translatedURL, lang, markup, date)
+
+                self.crawled_URL.append(translatedURL)
 
         return output
