@@ -15,3 +15,4 @@ rank-bm25
 regex
 pyspellchecker
 PyPDF
+pycryptodome
