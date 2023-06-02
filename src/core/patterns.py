@@ -127,7 +127,7 @@ MULTIPLE_SPACES = re.compile(r"( )+")
 EXPOSURE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(ev|il)s?(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
 """Exposure values in EV or IL"""
 
-PIXELS = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?(px|pixels)s?(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
+PIXELS = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?(p|px|pixels|pix)s?(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
 
 SENSIBILITY = re.compile(r"(?<=^|[\s\[\(\'])(ISO|ASA) ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?)|([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(ISO|ASA)s?(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
 """Photographic sensibility in ISO or ASA"""
@@ -156,7 +156,7 @@ WEIGHT = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)
 ANGLE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(deg|degree|degré|degre|°|rad|radian|sr|steradian)s?(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
 """Angles in radians, degrees and steradians"""
 
-TEMPERATURE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(°C|degC|degree C|celsius|K|°F)(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
+TEMPERATURE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(°C|degC|degree C|celsius|K|°F|kelvin)(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
 """Temperatures in °C, °F and K"""
 
 FREQUENCY = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(nano|n|micro|µ|milli|m|centi|c|deci|d|deca|hecto|kilo|k|mega|giga|g)?(Hz|hertz)(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)

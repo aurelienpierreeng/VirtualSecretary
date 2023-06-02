@@ -218,11 +218,6 @@ class Tokenizer():
         # Ex : action -> act, application -> applicat, comision -> comis
         word = self.substantive_tion.sub(r"\1", word)
 
-        # Remove -tif and -tiv from adjectives
-        # Note : final -e was already removed above.
-        # Ex : actif -> act, activ -> act, optimisation -> optimisat, neutralization -> neutralizat
-        word = self.adjective_tif.sub("t", word)
-
         # Remove -ism and -ist from substantives
         # Ex : feminism -> femin, feminist -> femin, artist -> art
         # but exist -> exist
@@ -233,6 +228,11 @@ class Tokenizer():
         # Note : may finish the job from previous step for -ation
         # Ex : reliquat -> reliqu, optimisat -> optimis, neutralizat -> neutraliz
         word = self.substantive_at.sub("", word)
+
+        # Remove -tif and -tiv from adjectives
+        # Note : final -e was already removed above.
+        # Ex : actif -> act, activ -> act, optimisation -> optimisat, neutralization -> neutralizat
+        word = self.adjective_tif.sub("t", word)
 
         # Replace final -y by -i.
         # Note : This is because applied -> aplied -> apli,
@@ -371,6 +371,7 @@ class Tokenizer():
         Returns:
             tokens (list[list[str]]): a 2D list of sentences (1st axis), each containing a list of normalizel tokens and meta-tokens (2nd axis).
         """
+        # TODO: prefilter n-grams ?
         clean_text = typography_undo(document)
         language = guess_language(clean_text)
         clean_text = self.prefilter(clean_text, meta_tokens=meta_tokens)
@@ -409,6 +410,10 @@ class Tokenizer():
                 TEXT_DATES: " _DATE_ ",
                 DATE_PATTERN:" _DATE_ ",
                 TIME_PATTERN: " _TIME_ ",
+                # Key/mouse shortcuts
+                SHORTCUT_PATTERN: " _SHORTCUT_ ",
+                # Note : f4 can be interpreted as diaph aperture or key
+                # Shortcuts need to be processed first.
                 # Local pathes - get everything with / or \ left over by the previous
                 # Need to go after dates for the slash date format
                 PATH_PATTERN: ' _PATH_ ',
@@ -419,12 +424,13 @@ class Tokenizer():
                 FILE_SIZE: " _FILESIZE_ ",
                 DISTANCE: " _DISTANCE_ ",
                 WEIGHT: " _WEIGHT_ ",
+                TEMPERATURE: " _TEMPERATURE_ ",
                 ANGLE: " _ANGLE_ ",
                 FREQUENCY: " _FREQUENCY_ ",
                 PERCENT: " _PERCENT_ ",
                 GAIN: " _GAIN_ ",
-                TEMPERATURE: " _TEMPERATURE_ ",
                 DIAPHRAGM: " _APERTURE_ ",
+                PIXELS: " _PIXELS_ ",
                 # Numéro/ordinal numbers
                 ORDINAL: " _ORDINAL_ ",
                 ORDINAL_FR: " _ORDINAL_ ",
@@ -432,8 +438,6 @@ class Tokenizer():
                 PRICE_US_PATTERN: " _PRICE_ ",
                 PRICE_EU_PATTERN: " _PRICE_ ",
                 RESOLUTION_PATTERN: " _RESOLUTION_ ",
-                # Key/mouse shortcuts
-                SHORTCUT_PATTERN: " _SHORTCUT_ ",
                 # Remove HEX hashes, like IDs and commit names
                 HASH_PATTERN: ' _HASH_ ',
                 # Remove numbers
