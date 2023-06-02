@@ -485,7 +485,7 @@ class LossLogger(CallbackAny2Vec):
 
 
 class Word2Vec(gensim.models.Word2Vec):
-    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5, tokenizer: Tokenizer = None):
+    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5, min_count=5, sample=0.0005, tokenizer: Tokenizer = None):
         """Train, re-train or retrieve an existing word2vec word embedding model
 
         Arguments:
@@ -516,6 +516,7 @@ class Word2Vec(gensim.models.Word2Vec):
 
         # Dump words to a file to detect stopwords
         words = [word for sentence in training for word in sentence]
+        print(f"got {len(words)} words")
         counts = Counter(words)
 
         # Sort words by frequency
@@ -526,7 +527,7 @@ class Word2Vec(gensim.models.Word2Vec):
         print("stopwords saved")
 
         loss_logger = LossLogger()
-        super().__init__(training, vector_size=vector_size, window=window, min_count=8, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=0.001, callbacks=[loss_logger], compute_loss=True, sg=1)
+        super().__init__(training, vector_size=vector_size, window=window, min_count=min_count, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=1)
         print("training done")
 
         # Initialize the spellchecker, used for words not found in the dictionnary here
