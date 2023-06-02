@@ -5,7 +5,7 @@ Logging and filter finding utilities.
 © 2022-2023 - Aurélien Pierre
 """
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import os
 import re
 import errno
@@ -440,11 +440,16 @@ def typography_undo(string:str) -> str:
 def guess_date(string: str) -> datetime:
     """Best effort to guess a date from a string using typical date/time formats"""
 
-    date = None
-    try:
-        date = parser.parse(string)
-    except Exception as e:
-        print(e)
+    if isinstance(string, str):
+        try:
+            date = parser.parse(string)
+        except Exception as e:
+            print(e)
+            date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
+    elif isinstance(string, datetime):
+        date = string
+    else:
+        date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
 
     return date
 
