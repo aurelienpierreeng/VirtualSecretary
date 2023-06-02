@@ -921,7 +921,6 @@ class Indexer(SklearnClassifier):
 
 
     def rank(self, query: str|tuple|re.Pattern, method: search_methods,
-             index_start: int = 0, index_end: int = 50,
              filter_callback: callable = None, **kargs) -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
@@ -952,11 +951,7 @@ class Indexer(SklearnClassifier):
         else:
             results = {(url, similarity) for url, similarity in results if similarity > 0. and filter_callback(url, **kargs)}
 
-        # Return the most similar documents by (url, similarity)
-        n_elem = len(results)
-        n_start = max(min(n_elem - 1, index_start), 0)
-        n_end = max(min(n_elem - 1, index_end), 0)
-        return sorted(results, key=lambda x:x[1], reverse=True)[n_start:n_end]
+        return sorted(results, key=lambda x:x[1], reverse=True)
 
 
     def get_page(self, url:str) -> dict:
