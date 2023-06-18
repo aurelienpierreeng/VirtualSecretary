@@ -8,8 +8,10 @@ Logging and filter finding utilities.
 from datetime import datetime, timezone, timedelta
 import os
 import re
+import io
 import errno
 import pickle
+import tarfile
 
 from typing import TypedDict
 from dateutil import parser
@@ -467,23 +469,29 @@ def get_data_folder(filename: str) -> str:
                         os.path.dirname(
                             os.path.dirname(current_path)))
     models_path = os.path.join(install_path, "data")
-    return os.path.abspath(os.path.join(models_path, filename + ".pickle"))
+    return os.path.abspath(os.path.join(models_path, filename + ".pickle.tar.gz"))
 
 
 def save_data(data: list, filename: str):
-    """Save scraped data to a pickle file in data folder. Folder and file extension are handled automatically."""
-    with open(get_data_folder(filename), 'wb') as f:
-        pickle.dump(data, f, pickle.HIGHEST_PROTOCOL)
+    """Save scraped data to a pickle file inside a tar.gz archive in data folder. Folder and file extension are handled automatically."""
+    with tarfile.open(get_data_folder(filename), "w:gz") as tar:
+        content = io.BytesIO(pickle.dumps(data, pickle.HIGHEST_PROTOCOL))
+        info = tarfile.TarInfo(filename + ".pickle")
+
+        # Need to pass on the buffer size explicitly, tarfile sucks
+        info.size = content.getbuffer().nbytes
+        tar.addfile(info, fileobj=content)
 
 
 def open_data(filename: str) -> list:
-    """Open scraped data from a pickle file stored in data folder. Folder and file extension are handled automatically.
+    """Open scraped data from a pickle file inside a tar.gz archive stored in data folder. Folder and file extension are handled automatically.
     An empty list is returned is the file does not exist.
     """
     path = get_data_folder(filename)
     if os.path.exists(path):
-      with open(path, 'rb') as f:
-        dataset = pickle.load(f)
+      with tarfile.open(path, "r:*") as tar:
+        content = tar.extractfile(tar.getmember(filename + ".pickle"))
+        dataset = pickle.loads(content.read())
     else:
        dataset = []
     return dataset
