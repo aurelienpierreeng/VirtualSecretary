@@ -1,4 +1,4 @@
-import re
+import regex as re
 import time
 
 import requests
@@ -91,6 +91,9 @@ def _get_pdf_outline(reader: PdfReader, document_title:str) -> tuple[list[str], 
     return [document_title] + chapters_titles, [0] + chapters_bounds
 
 
+hyphenized = re.compile(r"-[\n\r](?=\w)")
+
+
 def get_pdf_content(url: str, lang: str, file_path: str = None) -> list[web_page]:
     """Retrieve a PDF document and parse its content.
 
@@ -130,13 +133,16 @@ def get_pdf_content(url: str, lang: str, file_path: str = None) -> list[web_page
                 n_end = min(chapters_bounds[i + 1] + 1, len(reader.pages) - 1)
                 content = "\n".join([elem.extract_text() for elem in reader.pages[n_start:n_end]])
 
+                # Reconstruct hyphenized words for line wrapping
+                content = hyphenized.sub("", content)
+
                 if content:
                     # Make up a dummy anchor to make URLs to document sections unique
                     # since that's what is used as key for dictionaries
                     result = web_page(title=chapters_titles[i],
                                         url=f"{url}#{i}",
                                         date=date,
-                                        content=content,
+                                        content=content.strip("\n "),
                                         excerpt=None,
                                         h1=[],
                                         h2=[],
@@ -150,11 +156,14 @@ def get_pdf_content(url: str, lang: str, file_path: str = None) -> list[web_page
             excerpt = reader.metadata.subject
             content = "\n".join([elem.extract_text() for elem in reader.pages])
 
+            # Reconstruct hyphenized words for line wrapping
+            content = hyphenized.sub("", content)
+
             if content:
                 result = web_page(title=title,
                                     url=url,
                                     date=date,
-                                    content=content,
+                                    content=content.strip("\n "),
                                     excerpt=excerpt,
                                     h1=[],
                                     h2=[],
