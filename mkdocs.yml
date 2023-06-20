@@ -2,19 +2,34 @@ site_name: Virtual Secretary Documentation
 
 repo_url: https://github.com/aurelienpierreeng/VirtualSecretary
 repo_name: aurelienpierreeng/VirtualSecretary
+copyright: Copyright &copy; 2022-2023 Aurélien PIERRE
+
 
 theme:
   name: material
   features:
+    - content.action.edit
+    - content.action.view
+    - content.code.annotate
     - content.code.copy
+    - content.tooltips
     - navigation.instant
-    - navigation.tabs
     - navigation.top
     - navigation.sections
+    - navigation.footer
+    - navigation.indexes
+    - navigation.tabs
+    - search.highlight
+    - search.suggest
+    - toc.follow
   palette:
+    scheme: slate
     primary: pink
+    accent: purple
   logo: assets/virtualsecretary-inverted.png
 
+extra_css:
+- assets/material.css
 
 markdown_extensions:
   - attr_list
@@ -29,6 +44,13 @@ markdown_extensions:
       anchor_linenums: true
       line_spans: __span
       pygments_lang_class: true
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.tasklist:
+      custom_checkbox: true
   - pymdownx.critic
   - pymdownx.inlinehilite
   - pymdownx.snippets
@@ -36,6 +58,7 @@ markdown_extensions:
   - pymdownx.caret
   - pymdownx.mark
   - pymdownx.tilde
+  - pymdownx.magiclink
   - toc:
       permalink: "¤"
   - admonition
@@ -60,26 +83,46 @@ plugins:
     custom_templates: templates
     default_handler: python
     enable_inventory: true
+    watch:
+      - src
     handlers:
       python:
         paths: [src]
+        load_external_modules: true
         import:
         - https://docs.python.org/3/objects.inv
         - https://numpy.org/doc/1.24/objects.inv
         - https://www.nltk.org/objects.inv
         - https://radimrehurek.com/gensim/objects.inv
+        - https://scikit-learn.org/stable/objects.inv
+        - https://www.crummy.com/software/BeautifulSoup/bs4/doc/objects.inv
         options:
           show_root_heading: true
+          show_root_full_path: false
+          show_object_full_path: false
+          show_category_heading: yes
+          group_by_category: true
+          docstring_style: google
           docstring_options:
             ignore_init_summary: no
           merge_init_into_class: yes
           show_signature: yes
           show_signature_annotations: yes
+          signature_crossrefs: true
           show_if_no_docstring: no
+          show_submodules: no
+          show_docstring_attributes: true
+          show_docstring_description: true
+          show_docstring_examples: true
+          show_docstring_other_parameters: true
+          show_docstring_raises: true
           separate_signature: yes
-          docstring_section_style: table
-          show_source: yes
-          show_category_heading: no
-          show_submodules: yes
-          members_order: alphabetical
-          heading_level: 3
+          line_length: 80
+          docstring_section_style: spacy
+          show_source: no
+          members_order: source
+          heading_level: 2
+          annotations_path: source
+          allow_inspection: true
+          filters:
+          - "!^_"
