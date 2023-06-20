@@ -3,6 +3,7 @@ import os
 import io
 import typing
 import importlib
+import time
 
 from core import nlp
 from core import connectors
@@ -60,13 +61,24 @@ class Secretary(object):
         exec(code, self.protocols, {"filtername": filter_path})
 
 
-  def __init__(self, subfolder_path:str):
+  def server_breathe(self):
+    """If server mode is enabled, introduce a 0.5 s timeout to let other processes run.
+    This is useful where heavy text parsing happens
+    """
+    if self.server_mode:
+      time.sleep(0.5)
+
+
+  def __init__(self, subfolder_path:str, server_mode: bool, number: int, force: bool):
     """
     Load configuration from `settings.ini` file in the current folder.
     Load all connector modules from `protocols`.
 
     Arguments:
       subfolder_path (str): the current folder of filters
+      server_mode: enable or disable the server mode, which makes processing slower to better share limited resources on a server.
+      number: override the number of items to process defined in config file. `-1` honors config files settings.
+      force: ignore logs and reprocess items already processed.
 
     Attributes:
       protocols (dict of str: connectors.Server): available [connectors.Server][] implementations for server protocols. They are exposed to user filters in `globals()`.
@@ -77,6 +89,11 @@ class Secretary(object):
     """
 
     self.protocols: typing.Dict[str, connectors.Server] = { }
+    self.server_mode = server_mode
+    self.number = number
+    self.force = force
+
+    print(self.number, self.server_mode)
 
     self.config_file = configparser.ConfigParser()
     self.config_file.read(os.path.join(subfolder_path, "settings.ini"))
