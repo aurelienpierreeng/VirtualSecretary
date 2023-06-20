@@ -679,8 +679,12 @@ class EMail(connectors.Content):
     Returns:
       time difference between current time and sending time of the email
     """
-    current_date = datetime.now(timezone.utc)
-    delta = (current_date - self.date)
+    try:
+      current_date = datetime.now(timezone.utc)
+      delta = (current_date - self.date)
+    except:
+      current_date = datetime.now()
+      delta = (current_date - self.date)
     return delta
 
 
