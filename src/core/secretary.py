@@ -1,3 +1,14 @@
+"""
+High level manager of all server connectors and bank of filters:
+
+- load available connector modules,
+- pass them the content of the relevant `settings.ini` section,
+- open and close the remote connections to servers by calling internal connector methods,
+- process all filters of a given config subfolder in sequence by calling the internal `run_filters` method of each connector.
+
+© 2022-2023 Aurélien Pierre
+"""
+
 import configparser
 import os
 import io
@@ -12,8 +23,7 @@ import protocols as prt
 
 class Secretary(object):
   """
-  Backbone class managing the collection of available connectors.
-  It is not exposed to user-defined filters.
+  Backbone class managing the collection of available connectors. It is called from `src/main.py`.
   """
 
   def load_connectors(self):
