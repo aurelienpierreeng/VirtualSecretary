@@ -23,7 +23,6 @@ import joblib
 import numpy as np
 
 import nltk
-from nltk.classify import SklearnClassifier
 from nltk.stem.snowball import SnowballStemmer
 from nltk.tokenize import RegexpTokenizer
 from nltk.stem import WordNetLemmatizer
@@ -39,7 +38,12 @@ from core.language import *
 
 
 def guess_language(string: str) -> str:
-    """Basic language guesser based on stopwords detection. Stopwords are the most common words of a language: for each language, we count how many stopwords we found and return the language having the most matches. It is not perfect but the rutime vs. accuracy ratio is good.
+    """Basic language guesser based on stopwords detection.
+
+    Stopwords are the most common words of a language: for each language, we count how many stopwords we found and return the language having the most matches. It is accurate for paragraphs and long documents, not so much for short sentences.
+
+    Returns:
+        2-letters ISO-something language code.
     """
 
     tokenizer = RegexpTokenizer(r'\w+|[\d\.\,]+|\S+')
@@ -50,25 +54,6 @@ def guess_language(string: str) -> str:
 
     index_max = max(range(len(scores)), key=scores.__getitem__)
     return list(STOPWORDS_DICT.keys())[index_max]
-
-
-# Find English dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
-# Find French dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
-TEXT_DATES = re.compile(r"([0-9]{1,2})? (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|jan|fév|mar|avr|mai|jui|jui|aou|sep|oct|nov|déc|janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|january|february|march|april|may|june|july|august|september|october|november|december)\.?( [0-9]{1,2})?( [0-9]{2,4})(?!:)",
-                        flags=re.IGNORECASE | re.MULTILINE)
-BASE_64 = re.compile(r"((?:[A-Za-z0-9+\/]{4}){64,}(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=)?)")
-BB_CODE = re.compile(r"\[(img|quote)[a-zA-Z0-9 =\"]*?\].*?\[\/\1\]")
-MARKUP = re.compile(r"(?:\[|\{|\<)([^\n\r]+?)(?:\]|\}|\>)")
-USER = re.compile(r"(\S+)?@(\S+)|(user\-?\d+)")
-REPEATED_CHARACTERS = re.compile(r"(.)\1{9,}")
-UNFINISHED_SENTENCES = re.compile(r"(?<![?!.;:])\n\n")
-MULTIPLE_DOTS = re.compile(r"\.{2,}")
-MULTIPLE_DASHES = re.compile(r"-{1,}")
-MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
-ORDINAL_FR = re.compile(r"n° ?([0-9]+)")
-
-# pronoms/déterminants + apostrophes + mot
-FRANCAIS = re.compile(r"(?<=^|[\s\(\[\:]|lors|quel)(j|t|s|l|d|qu|m|c)\'(?=[aeiouyéèàêâîôûïüäëöh])", flags=re.IGNORECASE)
 
 class Tokenizer():
     characters_cleanup: dict[re.Pattern: str] = {
@@ -82,61 +67,6 @@ class Tokenizer():
         MARKUP: r" \1 ",
         BASE_64: " "}
     """Dictionnary of regular expressions (keys) to find and replace by the provided strings (values). Cleanup repeated characters, including ellipses and question marks, leftover BBcode and XML markup, base64-encoded strings and French pronominal contractions (e.g "me + a" contracted into "m'a")."""
-
-    plural_s = re.compile(r"(?<=\w{3,})s?e{0,2}s(?=\s|$|[.;:,])")
-    """Identify plural form of nouns (French and English), adjectives (French) and third-person present verbs (English) and second-person verbs (French) in -s."""
-
-    feminine_e = re.compile(r"(?<=\w{3,})e{1,2}(?=\s|$|[.;:,])")
-    """Identify feminine form of adjectives (French) in -e."""
-
-    double_consonants = re.compile(r"(?<=\w{2,})([^aeiouy])\1")
-    """Identify double consonants in the middle of words."""
-
-    feminine_trice = re.compile(r"(?<=\w{2,})t(rice|eur|or)(?=\s|$|[.;:,])")
-    """Identify French feminine nouns in -trice."""
-
-    adverb_ment = re.compile(r"(?<=\w)e?ment(?=\s|$|[.;:,])")
-    """Identify French adverbs and English nouns ending en -ment"""
-
-    substantive_tion = re.compile(r"(?<=\w)(t|s)ion(?=\s|$|[.;:,])")
-    """Identify French and English substantives formed from verbs by adding -tion and -sion"""
-
-    substantive_at = re.compile(r"(?<=\w{4,})at(?=\s|$|[.;:,])")
-    """Identify French and English substantives formed from other nouns by adding -at"""
-
-    participle_ing = re.compile(r"(?<=\w{3,})ing(?=\s|$|[.;:,])")
-    """Identify English substantives and present participles formed from verbs by adding -ing"""
-
-    adjective_ed = re.compile(r"(?<=\w{3,})ed(?=\s|$|[.;:,])")
-    """Identify English adjectives formed from verbs by adding -ed"""
-
-    adjective_tif = re.compile(r"(?<=\w{2,})ti(f|v)(?=\s|$|[.;:,])")
-    """Identify English and French adjectives formed from verbs by adding -tif or -tive"""
-
-    substantive_y = re.compile(r"(?<=\w{3,})y(?=\s|$|[.;:,])")
-    """Identify English substantives ending in -y"""
-
-    verb_iz = re.compile(r"(?<=\w{3,})(i|y)z(?=\s|$|[.;:,])")
-    """Identify American verbs ending in -iz that French and Brits write in -is"""
-
-    stuff_er = re.compile(r"(?<=\w{3,})er(?=\s|$|[.;:,])")
-    """Identify French 1st group verb (infinitive) and English substantives ending in -er"""
-
-    british_our = re.compile(r"(?<=\w{3,})our(?=\s|$|[.;:,\-])")
-    """Identify British spelling ending in -our (colour, behaviour)."""
-
-    substantive_ity = re.compile(r"(?<=\w{4,})it(y|e)(?=\s|$|[.;:,])")
-    """Identify substantives in -ity (English) and -ite (French)."""
-
-    substantive_ist = re.compile(r"(?<=\w{3,})is(t|m)(?=\s|$|[.;:,])")
-    """Identify substantives in -ist and -ism."""
-
-    substantive_iqu = re.compile(r"(?<=\w{3,})i(qu|c)(?=\s|$|[.;:,])")
-    """Identify French substantives in -iqu"""
-
-    substantive_eur = re.compile(r"(?<=\w{3,})eur(?=\s|$|[.;:,])")
-    """Identify French substantives -eur"""
-
 
     def clean_whitespaces(self, string:str) -> str:
         # Collapse multiple newlines and spaces
@@ -173,86 +103,87 @@ class Tokenizer():
 
         return self.clean_whitespaces(string)
 
+
     def lemmatize(self, word: str) -> str:
         """Find the root (lemma) of words to help topical generalization."""
         # Simplify double consonants. They are irregular, people misspell them and they vary between languages.
-        word = self.double_consonants.sub(r"\1", word)
+        word = DOUBLE_CONSONANTS.sub(r"\1", word)
 
         # Remove final "s" or "es" as a plural mark.
         # Ex : lenses -> len, lens -> len
-        word = self.plural_s.sub("", word)
+        word = PLURAL_S.sub("", word)
 
         # Replace British spelling of -our words by American spelling
         # Ex : colour -> color, behaviour -> behavior,
         # but tour -> tour, pour -> pour
-        word = self.british_our.sub("or", word)
+        word = BRITISH_OUR.sub("or", word)
 
         # Remove final -ity and -ite from substantives:
         # Ex : activity -> activ, activite -> activ
         # but cite -> cite, city -> city
         # Caveat : due to upstream removal of accents, medical conditions in French
         # based on inflammations (meningite, hepatite, bronchite, vulvite) will get removed there too.
-        word = self.substantive_ity.sub("", word)
+        word = SUBSTANTIVE_ITY.sub("", word)
 
         # Remove final "e" as feminine mark (in French)
         # Ex : lense -> lens, profile -> profil, manage -> manag, capitale -> capital
-        word = self.feminine_e.sub("", word)
+        word = FEMININE_E.sub("", word)
 
         # Remove -tor, -teur, -tric,
         # Ex : acteur -> act, actor -> act, actric -> act
-        word = self.feminine_trice.sub("t", word)
+        word = FEMININE_TRICE.sub("t", word)
 
         # Remove -ing from participle present, maybe used as substantives
         # Ex : being -> be, acting -> act, managing -> manag
-        word = self.participle_ing.sub("", word)
+        word = PARTICIPLE_ING.sub("", word)
 
         # Remove -ed from adjectives
         # Ex : acted -> act, managed -> manag, aplied -> apli
-        word = self.adjective_ed.sub("", word)
+        word = ADJECTIVE_ED.sub("", word)
 
         # Remove -ment and -ement from substantives and adverbs
         # Ex : management -> manag, imediatement -> imediat
-        word = self.adverb_ment.sub("", word)
+        word = ADVERB_MENT.sub("", word)
 
         # Remove -tion and -sion
         # Ex : action -> act, application -> applicat, comision -> comis
-        word = self.substantive_tion.sub(r"\1", word)
+        word = SUBSTANTIVE_TION.sub(r"\1", word)
 
         # Remove -ism and -ist from substantives
         # Ex : feminism -> femin, feminist -> femin, artist -> art
         # but exist -> exist
         # Caveat : consist -> consi
-        word = self.substantive_ist.sub("", word)
+        word = SUBSTANTIVE_IST.sub("", word)
 
         # Remove -at
         # Note : may finish the job from previous step for -ation
         # Ex : reliquat -> reliqu, optimisat -> optimis, neutralizat -> neutraliz
-        word = self.substantive_at.sub("", word)
+        word = SUBSTANTIVE_AT.sub("", word)
 
         # Remove -tif and -tiv from adjectives
         # Note : final -e was already removed above.
         # Ex : actif -> act, activ -> act, optimisation -> optimisat, neutralization -> neutralizat
-        word = self.adjective_tif.sub("t", word)
+        word = ADJECTIVE_TIF.sub("t", word)
 
         # Replace final -y by -i.
         # Note : This is because applied -> aplied -> apli,
         # while apply -> aply, so finish aply -> apli for consistency.
-        word = self.substantive_y.sub("i", word)
+        word = SUBSTANTIVE_Y.sub("i", word)
 
         # Replace final -er if there is more than 3 letters before
         # Ex : optimizer -> optimiz, instaler -> instal, player -> play, higher -> high
         # but power -> power, her -> her, there -> ther -> ther
         # Caveat : master -> mast and lower -> lower
-        word = self.stuff_er.sub("", word)
+        word = STUFF_ER.sub("", word)
 
         # Replace -iz/-iz by -is/-ys for American English, to unify with British and French
         # Ex : optimiz -> optimis, neutraliz -> neutralis, analyz -> analys
         # Caveat : size -> siz -> sis
-        word = self.verb_iz.sub(r"\1s", word)
+        word = VERB_IZ.sub(r"\1s", word)
 
         # Replace -eur by -or
         # Ex: serveur -> servor, curseur -> cursor, meileur -> meilor
-        word = self.substantive_eur.sub("or", word)
+        word = SUBSTANTIVE_EUR.sub("or", word)
 
         # We might be tempted to remove -al here, as in
         # profesional, tribal, analytical. Problem is collision with
@@ -264,7 +195,7 @@ class Tokenizer():
         # also to stem verbs the same as nouns
         # Ex : aplique -> aplic (same as aplication -> aplicat -> aplic)
         # politiqu -> politic, expliqu -> explic
-        word = self.substantive_iqu.sub("i", word)
+        word = SUBSTANTIVE_IQU.sub("i", word)
 
         return word
 
@@ -318,7 +249,16 @@ class Tokenizer():
 
 
     def tokenize_sentence(self, sentence: str, language: str, meta_tokens: bool = True) -> list[str]:
-        """Split a sentence into normalized word tokens and meta-tokens."""
+        """Split a sentence into normalized word tokens and meta-tokens.
+
+        Arguments:
+            sentence: the input single sentence.
+            language: the language string to be used by the tokenizer. It needs to be one of those supported by the module [core.nlp][].
+            meta_tokens: find meta-tokens through regular expressions and replace them in the text. This helps tokenization to keep similar objects together, especially dates that would otherwise be splitted.
+
+        Returns:
+            tokens (list[str]): the list of normalized tokens.
+        """
         tokens = [self.normalize_token(token.lower(), language, meta_tokens=meta_tokens)
                   for token in nltk.word_tokenize(sentence, language=language)]
         tokens = [item for item in tokens if isinstance(item, str)]
@@ -369,7 +309,7 @@ class Tokenizer():
             the language is detected internally.
 
         Returns:
-            tokens (list[list[str]]): a 2D list of sentences (1st axis), each containing a list of normalizel tokens and meta-tokens (2nd axis).
+            tokens: a 2D list of sentences (1st axis), each containing a list of normalizel tokens and meta-tokens (2nd axis).
         """
         # TODO: prefilter n-grams ?
         clean_text = typography_undo(document)
@@ -380,16 +320,13 @@ class Tokenizer():
 
 
     def __init__(self,
-                 meta_tokens:dict[re.Pattern: str] = None,
-                 abbreviations:dict[str: str] = None,
-                 lemmatizer = None):
-        """Pre-processing pipeline and tokenizer.
+                 meta_tokens: dict[re.Pattern: str] = None,
+                 abbreviations: dict[str: str] = None):
+        """Pre-processing pipeline and tokenizer, splitting a string into normalized word tokens.
 
         Arguments:
-            meta_token (dict[re.Pattern: str]): the pipeline of regular expressions to replace with meta-tokens. Keys must be `re.Pattern` declared with `re.compile()`, values must be meta-tokens assumed to be nested in underscores. The pipeline dictionnary will be processed in the order of declaration, which relies on using Python >= 3.7 (making `dict` ordered by default). If not provided, it is inited by default with a pipeline suitable for bilingual English/French language processing on technical writings (see notes).
+            meta_token: the pipeline of regular expressions to replace with meta-tokens. Keys must be `re.Pattern` declared with `re.compile()`, values must be meta-tokens assumed to be nested in underscores. The pipeline dictionnary will be processed in the order of declaration, which relies on using Python >= 3.7 (making `dict` ordered by default). If not provided, it is inited by default with a pipeline suitable for bilingual English/French language processing on technical writings (see notes).
             abbreviations (dict[str: str]): pipeline of abbreviations to replace, as `to_replace: replacement` dictionnary. Will be processed in order of declaration.
-            lemmatizer: custom lemmatizer. If not defined, defaults to `nltk.WordNetLemmatizer`.
-
         """
         if meta_tokens is None:
             self.meta_tokens_pipe = {
@@ -547,8 +484,21 @@ class Word2Vec(gensim.models.Word2Vec):
         return cls.load(get_models_folder(name))
 
 
-    def get_word(self, word: str, spellcheck: bool = False) -> str:
-        """Find out if word is in dictionary, or attempt spellchecking if not. Return None if nothing worked."""
+    def get_word(self, word: str, spellcheck: bool = False) -> str | None:
+        """Find out if word is in dictionary, optionnaly attempting spell-checking if not found.
+
+        Arguments:
+            word: word to find
+            spellcheck: whether or not to attempt spellchecking through basic letter permutations (Peter Norvig's algo) to find the closest match in dictionnary if the word is not found in the embedding corpus. This is crazy slow, especially on long words, you may want to enable it sparingly (on short sentences, not on full documents). [^1]
+
+        [^1]: How to Write a Spelling Corrector (2007-2016), Peter Norvig https://norvig.com/spell-correct.html
+
+        Returns:
+            (str | None):
+                - the original word if found in dictionnary,
+                - the closest word in dictionnary if not found and spellchecking is enabled,
+                - `None` if both previous conditions were not matched.
+        """
         if word:
             if word in self.wv:
                 # Word exists in dictionnary
@@ -561,22 +511,20 @@ class Word2Vec(gensim.models.Word2Vec):
         return None
 
 
-    def get_wordvec(self, word: str, embed:str = "IN", spellcheck: bool = False) -> np.array:
+    def get_wordvec(self, word: str, embed:str = "IN", spellcheck: bool = False) -> np.ndarray | None:
         """Return the vector associated to a word, through a dictionnary of words.
 
         Arguments:
-            word (str): the word to convert to a vector.
-            embed (str): `IN` or `OUT`. The default, `IN` usis the input embedding matrix (gensim.Word2Vec.wv), useful to vectorize queries and documents for classification training. `OUT` uses `gensim.Word2Vec.syn1neg`, useful for the dual-space embedding scheme, to train search engines.
-            spellcheck (bool): attempt spellchecking through basic letter permutations (Peter Norvig's algo) to find the closest match in dictionnary if the word is not found in the embedding corpus. This is crazy slow, you may want to enable it sparingly. [^1]
+            word: the word to convert to a vector.
+            embed:
+                - `IN` uses the input embedding matrix [gensim.models.Word2Vec.wv][], useful to vectorize queries and documents for classification training.
+                - `OUT` uses the output embedding matrix [gensim.models.Word2Vec.syn1neg], useful for the dual-space embedding scheme, to train search engines. [^1]
+            spellcheck: see [core.nlp.Word2Vec.get_word][]
 
-        [^1]: https://norvig.com/spell-correct.html
-
-        References:
-            A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana
-            https://arxiv.org/pdf/1602.01137.pdf
+        [^1]: A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana https://arxiv.org/pdf/1602.01137.pdf
 
         Returns:
-            the nD vector.
+            the nD vector if the word was found in the dictionnary, or `None`.
         """
         x = self.get_word(word, spellcheck)
 
@@ -595,28 +543,16 @@ class Word2Vec(gensim.models.Word2Vec):
             return None
 
 
-    def get_features(self, tokens: list, embed: str = "IN", spellcheck: bool = False) -> np.array:
-        """Extract word features from the text of `post`.
-
-        We use meta-features like date, prices, time, number that discard the actual value but retain the property.
-        That is, we don't care about the actual date, price or time, we only care that there is a date, price or time.
-        Meta-features are tagged with random hashes as to not be mistaken with text.
-
-        For everything else, we use the actual words.
+    def get_features(self, tokens: list[str], embed: str = "IN", spellcheck: bool = False) -> np.ndarray:
+        """Calls [core.nlp.Word2Vec.get_wordvec][] over a list of tokens and returns a single vector representing the whole list.
 
         Arguments:
-            tokens (list[str]): if given, we discard internal tokenization and normalization and directly use this list of tokens. The need to be normalized already.
-            num_features (int): the number of dimensions of the featureset. This is vector size used in the `Word2Vec` model.
-            wv (gensim.models.KeyedVector): the dictionnary mapping words with vectors,
-            syn1neg (np.array): the W_out matrix for word embedding, in the Dual Embedding Space Model. [^1] If not provided, embedding uses the default W_in matrix. W_out is better to vectorize documents for search-engine purposes.
-            language (str): the language used to detect dates and detect words separators used in tokenization. Supports `"french"` and `"english"`.
-            spellcheck (bool): attempt spellchecking through basic letter permutations (Peter Norvig's algo) to find the closest match in dictionnary if the word is not found in the embedding corpus. This is crazy slow, you may want to enable it sparingly. [^2]
+            tokens: list of text tokens.
+            embed: see [core.nlp.Word2Vec.get_wordvec][]
+            spellcheck: see [core.nlp.Word2Vec.get_wordvec][]
 
-        [^1]: https://arxiv.org/pdf/1602.01137.pdf
-        [^2]: https://norvig.com/spell-correct.html
-
-        Return:
-            (np.array) list of vectors (2nd axis) for each token (1st axis)
+        Returns:
+            the centroid of word embedding vectors associated with the input tokens (aka the average vector), or the null vector if no word from the list was found in dictionnary.
         """
         features = np.zeros(self.vector_size)
         i = 0
@@ -633,7 +569,7 @@ class Word2Vec(gensim.models.Word2Vec):
 
         return features
 
-class Classifier(SklearnClassifier):
+class Classifier(nltk.classify.SklearnClassifier):
     def __init__(self,
                  training_set: list[Data],
                  name: str,
@@ -755,7 +691,7 @@ class search_methods(IntEnum):
     FUZZY = 2
     GREP = 3
 
-class Indexer(SklearnClassifier):
+class Indexer():
     def __init__(self,
                  data_set: list,
                  name: str,
@@ -842,7 +778,7 @@ class Indexer(SklearnClassifier):
         #del self.syn1neg
 
         # Save the model to a reusable object
-        joblib.dump(self, get_models_folder(name + ".joblib"))
+        joblib.dump(self, get_models_folder(name + ".joblib.bz2"), compress=9, protocol=pickle.HIGHEST_PROTOCOL)
 
 
     def get_features_parallel(self, tokens: list[str]) -> tuple[str, str]:
@@ -859,7 +795,7 @@ class Indexer(SklearnClassifier):
     @classmethod
     def load(cls, name: str):
         """Load an existing trained model by its name from the `../models` folder."""
-        model = joblib.load(get_models_folder(name) + ".joblib")
+        model = joblib.load(get_models_folder(name) + ".joblib.bz2")
         if isinstance(model, Indexer):
             return model
         else:
@@ -870,7 +806,7 @@ class Indexer(SklearnClassifier):
         return self.word2vec.tokenizer.tokenize_document(query, meta_tokens=False)
 
 
-    def vectorize_query(self, tokenized_query: list[str]) -> tuple[np.array, float, list[str]]:
+    def vectorize_query(self, tokenized_query: list[str]) -> tuple[np.ndarray, float, list[str]]:
         """Prepare a text search query: cleanup, tokenize and get the centroid vector.
 
         Returns:
@@ -888,7 +824,7 @@ class Indexer(SklearnClassifier):
         return vector, norm, tokenized_query
 
 
-    def rank_grep(self, query: re.Pattern|str) -> np.array:
+    def rank_grep(self, query: re.Pattern|str) -> np.ndarray:
         if not (isinstance(query, str) or isinstance(query, re.Pattern)):
             raise ValueError("Wrong query type (%s) for GREP ranking method. Should be string or regular expression pattern" % type(query))
 
@@ -899,14 +835,14 @@ class Indexer(SklearnClassifier):
         return results
 
 
-    def rank_fuzzy(self, tokens: list[str]) -> np.array:
+    def rank_fuzzy(self, tokens: list[str]) -> np.ndarray:
         if not isinstance(tokens, list):
             raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(query))
 
         return self.ranker.get_scores(tokens)
 
 
-    def rank_ai(self, query: tuple) -> np.array:
+    def rank_ai(self, query: tuple) -> np.ndarray:
         if not isinstance(query, tuple):
             raise ValueError("Wrong query type (%s) for AI ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
 

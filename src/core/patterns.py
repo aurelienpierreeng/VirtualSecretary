@@ -36,6 +36,7 @@ DATE_PATTERN = re.compile(r"((\d{2,4})(?:-|\/)(\d{2})(?:-|\/)(\d{2,4}))")
 
 TIME_PATTERN = re.compile(r"(\d{1,2}) ?(?:(h|H|:|am|pm|AM|PM)) ?(\d{2}|)?(?:\:(\d{2}))? ?(h|H|am|pm|AM|PM|Z|UTC)? ?((?:\+|\-)\d{1,2})?")
 """Identify more or less standard time patterns, like :
+
 - 12h15
 - 12:15
 - 12:15:00
@@ -47,16 +48,17 @@ TIME_PATTERN = re.compile(r"(\d{1,2}) ?(?:(h|H|:|am|pm|AM|PM)) ?(\d{2}|)?(?:\:(\
 - 12:15:00 UTC+1
 
 Returns:
-  group[0]: 1- or 2-digits hour,
-  group[1]: hour/minutes separator or half-day marker among `["h", ":", "am", "pm"]` (case-insensitive)
-  group[2]: 2-digits minutes, if any, or `None`
-  group[3]: 2-digits seconds, if any.
-  group[4]: hour marker (`h` or `H`), half-day marker (case-insensitive `["am", "pm"]`), or time zone marker (case-sensitive `["Z", "UTC"]`)
-  group[5]: 1-or 2-digits signed integer timezone shift (referred to UTC).
+  0 (str): 1- or 2-digits hour,
+  1 (str): hour/minutes separator or half-day marker among `["h", ":", "am", "pm"]` (case-insensitive)
+  2 (str): 2-digits minutes, if any, or `None`
+  3 (str): 2-digits seconds, if any.
+  4 (str): hour marker (`h` or `H`), half-day marker (case-insensitive `["am", "pm"]`), or time zone marker (case-sensitive `["Z", "UTC"]`)
+  5 (str): 1-or 2-digits signed integer timezone shift (referred to UTC).
 
 Examples:
-  see https://regex101.com/r/QNtZAK/2
-  see `src/tests/test-patterns.py`
+    see https://regex101.com/r/QNtZAK/2
+
+    see `src/tests/test-patterns.py`
 """
 
 # IMAP-specific patterns
@@ -161,3 +163,106 @@ TEMPERATURE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0
 
 FREQUENCY = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(nano|n|micro|µ|milli|m|centi|c|deci|d|deca|hecto|kilo|k|mega|giga|g)?(Hz|hertz)(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
 """Frequencies in hertz and multiples"""
+
+
+TEXT_DATES = re.compile(r"([0-9]{1,2})? (jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|jan|fév|mar|avr|mai|jui|jui|aou|sep|oct|nov|déc|janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre|january|february|march|april|may|june|july|august|september|october|november|december)\.?( [0-9]{1,2})?( [0-9]{2,4})(?!\:)",
+                        flags=re.IGNORECASE | re.MULTILINE)
+"""Find textual dates formats:
+
+- English dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
+- French dates like `01 Jan 20` or `01 Jan. 2020` but avoid capturing adjacent time like `12:08`.
+
+Returns:
+    0 (str): 2 digits (day number or year number, depending on language)
+    1 (str): month (full-form or abbreviated)
+    2 (str): 2 digits (day number or year number, depending on language)
+    3 (str): 4 digits (full year)
+"""
+
+BASE_64 = re.compile(r"((?:[A-Za-z0-9+\/]{4}){64,}(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=)?)")
+"""Identifies base64 encoding"""
+
+BB_CODE = re.compile(r"\[(img|quote)[a-zA-Z0-9 =\"]*?\].*?\[\/\1\]")
+"""Identifies left-over BB code markup `[img]` and `[quote]`"""
+
+MARKUP = re.compile(r"(?:\[|\{|\<)([^\n\r]+?)(?:\]|\}|\>)")
+"""Identifies left-over HTML and Markdown markup, like `<...>`, `{...}`, `[...]`"""
+
+USER = re.compile(r"(\S+)?@(\S+)|(user\-?\d+)")
+"""Identifies user handles or emails"""
+
+REPEATED_CHARACTERS = re.compile(r"(.)\1{9,}")
+"""Identifies any character repeated more than 9 times"""
+
+UNFINISHED_SENTENCES = re.compile(r"(?<![?!.;:])\n\n")
+"""Identifies sentences finishing with 2 newlines characters without having ending punctuations"""
+
+MULTIPLE_DOTS = re.compile(r"\.{2,}")
+"""Identifies dots repeated more than twice"""
+
+MULTIPLE_DASHES = re.compile(r"-{1,}")
+"""Identifies dashes repeated more than once"""
+
+MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
+"""Identifies question marks repeated more than once"""
+
+ORDINAL_FR = re.compile(r"n° ?([0-9]+)")
+"""French ordinal numbers (numéros n°)"""
+
+FRANCAIS = re.compile(r"(?<=^|[\s\(\[\:]|lors|quel)(j|t|s|l|d|qu|m|c)\'(?=[aeiouyéèàêâîôûïüäëöh])", flags=re.IGNORECASE)
+"""French contractions of pronouns and determinants"""
+
+
+PLURAL_S = re.compile(r"(?<=\w{3,})s?e{0,2}s(?=\s|$|[.;:,])")
+"""Identify plural form of nouns (French and English), adjectives (French) and third-person present verbs (English) and second-person verbs (French) in -s."""
+
+FEMININE_E = re.compile(r"(?<=\w{3,})e{1,2}(?=\s|$|[.;:,])")
+"""Identify feminine form of adjectives (French) in -e."""
+
+DOUBLE_CONSONANTS = re.compile(r"(?<=\w{2,})([^aeiouy])\1")
+"""Identify double consonants in the middle of words."""
+
+FEMININE_TRICE = re.compile(r"(?<=\w{2,})t(rice|eur|or)(?=\s|$|[.;:,])")
+"""Identify French feminine nouns in -trice."""
+
+ADVERB_MENT = re.compile(r"(?<=\w)e?ment(?=\s|$|[.;:,])")
+"""Identify French adverbs and English nouns ending en -ment"""
+
+SUBSTANTIVE_TION = re.compile(r"(?<=\w)(t|s)ion(?=\s|$|[.;:,])")
+"""Identify French and English substantives formed from verbs by adding -tion and -sion"""
+
+SUBSTANTIVE_AT = re.compile(r"(?<=\w{4,})at(?=\s|$|[.;:,])")
+"""Identify French and English substantives formed from other nouns by adding -at"""
+
+PARTICIPLE_ING = re.compile(r"(?<=\w{3,})ing(?=\s|$|[.;:,])")
+"""Identify English substantives and present participles formed from verbs by adding -ing"""
+
+ADJECTIVE_ED = re.compile(r"(?<=\w{3,})ed(?=\s|$|[.;:,])")
+"""Identify English adjectives formed from verbs by adding -ed"""
+
+ADJECTIVE_TIF = re.compile(r"(?<=\w{2,})ti(f|v)(?=\s|$|[.;:,])")
+"""Identify English and French adjectives formed from verbs by adding -tif or -tive"""
+
+SUBSTANTIVE_Y = re.compile(r"(?<=\w{3,})y(?=\s|$|[.;:,])")
+"""Identify English substantives ending in -y"""
+
+VERB_IZ = re.compile(r"(?<=\w{3,})(i|y)z(?=\s|$|[.;:,])")
+"""Identify American verbs ending in -iz that French and Brits write in -is"""
+
+STUFF_ER = re.compile(r"(?<=\w{3,})er(?=\s|$|[.;:,])")
+"""Identify French 1st group verb (infinitive) and English substantives ending in -er"""
+
+BRITISH_OUR = re.compile(r"(?<=\w{3,})our(?=\s|$|[.;:,\-])")
+"""Identify British spelling ending in -our (colour, behaviour)."""
+
+SUBSTANTIVE_ITY = re.compile(r"(?<=\w{4,})it(y|e)(?=\s|$|[.;:,])")
+"""Identify substantives in -ity (English) and -ite (French)."""
+
+SUBSTANTIVE_IST = re.compile(r"(?<=\w{3,})is(t|m)(?=\s|$|[.;:,])")
+"""Identify substantives in -ist and -ism."""
+
+SUBSTANTIVE_IQU = re.compile(r"(?<=\w{3,})i(qu|c)(?=\s|$|[.;:,])")
+"""Identify French substantives in -iqu"""
+
+SUBSTANTIVE_EUR = re.compile(r"(?<=\w{3,})eur(?=\s|$|[.;:,])")
+"""Identify French substantives -eur"""
