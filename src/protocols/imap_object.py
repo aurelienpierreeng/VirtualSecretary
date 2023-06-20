@@ -658,7 +658,7 @@ class EMail(connectors.Content):
     dkim_score = int(self.dkim_pass())
     arc_score = int(self.arc_pass())
     total = spf_score + dkim_score + arc_score
-    print(self["From"], arc_score, "+", spf_score, "+", dkim_score, "=", total)
+    #print(self["From"], arc_score, "+", spf_score, "+", dkim_score, "=", total)
     return total
 
   def is_authentic(self) -> bool:
@@ -880,8 +880,6 @@ Attachments : %s
 
 
   def __init__(self, raw_message:list, server):
-    # Position of the email in the server list
-    super().__init__(raw_message, server)
 
     self.urls = []
     """`list[tuple[str]]`: List of URLs found in email body."""
@@ -894,6 +892,12 @@ Attachments : %s
 
     self.server: 'Server'
     """`(Server)`: back-reference to the [Server][protocols.imap_server.Server] instance from which the current email is extracted."""
+
+    # Position of the email in the server list
+    super().__init__(raw_message, server)
+
+    # Timeout if server mode is on
+    self.server.secretary.server_breathe()
 
     # Raw message as fetched by IMAP, decode IMAP headers
     try:
@@ -910,7 +914,7 @@ Attachments : %s
     # No exception handling here, let it fail. Email validity should be checked at server level
     self.raw = raw_message[1]
     self.msg : email.message.EmailMessage = email.message_from_bytes(self.raw, policy=policy.default)
-    """`(email.message.EmailMessage)` standard Python email object"""
+    """Standard Python email object"""
 
     # Get "a" date for the email
     self.get_date()
