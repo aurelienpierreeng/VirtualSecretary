@@ -17,7 +17,7 @@ To run it from the non-extracted AppImage (on systems supporting FUSE):
 To run it from the extracted AppImage (as shown above — assuming you extracted it to `appimage/`), on systems not supporting FUSE:
 
 ```bash
-./appimage/AppRun virtualsecretary/src/main.py virtualsecretary/config/  process
+./python3.11/AppRun virtualsecretary/src/main.py virtualsecretary/config/ process
 ```
 
 ## With Cron job
@@ -26,5 +26,5 @@ You can run your filters every `n` minutes, on Linux desktop and servers, using 
 
 ```bash
 contab -e
-*/10 * * * * python gazette/virtual-secretary/src/main.py
+*/10 * * * * python ~/VirtualSecretary/src/main.py ~/VirtualSecretary/config process --server
 ```

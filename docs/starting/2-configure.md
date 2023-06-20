@@ -1,4 +1,6 @@
-**Virtual Secretary** is designed to require as little programming as possible while still retaining the full potential of Python should you need it. The configuration is done by using declarative `settings.ini` files and templated Python filters. 
+# Configure
+
+**Virtual Secretary** is designed to require as little programming as possible while still retaining the full potential of Python should you need it. The configuration is done by using declarative `settings.ini` files and templated Python filters.
 
 An example configuration is provided in the repository in the `examples` folder, you can copy it somewhere and start editing it.
 
@@ -10,7 +12,7 @@ An example configuration is provided in the repository in the `examples` folder,
 
 Let's say your configuration base folder is called `config` for simplicity. It should contain at least a subfolder `common`, for global filters, and an email subfolder that you can call whatever you want. You may add as many subfolders as you want and name them as you want, only the `common` on is mandatory and subfolders will be processed in alphabetical order.
 
-Each subfolder (except `common`) should contain a `settings.ini` file containing the credentials (server, login, password) for all your IMAP, SMTP, CardDAV, CalDAV and MySQL accounts. Each folder can be set for at most one account for each protocol, if you need to configure a "one to many" or a "many to one" kind of situation, you have to manage each input -> output combination in a separate subfolder. `settings.ini` files should look like that : 
+Each subfolder (except `common`) should contain a `settings.ini` file containing the credentials (server, login, password) for all your IMAP, SMTP, CardDAV, CalDAV and MySQL accounts. Each folder can be set for at most one account for each protocol, if you need to configure a "one to many" or a "many to one" kind of situation, you have to manage each input -> output combination in a separate subfolder. `settings.ini` files should look like that :
 
 ```ini
 [imap]
@@ -36,9 +38,9 @@ After the prefix comes, separated by a dash `-`, comes the name of the trigger p
 Finally, the mnemonic name of the filter, separated again by a dash `-` from the previous. This is some meaningful name that will help you sort your filters for admin purposes. They accept letters (upper and lower case), digits, dashes and underscores.
 
 
-### Summary 
+### Summary
 
-That should leave you with something like : 
+That should leave you with something like :
 
 * `/config/`:
   * `/common/`:
@@ -66,7 +68,7 @@ Gmail IMAP uses TLS on the default port (993) and Gmail SMTP uses TLS on the def
 
 #### Outlook and Office365
 
-As of 2022, Outlook users are the free accounts and Office365 are the paying accounts. Both support IMAP over TLS with the default port (993), so it's easy. 
+As of 2022, Outlook users are the free accounts and Office365 are the paying accounts. Both support IMAP over TLS with the default port (993), so it's easy.
 
 However, Outlook (free) SMTP does **not** support TLS but only STARTTLS. This is not supported in *Virtual Secretary* because it's not secure enough. You can use a different SMTP provider though, like Gmail or anything self-hosted.
 
