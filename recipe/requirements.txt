@@ -16,3 +16,15 @@ regex
 pyspellchecker
 PyPDF
 pycryptodome
+pdf2image
+Pillow
+opencv-python
+pytesseract
+mkdocs
+mkdocs-material
+mkdocs-autorefs
+mkdocstrings
+mkdocstrings-python
+markdown-callouts
+black
+griffe
