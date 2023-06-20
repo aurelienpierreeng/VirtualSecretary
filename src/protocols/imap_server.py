@@ -158,17 +158,22 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         Returns:
             message (imap_object.EMail): the email object.
         """
+        previous_mailbox = self.mailbox
+
         if mailbox:
             self.select(mailbox)
 
         message = None
-        result, msg = self.uid('FETCH', uid, '(UID FLAGS BODY.PEEK[])', None)
 
-        if result == "OK" and msg[0]:
-            message = imap_object.EMail(msg[0], self)
+        try:
+            result, msg = self.uid('FETCH', uid, '(UID FLAGS BODY.PEEK[])', None)
+            if result == "OK" and msg[0]:
+                message = imap_object.EMail(msg[0], self)
+        except Exception as e:
+            print("Fetching email failed: %s" % e)
 
         if mailbox:
-            self.select(mailbox)
+            self.select(previous_mailbox)
 
         return message
 
