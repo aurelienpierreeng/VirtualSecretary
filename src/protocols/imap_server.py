@@ -226,27 +226,51 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 self.logfile.write("%s : Reached mailbox %s : %i emails found, loading only the first %i\n" % (
                     utils.now(), mailbox, num_messages, n_messages))
 
-            except:
+            except Exception as e:
                 retries += 1
                 timeout = 2**retries
 
                 # Wait some seconds before next connection attempt.
                 # Increase the timeout in case there is a threshold on server
-                print("  Could not get the emails from %s, will retry in %i s." % (mailbox, timeout))
+                print("  Could not get the emails from %s, will retry in %i s: %s" % (mailbox, timeout, e))
                 time.sleep(timeout)
 
             if has_something and status == "OK":
                 # build a coma-separated list of IDs from start to end
-                ids = [str(x) for x in range(max(num_messages - n_messages + 1, 1), num_messages + 1)]
-                ids = ",".join(ids)
+                status, ids = self.search(None, 'All')
+                ids = ids[0].decode().split()
+                # ids indexing starts at 1 in IMAP
+                ids = ids[0 : min(n_messages, len(ids))]
+                messages_queue = []
 
                 try:
-                    self.__reinit_connection()
-                    status, messages_queue = self.fetch(ids, "(UID FLAGS BODY.PEEK[])")
-                except:
+                    # Fetch emails by chunks. This limits socket errors (EOF)
+                    chunk_size = 25
+                    chunks = len(ids) // chunk_size
+                    remainder = len(ids) % chunk_size
+                    if remainder > 0:
+                        chunks += 1
+
+                    for c in range(chunks):
+                        chunk_ids = ",".join(ids[c * chunk_size : min(len(ids), (c + 1) * chunk_size)])
+                        print(chunk_ids)
+                        messages = []
+                        runs = 0
+                        while not messages and runs < 5:
+                            runs += 1
+                            self.__reinit_connection()
+                            try:
+                                status, messages = self.fetch(chunk_ids, "(UID FLAGS BODY.PEEK[])")
+                                messages_queue += messages
+                            except Exception as e:
+                                print("  IMAP fetch failed on chunk %s: %s" % (chunk_ids, e))
+                                print("retrying...")
+
+
+                except Exception as e:
                     retries += 1
                     timeout = 2**retries
-                    print("  IMAP fetch failed")
+                    print("  IMAP fetch failed: %s" % e)
                     time.sleep(timeout)
 
         # When fetching emails in bulk, a weird "41" gets inserted between each record
