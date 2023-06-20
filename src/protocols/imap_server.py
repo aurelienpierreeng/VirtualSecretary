@@ -146,7 +146,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         self.std_out = mail_list
 
 
-    def get_email(self, uid: str, mailbox=None) -> imap_object.EMail:
+    def get_email(self, uid: str, mailbox=None) -> imap_object.EMail | None:
         """Get an arbitrary email by its UID. If no mailbox is specified,
         use the one defined when we got objects in `self.set_objects()`.
 
@@ -363,13 +363,15 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         ts = time.time()
         filter_success = False # Did the filter run succeed, regardless of output value ?
 
-        for email in self.objects:
+        for message in self.objects:
             # Do we need to run the filter on this one ?
-            if runs == -1:
+            self.secretary.server_breathe()
+
+            if runs == -1 or self.secretary.force:
                 filter_on = True
-            elif email.hash in log[self.server][self.user] and \
-                 "processed" in log[self.server][self.user][email.hash]:
-                filter_on = log[self.server][self.user][email.hash]["processed"] < runs
+            elif message.hash in log[self.server][self.user] and \
+                 "processed" in log[self.server][self.user][message.hash]:
+                filter_on = log[self.server][self.user][message.hash]["processed"] < runs
             else:
                 filter_on = True
 
@@ -378,10 +380,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
             # Run the  filter
             if filter_on and filter:
                 try:
-                    filter_on = filter(email)
+                    filter_on = filter(message)
                     filter_success = True
                 except Exception as e:
-                    print("Filter failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
+                    print("Filter failed on", message["Subject"], "from", message["From"], "to", message["To"], "on", message["Date"])
                     print(e)
                     filter_on = False
 
@@ -397,9 +399,9 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 self.__reinit_connection()
 
                 try:
-                    action(email)
+                    action(message)
                 except Exception as e:
-                    print("Action failed on", email["Subject"], "from", email["From"], "to", email["To"], "on", email["Date"])
+                    print("Action failed on", message["Subject"], "from", message["From"], "to", message["To"], "on", message["Date"])
                     print(e)
                     filter_success = False
 
@@ -407,10 +409,10 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 if filter_success:
                     # filter executed with no error AND action executed with no error if it needed to run:
                     # log it as a success to avoid reprocessing it on next run.
-                    self.__update_log_dict(email, log, "processed")
+                    self.__update_log_dict(message, log, "processed")
                 else:
                     # either the filter or the action errored: log it. Best luck next time ?
-                    self.__update_log_dict( email, log, "errored")
+                    self.__update_log_dict(message, log, "errored")
 
         # If the action deleted emails, at this point they will only be marked with the tag `\DELETED`.
         # The following will actually remove them. We only need to run it once per email loop/mailbox.
@@ -436,8 +438,8 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         # Criteria will typically the presence of some flags
         # TODO: test it ?
         number = 0
-        for email in self.objects:
-            func = getattr(email, method)
+        for message in self.objects:
+            func = getattr(message, method)
             if func():
                 number += 1
 
@@ -446,7 +448,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
     def init_connection(self, params: dict):
         # High-level method to login to a server in one shot. The parameters are passed by the `secretary.Secretary.load_connectors()` caller.
-        self.n_messages = int(params["entries"])
+        self.n_messages = int(params["entries"]) if not self.secretary.number else self.secretary.number
         self.server = params["server"]
         self.user = params["user"]
         self.password = params["password"] # TODO: hash that in RAM ?
@@ -465,16 +467,20 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         # Probe the connection to see if it's still open
         try:
             self.std_out = self.noop()
+            # print("probing connection: ", self.std_out[0])
             return self.std_out[0] == "OK"
         except:
             return False
 
 
-    def __reinit_connection(self):
+    def __reinit_connection(self, force: bool = False):
         # Restart the IMAP connection using previous parameters, to prevent deconnections from time-outs
         if self.__probe_connection():
-            # We still have an open connection, nothing to reinit
-            return
+            if not force:
+                # We still have an open connection, nothing to reinit
+                return
+            else:
+                self.logout()
 
         # No connection open, need to (re)start one
         try:
