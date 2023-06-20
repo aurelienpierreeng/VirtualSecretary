@@ -1,1 +1,1 @@
-::: secretary.Secretary
+::: core.secretary.Secretary

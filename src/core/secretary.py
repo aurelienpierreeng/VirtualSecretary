@@ -93,8 +93,6 @@ class Secretary(object):
     self.number = number
     self.force = force
 
-    print(self.number, self.server_mode)
-
     self.config_file = configparser.ConfigParser()
     self.config_file.read(os.path.join(subfolder_path, "settings.ini"))
 

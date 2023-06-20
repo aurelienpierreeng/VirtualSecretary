@@ -1,2 +1,2 @@
 
-::: connectors
+::: core.connectors

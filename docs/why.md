@@ -6,28 +6,37 @@ Emails are underrated.
 
 Chats, forums and social medias all tried to replace them with something cooler : Facebook, Google chat/hangout, Slack, Matrix, Telegram, Discord, Discourse, Github… Your digital communications are now scattered over many platforms that promised you to make emails outdated. From there, you have 2 options :
 
-1. install all the desktop & mobile apps of all the platforms you use on your mobile/desktop device, then get flooded with notifications at the worst possible time and have your batteries drained to refresh everything all the time, while still being unable to address the notifications content because typing on touch screens is a pain, and so is reading text on 5'' screens where the visual keyboard takes a 4th of the space.
+1. install all the desktop & mobile apps of all the platforms you use on your mobile/desktop device, then get flooded with notifications at the worst possible time and have your batteries drained to refresh everything all the time, while still being unable to address the notifications content because typing on touch screens is a pain, and so is reading text on 5'' screens where the visual keyboard takes a quarter of the space.
 2. centralize all notifications to your email box, then enjoy the paradox of all these emails created by services meant to replace them and the overwhelming of having notifications you can discard hiding important stuff requiring action.
 
 So, trying to replace emails just failed.
 
-Anyway, there are lots of hardly-replaceable uses for emails, like sending account credentials, password resets, unique password, security warnings, communicating with businesses, institutions, calendar events invites, etc. Not to mention, all those direct emails from individuals who still use them.
+Anyway, there are lots of hardly-replaceable uses for emails, like sending account credentials, password resets, unique passwords for double auth, security warnings, communicating with businesses, institutions, calendar events invites, etc. Not to mention, all those direct emails from individuals who still use them.
 
 People are convinced emails are bad because they hinder their productivity, but it's just that they don't use them properly.
+
+## What are emails ?
+
+Emails are pieces of text, possibly with media attachments, sent between two users, with a subject and a date.
+
+Realize that description applies to pretty much all electronic communications, from SMS to forum posts, blog comments, social media posts/comments/direct messages, etc. ?
+
+The huge difference is emails are decentralized while being centralized. Decentralized because you can send messages to users who don't have an account on the same server as you (seems like the web 3.0 idiots just dicovered that now, but felt the urge to coat it with bloaty CPU-burning blockchain). Centralized because you can gather messages from many servers to a single place, avoiding to open many websites and applications to check all your channels.
+
 
 ## Why emails suck ?
 
 Emails suck for 3 reasons:
 
-1. Desktop email clients suck,
+1. Desktop and mobile email clients suck, as well as mobile apps,
 2. 85 to 90% of emails are spam or unwanted bulk/newsletters emailing, but spam filters suck,
-3. Webmails suck.
+3. You can't decide who is allowed to send you emails.
 
-Note that none of these reasons actually concerns emails as a communication medium. What sucks is how poorly they are managed by office applications and integrated into our modern ecosystem of office tools.
+Note that none of these reasons actually affect emails as a communication medium: what sucks is how poorly they are managed by office applications and integrated into our modern ecosystem of office tools. Imagine if someone put as much effort into a mobile email app as Whatsapp (yes, that would give Blackberry Hub)…
 
 Basically, emails are the communication service of the digital office aka the glue between people, servers and services. What sucks in email clients is they are self-centered and don't really connect to the rest of your services, like your customers SQL database, your agenda, your contact book, etc.
 
-The key to good email use is to filter and sort emails depending on their importance and whether they require an action from you. To achieve that, you need more than looking *inside* emails, you need to connect with other servers and sources to cross-check the content of emails and apply filters and workflows.
+The key to good email use is to filter and sort emails depending on their importance and whether they require an action from you. To achieve that, you need more than looking *inside* emails, you need to connect email content with other servers and sources to apply filters and workflows.
 
 ### Email filters
 
