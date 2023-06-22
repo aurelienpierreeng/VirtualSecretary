@@ -244,8 +244,8 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
                 # build a coma-separated list of IDs from start to end
                 status, ids = self.search(None, 'All')
                 ids = ids[0].decode().split()
-                # ids indexing starts at 1 in IMAP
-                ids = ids[0 : min(n_messages, len(ids))]
+                # ids indexing starts at 1 in IMAP, where 1 is the older message
+                ids = ids[-min(n_messages, len(ids)):]
                 messages_queue = []
 
                 try:
@@ -258,7 +258,6 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
                     for c in range(chunks):
                         chunk_ids = ",".join(ids[c * chunk_size : min(len(ids), (c + 1) * chunk_size)])
-                        print(chunk_ids)
                         messages = []
                         runs = 0
                         while not messages and runs < 5:
