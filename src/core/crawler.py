@@ -48,6 +48,9 @@ class web_page(TypedDict):
     lang: str
     """2-letters code of the page language. Not used internally, it's important only if you need to use it in implementations."""
 
+    category: str
+    """Arbitrary category or label set by user"""
+
 
 headers = {
             'User-Agent': 'Virtual Secretary 0.1 Unix',
@@ -233,7 +236,13 @@ def _get_pdf_outline(reader: PdfReader, document_title:str) -> tuple[list[str], 
 hyphenized = re.compile(r"-[\n\r](?=\w)")
 
 
-def get_pdf_content(url: str, lang: str, file_path: str = None, process_outline: bool = True, ocr: int = 1, **kwargs) -> list[web_page]:
+def get_pdf_content(url: str,
+                    lang: str,
+                    file_path: str = None,
+                    process_outline: bool = True,
+                    category: str = None,
+                    ocr: int = 1,
+                    **kwargs) -> list[web_page]:
     """Retrieve a PDF document through the network with HTTP GET or from the local filesystem, and parse its text content, using OCR if needed. This needs a functionnal network connection if `file_path` is not provided.
 
     Arguments:
@@ -241,6 +250,7 @@ def get_pdf_content(url: str, lang: str, file_path: str = None, process_outline:
         lang: the ISO code of the language.
         file_path: local path to the PDF file if the URL can't be directly fetched by GET request. The content will be extracted from the local file but the original/remote URL will still be referenced as the source.
         process_outline: set to `True` to split the document according to its outline (table of content), so each section will be in fact a document in itself. PDF pages are processed in full, so sections are at least equal to a page length and there will be some overlapping.
+        category: arbitrary category or label set by user
         ocr:
             - `0` disables any attempt at using OCR,
             - `1` enables OCR through Tesseract if no text was found in the PDF document
@@ -305,7 +315,8 @@ def get_pdf_content(url: str, lang: str, file_path: str = None, process_outline:
                                     excerpt=excerpt,
                                     h1=[],
                                     h2=[],
-                                    lang=lang)
+                                    lang=lang,
+                                    category=category)
                 print(result)
                 return [result]
 
@@ -331,7 +342,8 @@ def get_pdf_content(url: str, lang: str, file_path: str = None, process_outline:
                                         excerpt=None,
                                         h1=[],
                                         h2=[],
-                                        lang=lang)
+                                        lang=lang,
+                                        category=category)
                     print(result)
                     results.append(result)
 
@@ -524,7 +536,10 @@ def get_date(html: BeautifulSoup):
     return date
 
 
-def parse_page(page: BeautifulSoup, url: str, lang: str, markup: str | list[str], date: str = None) -> list[web_page]:
+def parse_page(page: BeautifulSoup, url: str,
+               lang: str, markup: str | list[str],
+               date: str = None,
+               category: str = None) -> list[web_page]:
     """Get the requested markup from the requested page URL.
 
     This chains in a single call:
@@ -539,6 +554,7 @@ def parse_page(page: BeautifulSoup, url: str, lang: str, markup: str | list[str]
         lang: the provided or guessed language of the page,
         markup: the markup to search for. See [core.crawler.get_page_markup][] for details.
         date: if the page was retrieved from a sitemap, usually the date is available in ISO format (`yyyy-mm-ddTHH:MM:SS`) and can be passed directly here. Otherwise, several attempts will be made to extract it from the page content (see [core.crawler.get_date][]).
+        category: arbitrary category or label defined by user
 
     Returns:
         The content of the page, including metadata, in a [core.crawler.web_page][] singleton.
@@ -569,7 +585,8 @@ def parse_page(page: BeautifulSoup, url: str, lang: str, markup: str | list[str]
                           excerpt=excerpt,
                           h1=h1,
                           h2=h2,
-                          lang=lang)
+                          lang=lang,
+                          category=category)
         print(result)
         return [result]
     else:
@@ -591,6 +608,7 @@ class Crawler:
                                   markup: str = "body",
                                   contains_str: str = "",
                                   max_recurse_level: int = -1,
+                                  category: str = None,
                                   _recursion_level: int = 0) -> list[web_page]:
         """Recursively crawl all pages of a website from internal links found starting from the `child` page. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain.
 
@@ -602,6 +620,7 @@ class Crawler:
             contains_str (str): a string that should be contained in a page URL for the page to be indexed. On a forum, you could for example restrict pages to URLs containing `"discussion"` to get only the threads and avoid user profiles or archive pages.
             markup: see [core.crawler.get_page_markup][]
             max_recursion_level: this method will call itself recursively on each internal link found in the current page, starting from the `website/child` page. The `max_recursion_level` defines how many times it calls itself until it is stopped, if it is stopped. When set to `-1`, it stops when all the internal links have been crawled.
+            category: arbitrary category or label set by user.
             _recursion_level: __DON'T USE IT__. Everytime this method calls itself recursively, it increments this variable internally, and recursion stops when the level is equal to the `max_recurse_level`.
 
         Returns:
@@ -634,14 +653,14 @@ class Crawler:
                 # For the first recursion level, ignore "url contains" rule to allow parsing index pages
                 if index:
                     # Valid HTML response
-                    output += self._parse_original(index, index_url, default_lang, markup, None)
-                    output += self._parse_translations(index, domain, markup, None, langs)
+                    output += self._parse_original(index, index_url, default_lang, markup, None, category)
+                    output += self._parse_translations(index, domain, markup, None, langs, category)
                 else:
                     # Some websites display PDF in web applets on pages
                     # advertising content-type=text/html but UTF8 codecs
                     # fail to decode because it's actually PDF.
                     # If we end up here, it's most likely what we have.
-                    output += get_pdf_content(index_url, default_lang)
+                    output += get_pdf_content(index_url, default_lang, category)
 
             # Recall we passed there, whether or not we actually mined something
             self.crawled_URL.append(index_url)
@@ -656,10 +675,10 @@ class Crawler:
                         _child = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
                         output += self.get_website_from_crawling(
                             website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str,
-                            _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level)
+                            _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, category=category)
 
         elif "pdf" in content_type and status:
-            output += get_pdf_content(index_url, default_lang)
+            output += get_pdf_content(index_url, default_lang, category=category)
             self.crawled_URL.append(index_url)
             # No link to follow from PDF docmuents
         else:
@@ -673,7 +692,8 @@ class Crawler:
                                  default_lang: str,
                                  sitemap: str = "/sitemap.xml",
                                  langs: tuple[str] = ("en", "fr"),
-                                 markup: str = "body") -> list[web_page]:
+                                 markup: str = "body",
+                                 category: str = None) -> list[web_page]:
         """Recursively crawl all pages of a website from links found in a sitemap. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain. Sitemaps of sitemaps are followed recursively.
 
         Arguments:
@@ -682,6 +702,7 @@ class Crawler:
             sitemap: relative path of the XML sitemap.
             langs: ISO-something 2-letters code of the languages for which we attempt to fetch the translation if available, looking for the HTML `<link rel="alternate" hreflang="...">` tag.
             markup: see [core.crawler.get_page_markup][]
+            category: arbitrary category or label
 
         Returns:
             a list of all valid pages found. Invalid pages (wrong markup, empty HTML response, 404 errors) will be silently ignored.
@@ -726,21 +747,21 @@ class Crawler:
                 # We got a proper web page, parse it
                 page = get_page_content(currentURL)
                 self.crawled_URL.append(currentURL)
-                output += self._parse_original(page, currentURL, default_lang, markup, date)
-                output += self._parse_translations(page, domain, markup, date, langs)
+                output += self._parse_original(page, currentURL, default_lang, markup, date, category)
+                output += self._parse_translations(page, domain, markup, date, langs, category)
 
                 # Follow internal links to PDF documents, not necessarily hosted on the same server
-                output += self._crawl_pdf(page, domain, default_lang)
+                output += self._crawl_pdf(page, domain, default_lang, category)
             else:
                 # We got a sitemap of sitemaps, recurse over the sub-sitemaps
                 _sitemap = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
                 output += self.get_website_from_sitemap(
-                    website, default_lang, sitemap=_sitemap, langs=langs, markup=markup)
+                    website, default_lang, sitemap=_sitemap, langs=langs, markup=markup, category=category)
 
         return output
 
 
-    def _crawl_pdf(self, page, domain, default_lang):
+    def _crawl_pdf(self, page, domain, default_lang, category):
         """Try to crawl all PDF documents from links referenced in an HTML page."""
         output = []
 
@@ -750,18 +771,18 @@ class Crawler:
                 if link not in self.crawled_URL:
                     content_type, status = get_content_type(link)
                     if "pdf" in content_type and status:
-                        output += get_pdf_content(link, default_lang)
+                        output += get_pdf_content(link, default_lang, category=category)
 
                     self.crawled_URL.append(link)
 
         return output
 
 
-    def _parse_original(self, page, url, default_lang, markup, date):
-        return parse_page(page, url, default_lang, markup=markup, date=date) if page else []
+    def _parse_original(self, page, url, default_lang, markup, date, category):
+        return parse_page(page, url, default_lang, markup=markup, date=date, category=category) if page else []
 
 
-    def _parse_translations(self, page, domain, markup, date, langs):
+    def _parse_translations(self, page, domain, markup, date, langs, category):
         """Follow `<link rel="alternate" hreflang="lang" href="url">` tags declaring links to alternative language variants for the current HTML page and crawl the target pages. This works only for pages properly defining alternatives in HTML header."""
         output = []
 
@@ -777,7 +798,7 @@ class Crawler:
 
                 if "text" in content_type and status:
                     translated_page = get_page_content(translatedURL)
-                    output += self._parse_original(translated_page, translatedURL, lang, markup, date)
+                    output += self._parse_original(translated_page, translatedURL, lang, markup, date, category)
 
                 self.crawled_URL.append(translatedURL)
 
