@@ -802,8 +802,8 @@ class Indexer():
             raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
 
 
-    def tokenize_query(self, query:str) -> list[str]:
-        return self.word2vec.tokenizer.tokenize_document(query, meta_tokens=False)
+    def tokenize_query(self, query:str, meta_tokens: bool = True) -> list[str]:
+        return self.word2vec.tokenizer.tokenize_document(query, meta_tokens=meta_tokens)
 
 
     def vectorize_query(self, tokenized_query: list[str]) -> tuple[np.ndarray, float, list[str]]:
