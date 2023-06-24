@@ -740,7 +740,7 @@ class Indexer():
         # Keep only pages having at least 250 letters in their content
         self.index = {post["url"]:
                       {"title": post["title"],
-                       "excerpt": post["excerpt"] if post["excerpt"] else post["content"][0:250],
+                       "excerpt": post["excerpt"] if post["excerpt"] else post["content"][0:350],
                        "date": guess_date(post["date"]) if post["date"] else None,
                        "url": post["url"],
                        "language": guess_language(post["content"]),
