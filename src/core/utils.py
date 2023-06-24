@@ -432,7 +432,7 @@ def typography_undo(string:str) -> str:
     # Note: a quick and dirty way of discarding Unicode entities would be to
     # encode to ASCII, ignoring errors, and re-encode to UTF-8. But that would
     # remove valid accented characters too.
-    if string and type(string) == str:
+    if string and isinstance(string, str):
         string = string.translate(UNICODE_TO_ASCII)
         for key, value in SUBSTITUTIONS.items():
             string = string.replace(key, value)
