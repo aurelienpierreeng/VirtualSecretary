@@ -213,16 +213,16 @@ FRANCAIS = re.compile(r"(?<=^|[\s\(\[\:]|lors|quel)(j|t|s|l|d|qu|m|c)\'(?=[aeiou
 """French contractions of pronouns and determinants"""
 
 
-PLURAL_S = re.compile(r"(?<=\w{3,})s?e{0,2}s(?=\s|$|[.;:,])")
+PLURAL_S = re.compile(r"(?<=\w{4,})s?e{0,2}s(?=\s|$|[.;:,])")
 """Identify plural form of nouns (French and English), adjectives (French) and third-person present verbs (English) and second-person verbs (French) in -s."""
 
-FEMININE_E = re.compile(r"(?<=\w{3,})e{1,2}(?=\s|$|[.;:,])")
+FEMININE_E = re.compile(r"(?<=\w{4,})e{1,2}(?=\s|$|[.;:,])")
 """Identify feminine form of adjectives (French) in -e."""
 
 DOUBLE_CONSONANTS = re.compile(r"(?<=\w{2,})([^aeiouy])\1")
 """Identify double consonants in the middle of words."""
 
-FEMININE_TRICE = re.compile(r"(?<=\w{2,})t(rice|eur|or)(?=\s|$|[.;:,])")
+FEMININE_TRICE = re.compile(r"(?<=\w{4,})t(rice|eur|or)(?=\s|$|[.;:,])")
 """Identify French feminine nouns in -trice."""
 
 ADVERB_MENT = re.compile(r"(?<=\w)e?ment(?=\s|$|[.;:,])")
@@ -234,10 +234,10 @@ SUBSTANTIVE_TION = re.compile(r"(?<=\w)(t|s)ion(?=\s|$|[.;:,])")
 SUBSTANTIVE_AT = re.compile(r"(?<=\w{4,})at(?=\s|$|[.;:,])")
 """Identify French and English substantives formed from other nouns by adding -at"""
 
-PARTICIPLE_ING = re.compile(r"(?<=\w{3,})ing(?=\s|$|[.;:,])")
+PARTICIPLE_ING = re.compile(r"(?<=\w{4,})ing(?=\s|$|[.;:,])")
 """Identify English substantives and present participles formed from verbs by adding -ing"""
 
-ADJECTIVE_ED = re.compile(r"(?<=\w{3,})ed(?=\s|$|[.;:,])")
+ADJECTIVE_ED = re.compile(r"(?<=\w{4,})ed(?=\s|$|[.;:,])")
 """Identify English adjectives formed from verbs by adding -ed"""
 
 ADJECTIVE_TIF = re.compile(r"(?<=\w{2,})ti(f|v)(?=\s|$|[.;:,])")
@@ -246,7 +246,7 @@ ADJECTIVE_TIF = re.compile(r"(?<=\w{2,})ti(f|v)(?=\s|$|[.;:,])")
 SUBSTANTIVE_Y = re.compile(r"(?<=\w{3,})y(?=\s|$|[.;:,])")
 """Identify English substantives ending in -y"""
 
-VERB_IZ = re.compile(r"(?<=\w{3,})(i|y)z(?=\s|$|[.;:,])")
+VERB_IZ = re.compile(r"(?<=\w{4,})(i|y)z(?=\s|$|[.;:,])")
 """Identify American verbs ending in -iz that French and Brits write in -is"""
 
 STUFF_ER = re.compile(r"(?<=\w{3,})er(?=\s|$|[.;:,])")
