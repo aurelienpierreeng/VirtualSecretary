@@ -19,6 +19,7 @@ import gensim
 from gensim.models.callbacks import CallbackAny2Vec
 
 import joblib
+import pickle
 
 import numpy as np
 
@@ -260,7 +261,7 @@ class Tokenizer():
             tokens (list[str]): the list of normalized tokens.
         """
         tokens = [self.normalize_token(token.lower(), language, meta_tokens=meta_tokens)
-                  for token in nltk.word_tokenize(sentence, language=language)]
+                  for token in nltk.word_tokenize(str(sentence), language=language)]
         tokens = [item for item in tokens if isinstance(item, str)]
 
         if len(tokens) == 0:
@@ -277,7 +278,7 @@ class Tokenizer():
             text (str): the paragraph to break into sentences.
             language (str): the language of the text, used to select what pre-trained model will be used.
         """
-        return nltk.sent_tokenize(document, language=language)
+        return nltk.sent_tokenize(str(document), language=language)
 
 
     def tokenize_document(self, document:str, language:str = None, meta_tokens: bool = True) -> list[str]:
@@ -293,7 +294,7 @@ class Tokenizer():
         Returns:
             tokens (list[str]): a 1D list of normalized tokens and meta-tokens.
         """
-        document = typography_undo(document)
+        document = typography_undo(str(document))
 
         if language is None:
             language = guess_language(document)
@@ -312,7 +313,7 @@ class Tokenizer():
             tokens: a 2D list of sentences (1st axis), each containing a list of normalizel tokens and meta-tokens (2nd axis).
         """
         # TODO: prefilter n-grams ?
-        clean_text = typography_undo(document)
+        clean_text = typography_undo(str(document))
         language = guess_language(clean_text)
         clean_text = self.prefilter(clean_text, meta_tokens=meta_tokens)
         return [self.tokenize_sentence(sentence, language, meta_tokens=meta_tokens)
@@ -739,23 +740,24 @@ class Indexer():
         # The database of web pages with limited features.
         # Keep only pages having at least 250 letters in their content
         self.index = {post["url"]:
-                      {"title": post["title"],
-                       "excerpt": post["excerpt"] if post["excerpt"] else post["content"][0:350],
+                      {"title": str(post["title"]),
+                       "excerpt": str(post["excerpt"]) if post["excerpt"] else str(post["content"])[0:500],
                        "date": guess_date(post["date"]) if post["date"] else None,
                        "url": post["url"],
-                       "language": guess_language(post["content"]),
+                       "language": guess_language(str(post["content"])),
+                       "category": post["category"] if "category" in post else None,
                        "sentences": list({s
                                           for s in set(
                                               self.word2vec.tokenizer.split_sentences(
-                                                  self.word2vec.tokenizer.clean_whitespaces(
-                                                      post["content"]),
-                                                  guess_language(post["content"])))
-                                          if len(s) > 60})
+                                                  self.word2vec.tokenizer.clean_whitespaces(str(post["content"])),
+                                                  guess_language(str(post["content"]))
+                                            ))
+                                        })
                        }
                       for post in data_set}
 
         # Build the training set from webpages
-        training_set = [Data(post["title"] + "\n\n" + post["content"], post["url"])
+        training_set = [Data(str(post["title"]) + "\n\n" + str(post["content"]), post["url"])
                         for post in data_set]
 
         # Prepare the ranker for BM25 : list of tokens for each document
@@ -768,7 +770,6 @@ class Indexer():
 
         self.vectors_all = np.array(docs)
         self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
-        self.urls = [post.label for post in training_set]
 
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
         self.ranker = BM25Okapi(ranker_docs, k1=1.7, b=0.95)
@@ -858,13 +859,14 @@ class Indexer():
 
 
     def rank(self, query: str|tuple|re.Pattern, method: search_methods,
-             filter_callback: callable = None, **kargs) -> list[tuple[str, float]]:
+             filter_callback: callable = None, pattern: str | re.Pattern = None, **kargs) -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
             query (str | tuple | re.Pattern): the query to search. `re.Pattern` is available only with the `grep` method.
             method (str): `ai`, `fuzzy` or `grep`. `ai` use word embedding and meta-tokens with dual-embedding space, `fuzzy` uses meta-tokens with BM25Okapi stats model, `grep` uses direct string and regex search.
             filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker.
+            pattern: optional pattern/text search to add on top of AI search
             **kargs: arguments passed as-is to the `filter_callback`
 
         Returns:
@@ -881,14 +883,21 @@ class Indexer():
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
 
-        results = zip(self.urls, np.nan_to_num(aggregates))
+        results = zip(self.index.keys(), # URLs
+                      np.nan_to_num(aggregates)) # similarity metric
 
-        if filter_callback is None:
-            results = {(url, similarity) for url, similarity in results if similarity > 0.}
-        else:
-            results = {(url, similarity) for url, similarity in results if similarity > 0. and filter_callback(url, **kargs)}
+        # Filter out documents NOT matching the pattern
+        if pattern:
+            matches = [True if re.findall(pattern, "\n\n".join(document["sentences"])) else False
+                       for document in self.index.values()]
+            matches = zip(results, matches)
+            results = [result_tuple for result_tuple, match in matches if match]
 
-        return sorted(results, key=lambda x:x[1], reverse=True)
+        # Filter out documents based on URL filter if provided
+        if filter_callback:
+            results = [(url, similarity) for url, similarity in results if filter_callback(url, **kargs)]
+
+        return sorted(set(results), key=lambda x:x[1], reverse=True)
 
 
     def get_page(self, url:str) -> dict:
