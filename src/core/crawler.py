@@ -658,9 +658,9 @@ class Crawler:
                 else:
                     # Some websites display PDF in web applets on pages
                     # advertising content-type=text/html but UTF8 codecs
-                    # fail to decode because it's actually PDF.
+                    # fail to decode because it's actually not HTML but PDF.
                     # If we end up here, it's most likely what we have.
-                    output += get_pdf_content(index_url, default_lang, category)
+                    output += get_pdf_content(index_url, default_lang, category=category)
 
             # Recall we passed there, whether or not we actually mined something
             self.crawled_URL.append(index_url)
