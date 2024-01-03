@@ -7,7 +7,7 @@ Logging and filter finding utilities.
 
 from datetime import datetime, timezone, timedelta
 import os
-import re
+import regex as re
 import io
 import errno
 import pickle
@@ -378,21 +378,24 @@ SUBSTITUTIONS = {
     "«"     : "\"",
     "»"     : "\"",
     # Fractions
-    "\u2150": "1/7",
-    "\u2151": "1/9",
-    "\u2152": "1/10",
+    "\u00BD": "1/2",
     "\u2153": "1/3",
     "\u2154": "2/3",
+    "\u00BC": "1/4",
+    "\u00BE": "3/4",
     "\u2155": "1/5",
     "\u2156": "2/5",
     "\u2157": "3/5",
     "\u2158": "4/5",
     "\u2159": "1/6",
     "\u215A": "5/6",
+    "\u2150": "1/7",
     "\u215B": "1/8",
     "\u215C": "3/8",
     "\u215D": "5/8",
     "\u215E": "7/8",
+    "\u2151": "1/9",
+    "\u2152": "1/10",
     "\u215F": "1/",
     # Arrows
     "\u2190": "<-",
@@ -512,3 +515,14 @@ def get_models_folder(filename: str) -> str:
                             os.path.dirname(current_path)))
     models_path = os.path.join(install_path, "models")
     return os.path.abspath(os.path.join(models_path, filename))
+
+
+def get_stopwords_file(filename: str) -> dict:
+    """Get a dictionnary file containing lines of "word: frequency" stored in `../../models/`.
+    By default, [core.nlp.Word2Vec.__init__][] stores a such file when the word embedding is learned.
+    Manually-validated files can be used for search engine purposes, since stopwords add noise to the searches.
+    """
+    path = get_models_folder(filename)
+    with open(path, "r") as f:
+      d = dict(x.strip().split(": ", 1) for x in f)
+    return d
