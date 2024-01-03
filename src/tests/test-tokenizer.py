@@ -283,29 +283,73 @@ I think I downloaded this LUT from Film Simulation - RawPedia.
 
 darktable 3.6, sharpening using the contrast equalizer with the details slider:
 
-3S9A79693224×3224 1.18 MB.
+3S9A7969 3224×3224 1.18 MB.
 
 3S9A7969.CR2.xmp (14.1 KB)
 
 My slightly different play, developing freeware SNS-HDR Lite, then GIMP Lab.
 
-3S9A7969-SNS-HDR Lite-Default_GIMP LAB5496×3670 4.01 MB.
+3S9A7969-SNS-HDR Lite-Default_GIMP LAB 5496×3670 4.01 MB.
 
 Nice shot, thanks for sharing!
 Sometimes RT’s haze removal does a nice job on non-hazy photos too.
 
-3S9A7969_RT-kl2400×1601 1.33 MB.
+3S9A7969_RT-kl 2400×1601 1.33 MB.
 
 3S9A7969_RT.jpg.out.pp3 (14.9 KB)
 
 "base" curve.
 
 contrast brightness "saturation"
+
+If we were to view the world through a hole in a screen that appeared as a mere speck of light, we would be able to describe the hue, brightness, colourfulness and saturation of that light, but we could not tell if the darker, duller specks represented dark, dull objects in bright light, or bright, coloured objects in dim light. To perceive colours of objects we must be able to make comparisons between areas of the visual field. As an object is more strongly lit, its brightness and colourfulness increase, but its lightness (=value) and chroma, or brightness and colourfulness respectively “judged relative to the brightness of a similarly illuminated area that appears to be white or highly transmitting”, show a high degree of constancy through different levels of illumination, and so are perceived as attributes belonging to the object itself (Figure 2). Lightness is our perception of an object’s efficiency as a reflector/ transmitter of light, and chroma is our perception of an object’s efficiency as a spectrally selective reflector/ transmitter; for an object to have high chroma it must reflect/ transmit saturated light in relatively large amounts.
+
+\n\n\n  \n\nLocation:\nJackson TWP, Ohio, United States\n\n\nType of photography:\nTypical digital\n\n\nAdded:\n2023-03-21T11:27:45+0000\n\n\n\nCamera(s):\nFuji\n\n\nGender:\nMan\n\n\nName:\nsloweddie\n\n\n\n\n\n\n\n\n\n\n\n\n\n  \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n
+
+I have tried many formats to no avail, and can’t find any relevant discussion here or on the web.
+This is the content of my ColorChecker.txt file I try to load :
+
+LGOROWLENGTH 12
+ORIGINATOR “ColorChecker24”
+MANUFACTURER “X-Rite - http://www.xrite.com 2”
+1/12/2021 # Time: 14:33
+NUMBER_OF_FIELDS 5
+BEGIN_DATA_FORMAT
+SAMPLE_ID SAMPLE_NAME LAB_L LAB_A LAB_B
+END_DATA_FORMAT
+NUMBER_OF_SETS 24
+BEGIN_DATA
+1 A1 37.7976 14.9189 14.6098
+2 A2 62.0301 34.0401 58.7391
+3 A3 27.9205 17.0872 -48.6711
+4 A4 94.0586 -1.0418 2.8835
+5 B1 65.7762 16.4541 17.9442
+6 B2 39.6608 8.6631 -43.1892
+7 B3 53.4247 -39.6051 30.6583
+8 B4 79.4438 -0.6685 0.8970
+9 C1 49.7737 -3.9058 -22.8392
+10 C2 51.6068 46.4659 16.6463
+11 C3 42.0179 56.2369 28.2988
+12 C4 64.5995 0.1260 0.2165
+13 D1 42.3360 -14.2769 20.0762
+14 D2 30.2330 21.9605 -20.0066
+15 D3 81.3347 3.9422 76.8753
+16 D4 50.5762 -0.9491 0.0959
+17 E1 55.3149 8.0885 -24.4423
+18 E2 71.3812 -23.8552 57.4252
+19 E3 51.3893 50.5470 -12.8133
+20 E4 35.2206 -0.8911 -0.4628
+21 F1 70.2999 -32.9363 0.1569
+22 F2 71.4357 19.0178 66.6829
+23 F3 48.6209 -27.7380 -27.5854
+24 F4 21.4371 0.1309 -0.9290
+END_DATA
+
+
 """
 
-clean_text = utils.typography_undo(text)
-language = nlp.guess_language(clean_text)
-sentences = [nlp.tokenize_sentences(sentence, language) for sentence in nlp.split_sentences(nlp.prefilter_tokenizer(clean_text), language)]
+tokenizer = nlp.Tokenizer()
+sentences = tokenizer.tokenize_per_sentence(text)
 
 for sentence in sentences:
   print(sentence)

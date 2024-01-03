@@ -20,20 +20,20 @@ from core import nlp
 embedding_set = [post.text for post in nltk.corpus.nps_chat.xml_posts()]
 
 # Build the word2vec language model
-w2v = nlp.Word2Vec(embedding_set, "word2vec_chat", epochs=4000)
+w2v = nlp.Word2Vec(embedding_set, "word2vec_chat", epochs=2000, window=3)
 
 # Test word2vec
-print(w2v.wv.most_similar("free"))
+print(w2v.wv.most_similar(w2v.tokenizer.normalize_token("free", "en")))
 
 # Load existing model
 w2v = nlp.Word2Vec.load_model("word2vec_chat")
 
-# Test word2vec
-print(w2v.wv.most_similar("free"))
+# Test word2vec again
+print(w2v.wv.most_similar(w2v.tokenizer.normalize_token("free", "en")))
 
 # Build the model
 training_set = [nlp.Data(post.text, post.get('class')) for post in nltk.corpus.nps_chat.xml_posts()]
-model = nlp.Classifier(training_set, "chat", w2v.wv, validate=True)
+model = nlp.Classifier(training_set, "chat", w2v, validate=True)
 
 # Classify test stuff
 l = ["Do you have time to meet at 5 pm ?", "Come with me !", "Nope", "Well, fuck", "What do you think ?"]
