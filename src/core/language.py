@@ -34,7 +34,7 @@ STOPWORDS_FR = {
     # FR
     "ça", "à", "au", "aux", "que", "qu'il", "qu'elle", "qu'", "ce", "cette", "ces", "cettes", "cela", "ceci", "qu'on", "qu'un",
     "le", "la", "les", "l", "l'", "de", "du", "d'", "un", "une", "des", "toi", "moi", "eux", "te", "qu",
-    "mon", "ma", "mes", "ton", "ta", "tes", "son", "sa", "ses", "leur", "leurs", "votre", "vos", "c'est à dire", "lui", "c'est-à-dire",
+    "mon", "ma", "mes", "ta", "tes", "sa", "ses", "leur", "leurs", "votre", "vos", "c'est à dire", "lui", "c'est-à-dire",
     "y", "là", "ici", "là-bas", "c'est", "bien",
     "parfois", "certain", "certains", "certaine", "certaines", "quelque", "quelques", "nombreux", "nombreuses", "peu", "plusieurs",
     "beaucoup", "tout", "toute", "tous", "toutes", "aucun", "aucune", "comme", "si",
@@ -57,8 +57,7 @@ STOPWORDS_PUNCT = {
     "yay", "ugh", "hehe", "hehehe",
 }
 
-STOPWORDS = set(list(STOPWORDS_EN) +
-                list(STOPWORDS_FR) + list(STOPWORDS_PUNCT))
+STOPWORDS = set(list(STOPWORDS_PUNCT))
 
 # Static dict of stopwords for language detection, inited from NLTK corpus
 STOPWORDS_DICT = {language: list(stopwords.words(
@@ -118,7 +117,6 @@ STOPWORDS_DICT = {language: set(
 # Replacement are the stemmed output of Lemmatizer + SnowballStemmer applied after tokenizer
 REPLACEMENTS = {
     "photo": "photograph",
-    "aurelien": "aurélien",
     "eg": "e.g",
     "yeah": "yes",
     "yea": "yes",
@@ -243,6 +241,14 @@ REPLACEMENTS = {
 # Normalize contractions and abbreviations
 ABBREVIATIONS = {
     " n'": " ne ",
+    " c'": " ce ",
+    " j'": " je ",
+    " t'": " te ",
+    "qu'": "que ",
+    " s'": " se ",
+    " l'": " le ",
+    " d'": " de ",
+    " m'": " me ",
 
     "what's": "what is",
     "what're": "what are",
@@ -298,10 +304,13 @@ ABBREVIATIONS = {
     "hasn't": "has not",
     "hadn't": "had not",
     "won't": "will not",
+    "shan't": "shall not",
 
     " didnt ": " did not ",
     " cant ": " can not ",
     " wont ": " will not ",
+    " shouldnt ": " should not ",
+    " shant ": " shall not ",
 
     "'cause": "because",
     "'till": "until",
@@ -310,3 +319,107 @@ ABBREVIATIONS = {
     "gonna": "going to",
     "wanna": "want to",
 }
+
+meta_tokens = [
+    "_NUMBER_", "_PATH_", "_ORDINAL_", "_TIME_", "_DATE_", "_FILESIZE_", "_USER_", "_URL_"]
+
+punctuation = [
+    ".", "?", "!", "...", "+", "%"]
+
+english_adv = [
+    "reali",
+]
+determinants = [
+    "l", "le", "la", "de", "du", "un", "une", "a", "aux",
+    "th", "of", "a", "an"]
+
+demonstratives = [
+    "ce", "cet", "ceci", "cela", "c'est", "ça",
+    "thi", "thos", "th" ]
+
+misc = [
+    "oui", "non",
+    "yes", "no",
+    "ok", "etc", "eg", "e.g",
+    "suntil", # ??? - probably tokenizer hickup
+    "both", "neither", "either",
+    "via",
+    "abl", "posibl",
+    "thank", "merci", "hi", "hello", "bonjor", "bon", "pleas",
+    "cas", "onc", "thing", "chos",
+    "within", "easi", "rath", # rather
+    "plea",
+    "tim", "foi", "mot", "word",
+    ]
+
+conjunctions_1 = [
+    "mai", "ou", "et", "donc", "or", "ni", "car",
+    "but", "wher", "and", "thu", "therefor", "so", "henc", "nor", "becaus"]
+
+
+conjunctions_2 = [
+    "qui", "que", "quoi", "quand", "pourquoi", "com", "dont", "où", "pendant", "ou", "lequel", "laquel", "duquel", "desquel", "lesquel", "auxquel", "parc",
+    "who", "that", "than", "what", "when", "whi", "how", "which", "wh", "whil", "or", "whos", "becaus"]
+
+
+verbs = [
+    "etr", "sui", "e", "est", "som", "et", "sont",
+    "be", "am", "are", "i", "wa", "wer", "been",
+    "avoir", "ai", "a", "avon", "avez", "ont", "eu",
+    "hav", "ha", "had",
+    "peux", "peut", "pouvon", "pouvez", "peuvent",
+    "can",
+    "veux", "veut", "voulons", "voulez", "veulent",
+    "wil", "want", "wanted", "vouloir", "veux", "veut", "veulent",
+    "fait", "fai",
+    "do", "did", "mak", "mad",
+    "fait", "fair", # collides with "foire" but probably not a big deal
+    "sai", "sait", "savon", "savez", "savent",
+    "know", "knew",
+    "pens", "penson", "pensez", "pensent",
+    "think", "thought",
+    "would", "could", "should", "must",
+    "go", "get", "went",
+    "mai", "might", "mayb",
+    "tri", "sai", "let", "keep",
+    "put", "metr", "mi",
+    "utilis",
+    "mov", "act",
+    "feel", "felt",
+    "mean",
+    "seem", "apear",
+    "tak", "taken", "took", "prendr", "prit", "pri", "prend",
+    "seen", "see", "saw", "voir", "vu", "voyant",
+    "sai", "said", "dir", "dit", "di",
+    "alow", "permetr", "permi", "permetant",
+    ]
+
+adverbs = [
+    "ici", "la", "propos", "ausi", "trop", "seul", "autr", "mem", "maintenant", "tel", "autour", "cependant", "toujour", "jamai", "parfoi", "souvent", "encor", "asez", "tr", "parmi", "maintenant", "presq", "cependant",
+    "her", "ther", "about", "also", "too", "onl", "other", "any", "som", "even", "now", "such", "around", "however", "alwai", "everytim", "anytim", "never", "sometim", "often", "again", "enough", "instead", "veri", "among", "yet", "almost", "although", "though", "someon", "everyon", "anyon", "somewh", "everywh", "anywh",]
+
+quantifiers = [
+    # Note : "n'importe" (as "import") is not included for obvious reasons
+    "certain", "quelqu", "tou", "plusieur", "beaucoup", "chaqu", "peu", "tout", "uniq", "seul",
+    "some", "someth", "al", "everyth", "any", "anyth", "several", "much", "many", "lot", "each", "everi", "few", "litl", "al", "onli", "alon",
+]
+
+prepositions = [
+    "vers", "dan", "au", "à", "en", "pour", "with", "without", "sur", "hors", "ne", "pas", "ni", "tant", "com", "depui", "si", "alor", "autr", "chez", "par", "traver", "lor", "lorsqu", "jusque",
+    "to", "in", "into", "for", "avec", "san", "on", "out", "over", "not", "neither", "nor", "as", "sam", "like", "from", "sinc", "if", "wheth", "then", "els", "at", "by", "through",
+    "just", "until",]
+
+pronouns = [
+    "je", "tu", "il", "el", "nou", "vou", "moi",
+    "i", "you", "he", "her", "it", "we", "they",
+    "me", "him", "her", "us", "them", "myself", "yourself", "themself", "themselv", "himself", "herself",
+    "s", "t",
+    # yes, the followings are not technically pronouns
+    # Notes :
+    #   "ton" is not there : it collides with "tone" and "ton" as "tonalité"
+    #   "son" is not there : it collides with "son" (child) and "son" as "sonorité"
+    "mon", "ma", "m", "mien", "ta", "t", "tien", "sa", "s", "notr", "no", "votr", "vo", "leur", "lui", "t",
+    "mi", "min", "your", "his", "its", "our", "their", ]
+
+adv_2 = ["fairli", "reali", "likeli", "probabli", "mostli", ]
+TOPICS_STOPWORDS = set( pronouns + prepositions + adverbs + verbs + conjunctions_2 + conjunctions_1 + misc + determinants + quantifiers + demonstratives + punctuation + meta_tokens + adv_2)

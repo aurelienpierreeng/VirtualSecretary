@@ -24,12 +24,10 @@ import pickle
 import numpy as np
 
 import nltk
-from nltk.stem.snowball import SnowballStemmer
 from nltk.tokenize import RegexpTokenizer
 from nltk.stem import WordNetLemmatizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
-from spellchecker import SpellChecker
 
 from rank_bm25 import BM25Okapi
 
@@ -246,6 +244,13 @@ class Tokenizer():
                 if key.search(string):
                     return value.strip()
 
+        # Check if string is a stopword
+        if self.stopwords is not None:
+            if string in self.stopwords:
+                return None
+            else:
+                return string
+
         return string
 
 
@@ -322,7 +327,8 @@ class Tokenizer():
 
     def __init__(self,
                  meta_tokens: dict[re.Pattern: str] = None,
-                 abbreviations: dict[str: str] = None):
+                 abbreviations: dict[str: str] = None,
+                 stopwords: list[str] = None):
         """Pre-processing pipeline and tokenizer, splitting a string into normalized word tokens.
 
         Arguments:
@@ -392,6 +398,8 @@ class Tokenizer():
             self.abbreviations = ABBREVIATIONS
         else:
             self.abbreviations = abbreviations
+
+        self.stopwords = stopwords
 
 
 class Data():
@@ -468,13 +476,6 @@ class Word2Vec(gensim.models.Word2Vec):
         super().__init__(training, vector_size=vector_size, window=window, min_count=min_count, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=1)
         print("training done")
 
-        # Initialize the spellchecker, used for words not found in the dictionnary here
-        self.spell = SpellChecker(language=None, case_sensitive=False)
-        frequency = { key: value for key, value in counts.items() if key in self.wv and key is not None }
-        self.spell.word_frequency.load_json(frequency)
-        # Note: we keep only the words occuring at least 5 times, to match the `min_count` arg used to train the model.
-        print("spellchecker initialized")
-
         self.save(self.pathname)
         print("saving done")
 
@@ -485,34 +486,28 @@ class Word2Vec(gensim.models.Word2Vec):
         return cls.load(get_models_folder(name))
 
 
-    def get_word(self, word: str, spellcheck: bool = False) -> str | None:
+    def get_word(self, word: str) -> str | None:
         """Find out if word is in dictionary, optionnaly attempting spell-checking if not found.
 
         Arguments:
             word: word to find
-            spellcheck: whether or not to attempt spellchecking through basic letter permutations (Peter Norvig's algo) to find the closest match in dictionnary if the word is not found in the embedding corpus. This is crazy slow, especially on long words, you may want to enable it sparingly (on short sentences, not on full documents). [^1]
-
-        [^1]: How to Write a Spelling Corrector (2007-2016), Peter Norvig https://norvig.com/spell-correct.html
 
         Returns:
             (str | None):
                 - the original word if found in dictionnary,
-                - the closest word in dictionnary if not found and spellchecking is enabled,
                 - `None` if both previous conditions were not matched.
         """
         if word:
             if word in self.wv:
                 # Word exists in dictionnary
                 return word
-            elif spellcheck:
-                # Word does not exist: attempt spellchecking
-                # Return None if speelchecking fails
-                return self.spell.correction(word)
+            else:
+                return None
 
         return None
 
 
-    def get_wordvec(self, word: str, embed:str = "IN", spellcheck: bool = False) -> np.ndarray | None:
+    def get_wordvec(self, word: str, embed:str = "IN") -> np.ndarray | None:
         """Return the vector associated to a word, through a dictionnary of words.
 
         Arguments:
@@ -520,14 +515,13 @@ class Word2Vec(gensim.models.Word2Vec):
             embed:
                 - `IN` uses the input embedding matrix [gensim.models.Word2Vec.wv][], useful to vectorize queries and documents for classification training.
                 - `OUT` uses the output embedding matrix [gensim.models.Word2Vec.syn1neg], useful for the dual-space embedding scheme, to train search engines. [^1]
-            spellcheck: see [core.nlp.Word2Vec.get_word][]
 
         [^1]: A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana https://arxiv.org/pdf/1602.01137.pdf
 
         Returns:
             the nD vector if the word was found in the dictionnary, or `None`.
         """
-        x = self.get_word(word, spellcheck)
+        x = self.get_word(word)
 
         # The word or its correction are found in DB
         if x is not None:
@@ -544,13 +538,12 @@ class Word2Vec(gensim.models.Word2Vec):
             return None
 
 
-    def get_features(self, tokens: list[str], embed: str = "IN", spellcheck: bool = False) -> np.ndarray:
+    def get_features(self, tokens: list[str], embed: str = "IN") -> np.ndarray:
         """Calls [core.nlp.Word2Vec.get_wordvec][] over a list of tokens and returns a single vector representing the whole list.
 
         Arguments:
             tokens: list of text tokens.
             embed: see [core.nlp.Word2Vec.get_wordvec][]
-            spellcheck: see [core.nlp.Word2Vec.get_wordvec][]
 
         Returns:
             the centroid of word embedding vectors associated with the input tokens (aka the average vector), or the null vector if no word from the list was found in dictionnary.
@@ -559,7 +552,7 @@ class Word2Vec(gensim.models.Word2Vec):
         i = 0
 
         for token in tokens:
-            vector = self.get_wordvec(token, embed=embed, spellcheck=spellcheck)
+            vector = self.get_wordvec(token, embed=embed)
             if vector is not None:
                 features += vector
                 i += 1
@@ -774,10 +767,6 @@ class Indexer():
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
         self.ranker = BM25Okapi(ranker_docs, k1=1.7, b=0.95)
 
-        # Garbage collection to avoid storing in the saved model stuff we won't need anymore
-        # Can't do that anymore if we need to embed document at run time
-        #del self.syn1neg
-
         # Save the model to a reusable object
         joblib.dump(self, get_models_folder(name + ".joblib.bz2"), compress=9, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -785,7 +774,7 @@ class Indexer():
     def get_features_parallel(self, tokens: list[str]) -> tuple[str, str]:
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
         # Language doesn't matter, tokenization and normalization are done already
-        return self.word2vec.get_features(tokens, embed="OUT", spellcheck=False)
+        return self.word2vec.get_features(tokens, embed="OUT")
 
 
     def tokenize_parallel(self, post: Data) -> list[str]:
@@ -818,7 +807,7 @@ class Indexer():
             return np.array([]), 0., []
 
         # Get the the centroid of the word embedding vector
-        vector = self.word2vec.get_features(tokenized_query, embed="IN", spellcheck=True)
+        vector = self.word2vec.get_features(tokenized_query, embed="IN")
         norm = np.linalg.norm(vector)
         norm = 1.0 if norm == 0.0 else norm
 
@@ -922,7 +911,7 @@ class Indexer():
 
         for sentence in page['sentences']:
             sentence_tokens = self.word2vec.tokenizer.tokenize_document(sentence, meta_tokens=True)
-            vectors_all.append(self.word2vec.get_features(sentence_tokens, embed="OUT", spellcheck=False))
+            vectors_all.append(self.word2vec.get_features(sentence_tokens, embed="OUT"))
 
         if vectors_all:
             vectors_all = np.array(vectors_all)
@@ -959,7 +948,7 @@ class Indexer():
             return []
 
 
-    def get_related(self, post: tuple, n:int = 15) -> list:
+    def get_related(self, post: tuple, n: int = 15) -> list:
         """Get the n closest keywords from the query."""
 
         if not isinstance(post, tuple):
