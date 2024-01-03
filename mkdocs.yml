@@ -2,6 +2,7 @@ site_name: Virtual Secretary Documentation
 
 repo_url: https://github.com/aurelienpierreeng/VirtualSecretary
 repo_name: aurelienpierreeng/VirtualSecretary
+edit_uri: blob/main/docs/
 copyright: Copyright &copy; 2022-2023 Aurélien PIERRE
 
 

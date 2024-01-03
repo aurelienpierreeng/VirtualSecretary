@@ -27,9 +27,7 @@ cd VirtualSecretary
 git pull
 ```
 
-## Preparing the runtime
-
-### Python interpreter
+## Python interpreter
 
 If you have access to a package manager and you are able to simply install [Python 3.11](https://www.python.org/downloads/release/python-3114/), do it. Otherwise, here is how to deploy the AppImage on a server:
 
@@ -41,7 +39,7 @@ wget https://github.com/niess/python-appimage/releases/download/python3.11/pytho
 
 2. Rename it `python3.11.AppImage` for convenience:
 ```bash
-mv python3.11.4-cp311-cp311-manylinux2014_x86_64.AppImage VirtualSecretary/python3.11.AppImage
+mv python3.11.4-cp311-cp311-manylinux2014_x86_64.AppImage python3.11.AppImage
 ```
 
 3. Give it execution permissions:
@@ -72,13 +70,22 @@ From there, to execute a Python script (`.py`), you have to use one of the follo
 
 In the rest of this document, we will write `PYTHON` as a generic way of calling the interpreter that will need to be replaced by one of the above commands depending on your case.
 
-### Install the dependencies
+## Installing the dependencies
 
 From the `VirtualSecretary/` folder, run:
 ```bash
 PYTHON -m pip install -r recipe/requirements.txt
 ```
 
+## Notes on servers
+
 !!! note
 
-    This installation procedure was tested on Ubuntu Server 20.04, on Fedora Desktop 37 and 38, and on a CPanel-based shared hosting (Debian).
+    This installation procedure was tested on Ubuntu Server 20.04 using an Amazon Elastic Cloud 2 instance, on Fedora Desktop 37 and 38, and on a CPanel-based shared hosting (Debian).
+
+
+If you use a private or shared hosting, you have access to a server where you may run applications, host websites and mailboxes. It is very desirable to install the Virtual Secretary on the same server hosting your mailbox, as it will be able to filter those email in-place. In that case, for security purposes, it is better to put the application code outside of the HTTP server directories (`var_html`, or `/var-www`, or any directory accessible through a web browser).
+
+CPanel-based shared hostings have limited resources, but my tests show they can still be used for a single user with a couple email addresses. Nowadays, they provide a web terminal allowing to launch command lines, even though they still don't come with `sudo` rights to install software.
+
+If your hosting does not have a web terminal interface, nor SSH access, and is basically just a piece of harddrive connected to the internet with some way to define Cron jobs, you will have to prepare the `VirtualSecretary` folder with the source code and the extracted Python AppImage locally, on your computer, and then to dump it all on the server through FTP.
