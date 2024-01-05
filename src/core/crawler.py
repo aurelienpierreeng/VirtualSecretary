@@ -18,6 +18,7 @@ import pdf2image
 from io import BytesIO
 from PIL import Image
 import numpy as np
+from urllib.parse import urljoin
 
 from typing import TypedDict
 
@@ -97,18 +98,11 @@ def relative_to_absolute(URL: str, domain: str, current_page: str) -> str:
     """
     if "://" in URL:
         return URL
-    elif URL.startswith("/"):
-        # relative URL from domain: prepend domain
-        return "://" + domain + URL
-    elif URL.startswith("./"):
+    else:
         # relative URL from current page
         if current_page is None:
             raise TypeError("`current_page` should be defined")
-
-        return current_page.rstrip("./") + "/" + URL.lstrip("./")
-    else:
-        # relative URL without /
-        return "://" + domain + "/" + URL
+        return urljoin(current_page, URL)
 
 
 def radical_url(URL: str) -> str:
@@ -276,7 +270,7 @@ def get_pdf_content(url: str,
         # Open the document from local or remote storage
         document : BytesIO
         if not file_path:
-            page = requests.get(url, timeout=30, headers=headers)
+            page = requests.get(url, timeout=30, headers=headers, allow_redirects=True)
             print(f"{url}: {page.status_code}")
 
             if page.status_code != 200:
@@ -387,7 +381,7 @@ def get_page_content(url: str, content: str = None) -> BeautifulSoup | None:
 
     try:
         if content is None and url is not None:
-            page = requests.get(url, timeout=30, headers=headers)
+            page = requests.get(url, timeout=30, headers=headers, allow_redirects=True)
             print(f"{url}: {page.status_code}")
 
             if page.status_code != 200:
@@ -697,7 +691,7 @@ class Crawler:
                 if index:
                     # Valid HTML response
                     output += self._parse_original(index, index_url, default_lang, markup, None, category)
-                    output += self._parse_translations(index, domain, markup, None, langs, category)
+                    output += self._parse_translations(index, domain, index_url, markup, None, langs, category)
                 else:
                     # Some websites display PDF in web applets on pages
                     # advertising content-type=text/html but UTF8 codecs
@@ -787,14 +781,16 @@ class Crawler:
             print(currentURL, date)
 
             if '.xml' not in currentURL:
-                # We got a proper web page, parse it
                 page = get_page_content(currentURL)
                 self.crawled_URL.append(currentURL)
-                output += self._parse_original(page, currentURL, default_lang, markup, date, category)
-                output += self._parse_translations(page, domain, markup, date, langs, category)
 
-                # Follow internal and external links on only one recursivity level
-                output += self.get_immediate_links(page, domain, currentURL, default_lang, langs, category)
+                if page:
+                    # We got a proper web page, parse it
+                    output += self._parse_original(page, currentURL, default_lang, markup, date, category)
+                    output += self._parse_translations(page, domain, currentURL, markup, date, langs, category)
+
+                    # Follow internal and external links on only one recursivity level
+                    output += self.get_immediate_links(page, domain, currentURL, default_lang, langs, category)
             else:
                 # We got a sitemap of sitemaps, recurse over the sub-sitemaps
                 _sitemap = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
@@ -825,7 +821,7 @@ class Crawler:
         return parse_page(page, url, default_lang, markup=markup, date=date, category=category) if page else []
 
 
-    def _parse_translations(self, page, domain, markup, date, langs, category):
+    def _parse_translations(self, page, domain, current_url, markup, date, langs, category):
         """Follow `<link rel="alternate" hreflang="lang" href="url">` tags declaring links to alternative language variants for the current HTML page and crawl the target pages. This works only for pages properly defining alternatives in HTML header."""
         output = []
 
@@ -836,7 +832,7 @@ class Crawler:
             link_tag = page.find('link', {'rel': 'alternate', 'hreflang': lang})
 
             if link_tag and link_tag["href"]:
-                translatedURL = relative_to_absolute(link_tag["href"], domain, None)
+                translatedURL = relative_to_absolute(link_tag["href"], domain, current_url)
                 content_type, status = get_content_type(translatedURL)
 
                 if "text" in content_type and status:
