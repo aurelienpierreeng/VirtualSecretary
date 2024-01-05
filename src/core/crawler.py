@@ -77,12 +77,15 @@ def get_content_type(url: str) -> tuple[str, bool]:
         return "", False
 
 
-def relative_to_absolute(URL: str, domain: str) -> str:
+def relative_to_absolute(URL: str, domain: str, current_page: str) -> str:
     """Convert a relative URL to absolute by prepending the domain.
 
     Arguments:
         URL: the URL string to normalize to absolute,
         domain: the domain name of the website, without protocol (`http://`) nor trailing slash.
+            It will be appended to the relative links starting by `/`.
+        current_page: the URL of the page from which we analyze links.
+            It will be appended to the relative links starting by `./`.
 
     Returns:
         The normalized, absolute URL on this website.
@@ -95,8 +98,14 @@ def relative_to_absolute(URL: str, domain: str) -> str:
     if "://" in URL:
         return URL
     elif URL.startswith("/"):
-        # relative URL: prepend domain
+        # relative URL from domain: prepend domain
         return "://" + domain + URL
+    elif URL.startswith("./"):
+        # relative URL from current page
+        if current_page is None:
+            raise TypeError("`current_page` should be defined")
+
+        return current_page.rstrip("./") + "/" + URL.lstrip("./")
     else:
         # relative URL without /
         return "://" + domain + "/" + URL
@@ -668,7 +677,7 @@ class Crawler:
             # Follow internal links whether or not this page was mined
             if index and _recursion_level + 1 != max_recurse_level:
                 for url in index.find_all('a', href=True):
-                    currentURL = radical_url(relative_to_absolute(url["href"], domain))
+                    currentURL = radical_url(relative_to_absolute(url["href"], domain, index_url))
                     if (domain in currentURL or currentURL.lower().endswith(".pdf")) \
                         and currentURL not in self.crawled_URL:
                         # Parse only local pages unless they are PDF docs
@@ -740,7 +749,7 @@ class Crawler:
 
             date = date.get_text() if date else None
 
-            currentURL = relative_to_absolute(url.get_text(), domain)
+            currentURL = relative_to_absolute(url.get_text(), domain, website + sitemap)
             print(currentURL, date)
 
             if '.xml' not in currentURL:
@@ -767,7 +776,7 @@ class Crawler:
 
         if page:
             for url in page.find_all('a', href=True):
-                link = radical_url(relative_to_absolute(url["href"], domain))
+                link = radical_url(relative_to_absolute(url["href"], domain, None))
                 if link not in self.crawled_URL:
                     content_type, status = get_content_type(link)
                     if "pdf" in content_type and status:
@@ -793,7 +802,7 @@ class Crawler:
             link_tag = page.find('link', {'rel': 'alternate', 'hreflang': lang})
 
             if link_tag and link_tag["href"]:
-                translatedURL = relative_to_absolute(link_tag["href"], domain)
+                translatedURL = relative_to_absolute(link_tag["href"], domain, None)
                 content_type, status = get_content_type(translatedURL)
 
                 if "text" in content_type and status:
