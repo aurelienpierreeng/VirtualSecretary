@@ -602,6 +602,18 @@ def parse_page(page: BeautifulSoup, url: str,
         return []
 
 
+def check_contains(contains_str: list[str] | str, url: str):
+    if isinstance(contains_str, str):
+        return contains_str in url
+    elif isinstance(contains_str, list):
+        for elem in contains_str:
+            if elem in url:
+                return True
+        return False
+
+    raise TypeError("contains_str has a wrong type")
+
+
 class Crawler:
     def __init__(self):
         """Crawl a website from its sitemap or by following internal links recusively from an index page."""
@@ -615,7 +627,7 @@ class Crawler:
                                   child: str = "/",
                                   langs: tuple = ("en", "fr"),
                                   markup: str = "body",
-                                  contains_str: str = "",
+                                  contains_str: str | list[str] = "",
                                   max_recurse_level: int = -1,
                                   category: str = None,
                                   _recursion_level: int = 0) -> list[web_page]:
@@ -626,7 +638,7 @@ class Crawler:
             default_lang: provided or guessed main language of the website content. Not used internally.
             child: page of the website to use as index to start crawling for internal links.
             langs: ISO-something 2-letters code of the languages for which we attempt to fetch the translation if available, looking for the HTML `<link rel="alternate" hreflang="...">` tag.
-            contains_str (str): a string that should be contained in a page URL for the page to be indexed. On a forum, you could for example restrict pages to URLs containing `"discussion"` to get only the threads and avoid user profiles or archive pages.
+            contains_str: a string or a list of strings that should be contained in a page URL for the page to be indexed. On a forum, you could for example restrict pages to URLs containing `"discussion"` to get only the threads and avoid user profiles or archive pages.
             markup: see [core.crawler.get_page_markup][]
             max_recursion_level: this method will call itself recursively on each internal link found in the current page, starting from the `website/child` page. The `max_recursion_level` defines how many times it calls itself until it is stopped, if it is stopped. When set to `-1`, it stops when all the internal links have been crawled.
             category: arbitrary category or label set by user.
@@ -658,7 +670,7 @@ class Crawler:
         if "text" in content_type and status:
             index = get_page_content(index_url)
 
-            if (contains_str in index_url or _recursion_level == 0):
+            if (check_contains(contains_str, index_url) or _recursion_level == 0):
                 # For the first recursion level, ignore "url contains" rule to allow parsing index pages
                 if index:
                     # Valid HTML response
