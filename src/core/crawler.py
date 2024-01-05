@@ -365,7 +365,7 @@ def get_pdf_content(url: str,
         return []
 
 
-def get_page_content(url: str) -> BeautifulSoup | None:
+def get_page_content(url: str, content: str = None) -> BeautifulSoup | None:
     """Request an (x)HTML page through the network with HTTP GET and feed its response to a BeautifulSoup handler. This needs a functionnal network connection.
 
     The DOM is pre-filtered as follow to keep only natural language and avoid duplicate strings:
@@ -379,32 +379,34 @@ def get_page_content(url: str) -> BeautifulSoup | None:
 
     Arguments:
         url: a valid URL that can be fetched with an HTTP GET request.
+        content: a string buffer used as HTML source. If this argument is passed, we don't fetch `url` from network and directly use this input.
 
     Returns:
         a [bs4.BeautifulSoup][] objects initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached.
     """
 
     try:
-        page = requests.get(url, timeout=30, headers=headers)
-        print(f"{url}: {page.status_code}")
+        if content is None and url is not None:
+            page = requests.get(url, timeout=30, headers=headers)
+            print(f"{url}: {page.status_code}")
 
-        if page.status_code != 200:
-            return None
+            if page.status_code != 200:
+                return None
 
-        # Of course some institutionnal websites don't use UTF-8, so let's guess
-        content = page.content
-        try:
-            # Try UTF-8
-            content = content.decode()
-        except (UnicodeDecodeError, AttributeError):
+            # Of course some institutionnal websites don't use UTF-8, so let's guess
+            content = page.content
             try:
-                content = content.decode(page.apparent_encoding)
+                # Try UTF-8
+                content = content.decode()
             except (UnicodeDecodeError, AttributeError):
                 try:
-                    content = content.decode(page.encoding)
+                    content = content.decode(page.apparent_encoding)
                 except (UnicodeDecodeError, AttributeError):
-                    # We just have to hope it's pure text
-                    pass
+                    try:
+                        content = content.decode(page.encoding)
+                    except (UnicodeDecodeError, AttributeError):
+                        # We just have to hope it's pure text
+                        pass
 
         # Minified HTML doesn't have line breaks after block-level tags.
         # This is going to make sentence tokenization a nightmare because BeautifulSoup doesn't add them in get_text()
@@ -568,11 +570,6 @@ def parse_page(page: BeautifulSoup, url: str,
     Returns:
         The content of the page, including metadata, in a [core.crawler.web_page][] singleton.
     """
-    # Get title - easy : it's standard
-    title = page.find("title")
-    if title:
-        title = title.get_text()
-
     # Get excerpt in metadata - hard : several ways of declaring it.
     excerpt = get_excerpt(page)
 
@@ -585,6 +582,13 @@ def parse_page(page: BeautifulSoup, url: str,
 
     # Get content - easy : user-request
     content = get_page_markup(page, markup=markup)
+
+    # Get title - easy : it's standard
+    title = page.find("title")
+    if title:
+        title = title.get_text()
+    elif len(content) > 50:
+        title = content[0:50]
 
     if content and title:
         result = web_page(title=title,
@@ -620,6 +624,20 @@ class Crawler:
 
         self.crawled_URL: list[str] = []
         """List of URLs already visited"""
+
+
+    def get_immediate_links(self, page, domain, currentURL, default_lang, langs, category) -> list[web_page]:
+        """Follow internal and external links contained in a webpage only to one recursivity level,
+        including PDF files and HTML pages. This is useful to index references docs linked from a page.
+        """
+        output = []
+        for url in page.find_all('a', href=True):
+            nextURL = radical_url(relative_to_absolute(url["href"], domain, currentURL))
+            if nextURL not in self.crawled_URL:
+                output += self.get_website_from_crawling(nextURL.rstrip("/#"), default_lang, "", langs, max_recurse_level=2, category=category, _recursion_level=1)
+
+        return output
+
 
     def get_website_from_crawling(self,
                                   website: str,
@@ -662,6 +680,10 @@ class Crawler:
 
         # Extract the domain name, to prepend it if we find relative URL while parsing
         split_domain = patterns.URL_PATTERN.search(website)
+        if split_domain is None:
+            print("%s can't be parsed as URL" % website)
+            return output
+
         domain = split_domain.group(1)
 
         # Fetch and parse current (top-most) page
@@ -771,8 +793,8 @@ class Crawler:
                 output += self._parse_original(page, currentURL, default_lang, markup, date, category)
                 output += self._parse_translations(page, domain, markup, date, langs, category)
 
-                # Follow internal links to PDF documents, not necessarily hosted on the same server
-                output += self._crawl_pdf(page, domain, default_lang, category)
+                # Follow internal and external links on only one recursivity level
+                output += self.get_immediate_links(page, domain, currentURL, default_lang, langs, category)
             else:
                 # We got a sitemap of sitemaps, recurse over the sub-sitemaps
                 _sitemap = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
