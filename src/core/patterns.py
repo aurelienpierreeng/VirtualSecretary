@@ -225,10 +225,10 @@ DOUBLE_CONSONANTS = re.compile(r"(?<=\w{2,})([^aeiouy])\1")
 FEMININE_TRICE = re.compile(r"(?<=\w{4,})t(rice|eur|or)(?=\s|$|[.;:,])")
 """Identify French feminine nouns in -trice."""
 
-ADVERB_MENT = re.compile(r"(?<=\w)e?ment(?=\s|$|[.;:,])")
+ADVERB_MENT = re.compile(r"(?<=\w{4,})e?ment(?=\s|$|[.;:,])")
 """Identify French adverbs and English nouns ending en -ment"""
 
-SUBSTANTIVE_TION = re.compile(r"(?<=\w)(t|s)ion(?=\s|$|[.;:,])")
+SUBSTANTIVE_TION = re.compile(r"(?<=\w{4,})(t|s)ion(?=\s|$|[.;:,])")
 """Identify French and English substantives formed from verbs by adding -tion and -sion"""
 
 SUBSTANTIVE_AT = re.compile(r"(?<=\w{4,})at(?=\s|$|[.;:,])")

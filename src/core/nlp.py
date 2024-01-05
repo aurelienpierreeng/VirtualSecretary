@@ -134,7 +134,8 @@ class Tokenizer():
 
         # Remove -ing from participle present, maybe used as substantives
         # Ex : being -> be, acting -> act, managing -> manag
-        word = PARTICIPLE_ING.sub("", word)
+        # DISABLED: too much meaning lost.
+        # word = PARTICIPLE_ING.sub("", word)
 
         # Remove -ed from adjectives
         # Ex : acted -> act, managed -> manag, aplied -> apli
@@ -473,7 +474,7 @@ class Word2Vec(gensim.models.Word2Vec):
         print("stopwords saved")
 
         loss_logger = LossLogger()
-        super().__init__(training, vector_size=vector_size, window=window, min_count=min_count, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=1)
+        super().__init__(training, vector_size=vector_size, window=window, min_count=min_count, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=0)
         print("training done")
 
         self.save(self.pathname)
@@ -734,7 +735,7 @@ class Indexer():
         # Keep only pages having at least 250 letters in their content
         self.index = {post["url"]:
                       {"title": str(post["title"]),
-                       "excerpt": str(post["excerpt"]) if post["excerpt"] else str(post["content"])[0:500],
+                       "excerpt": str(post["excerpt"]) if post["excerpt"] else str(post["content"])[0:800],
                        "date": guess_date(post["date"]) if post["date"] else None,
                        "url": post["url"],
                        "language": guess_language(str(post["content"])),
