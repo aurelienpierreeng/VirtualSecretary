@@ -69,7 +69,7 @@ def get_content_type(url: str) -> tuple[str, bool]:
             - `False` if there is some kind of error or empty response.
     """
     try:
-        response = requests.head(url, timeout=30, headers=headers)
+        response = requests.head(url, timeout=60, headers=headers, allow_redirects=True)
         content_type = response.headers['content-type']
         status = response.status_code != 404 and response.status_code != 403
         print(url, content_type, status)
@@ -102,7 +102,11 @@ def relative_to_absolute(URL: str, domain: str, current_page: str) -> str:
         # relative URL from current page
         if current_page is None:
             raise TypeError("`current_page` should be defined")
-        return urljoin(current_page, URL)
+        test_url = urljoin(current_page, URL)
+
+        if test_url.startswith("/"):
+            test_url = "://" + domain.strip("/") + "/" + URL.lstrip("/")
+        return test_url
 
 
 def radical_url(URL: str) -> str:
@@ -274,6 +278,7 @@ def get_pdf_content(url: str,
             print(f"{url}: {page.status_code}")
 
             if page.status_code != 200:
+                print("couldn't download %s" % url)
                 return []
 
             document = BytesIO(page.content)
@@ -679,14 +684,14 @@ class Crawler:
             return output
 
         domain = split_domain.group(1)
+        include = check_contains(contains_str, index_url)
 
         # Fetch and parse current (top-most) page
         content_type, status = get_content_type(index_url)
 
         if "text" in content_type and status:
             index = get_page_content(index_url)
-
-            if (check_contains(contains_str, index_url) or _recursion_level == 0):
+            if include or _recursion_level == 0:
                 # For the first recursion level, ignore "url contains" rule to allow parsing index pages
                 if index:
                     # Valid HTML response
@@ -706,13 +711,18 @@ class Crawler:
             if index and _recursion_level + 1 != max_recurse_level:
                 for url in index.find_all('a', href=True):
                     currentURL = radical_url(relative_to_absolute(url["href"], domain, index_url))
-                    if (domain in currentURL or currentURL.lower().endswith(".pdf")) \
-                        and currentURL not in self.crawled_URL:
-                        # Parse only local pages unless they are PDF docs
+                    if domain in currentURL:
+                        # Recurse only through local pages
                         _child = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
                         output += self.get_website_from_crawling(
                             website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str,
                             _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, category=category)
+                    elif include:
+                        # Follow internal and external links on only one recursivity level.
+                        # Aka HTML reference pages (Wikipedia) and attached PDF (docs, manuals, spec sheets)
+                        output += self.get_website_from_crawling(
+                            currentURL.rstrip("/#"), default_lang, "", langs, contains_str="", max_recurse_level=2, category=category,
+                            _recursion_level=1)
 
         elif "pdf" in content_type and status:
             output += get_pdf_content(index_url, default_lang, category=category)
