@@ -154,7 +154,7 @@ REPLACEMENTS = {
     # six : déjà géré en anglais
     "sept": "_NUMBER_",
     "huit": "_NUMBER_",
-    # neuf : collision avec neuf:nouveau/récent
+    # neuf : collision avec neuf=nouveau/récent
     "dix": "_NUMBER_",
     "onze": "_NUMBER_",
     "douze": "_NUMBER_",
@@ -318,6 +318,8 @@ ABBREVIATIONS = {
     "outta": "out of",
     "gonna": "going to",
     "wanna": "want to",
+
+    "(s)": "",
 }
 
 meta_tokens = [
