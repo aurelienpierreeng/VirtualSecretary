@@ -15,23 +15,32 @@ IP_PATTERN = re.compile(r"(?=^|\s|\[|\(|\{|\<)((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0
 EMAIL_PATTERN = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?", re.IGNORECASE)
 """Emails patterns like `<me@mail.com>` or `me@mail.com` where the whole address is captured in the first group."""
 
-URL_PATTERN = re.compile(r"(?:https?\:)?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?([\/]{0,1}[^?#\s\"\,\;\:>]*)(\?[\w]+[\=\,\+\&\%\-\_\:\.\w]*)?(?=$|\s|\]|\)|\}|\>)", re.IGNORECASE)
-"""URL patterns like `http(s)://domain.ext/page?q=x&r=0` or `//domain.ext/page`.
+URL_PATTERN = re.compile(r"(?<=^|\s|\[|\(|\{|\<|\")((?:http|ftp)s?)?:?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?(\/?[^?#\s\"\,\;\:>]*)(\?[^\s\#\\\/]*)?(\#[^\s\?\\\/]*)?(\?[^\s\#\\\/]*)?(?=$|\s|\]|\)|\}|\>|\")", re.IGNORECASE)
+"""URL patterns like `http(s)://domain.ext/page/subpage?q=x&r=0:1#anchor` or `//domain.ext/page`.
 
-- `domain.ext` is captured as the first group,
-- `/page` is the second group,
-- page query parameters `?s=x&r=0` are captured in the 3rd.
+- the protocol (ftp, ftps, http, https) is captured as the first group,
+- `domain.ext` is captured as the second group,
+- `/page/etc` is the third group, including leading and trailing `/`,
+- anchor `#anchor` is the fifth group, including `#`.
+- page query parameters `?s=x&r=0`, including `?`, is
+the fourth group if the URL declares `...?params#anchor`,
+or the sixth group if the URL declares `...#anchor?params`,
 
 URLs are captured if they are:
 
  - alone on their own line,
- - enclosed in {}, [], ()
+ - enclosed in `{}`, `[]`, `()`
  - enclosed in whitespaces.
+
+ Warning: URLs enclosed in `()`, `[]` and `{}` may retain the closing sign
+ as part of the page name since `()` and `[]` are valid in URL pathes
+ and parameters. You may have to parse Markdown to HTML before using
+ this pattern for it to work as expected.
  """
 
 # Date/time
 
-DATE_PATTERN = re.compile(r"((\d{2,4})(?:-|\/)(\d{2})(?:-|\/)(\d{2,4}))")
+DATE_PATTERN = re.compile(r"((\d{1,4})(?:-|\/)(\d{2})(?:-|\/)(\d{2,4}))")
 """Dates like `2022-12-01`, `01-12-2022`, `01-12-22`, `01/12/2022`, `01/12/22` where the whole date is captured in the first group, then each group of digits is captured in the order of appearance, in the next 3 groups"""
 
 TIME_PATTERN = re.compile(r"(\d{1,2}) ?(?:(h|H|:|am|pm|AM|PM)) ?(\d{2}|)?(?:\:(\d{2}))? ?(h|H|am|pm|AM|PM|Z|UTC)? ?((?:\+|\-)\d{1,2})?")
@@ -102,14 +111,19 @@ EXECUTABLE_PATTERN = re.compile(r"%s\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|j
 
 SHORTCUT_PATTERN = re.compile(r"(?<=^|[\s\[\(\':])(?:(?:fn|tab|ctrl|shift|alt|altgr|maj|command|cmd|option|menu|⌘))(?: ?\+ ?(?:⌘|tab|ctrl|shift|maj|alt|altgr|command|cmd|option|menu|click|clic|up|down|left|right|top|bottom|enter|return|del|suppr|home|end|pageup|pagedown|fn|home|end|insert|numlock|scroll|drag|f1|f2|f3|f4|f5|f6|f7|f8|f9|f10|f11|f12|[a-z]))+(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
 
+# For performance, on some technical log files where long sequences of numbers are found,
+# we need to collapse them into smaller numbers sequences for the physical units patterns to work within reasonable timings.
+# To exclude dates and times, we detect only starting at 5 digits.
+NUMBER_SEQUENCE_PATTERN = re.compile(r"(?<=^|\s|\[|\'|\(|\")([\.\,\-\/\+\-±]?(?:\d+[\.\,\/\+\-\s]*){5,})(?=\s|$|\:|\;|,|\?|\!|\]|\)|\'|\")")
+
 # For some reason, merging both patterns in the same triggers infinite loop, so split it…
-PRICE_US_PATTERN = re.compile(r"(?<=^|[\s\[\(\'])([+-=≠±])?((usd|eur|USD|EUR|\€|\$|\£) ?\d+(?:[.,\-]\d+)*)(k|K)?(?=$|[\s.,?!\-:;\]\)])")
-PRICE_EU_PATTERN = re.compile(r"(?<=^|[\s\[\(\'])([+-=≠±])?(\d+(?:[.,\-]\d+)* ?(k|K)?(usd|eur|USD|EUR|\€|\$|\£))(?=$|[\s.,?!\-:;\]\)])")
+PRICE_US_PATTERN = re.compile(r"(?<=^|\s|\[|\'|\()([+-=≠±])?((usd|eur|USD|EUR|\€|\$|\£) ?\d+(?:[.,\-]\d+)*)(k|K)?(?=\s|$|\:|\;|\?|\!|\]|\)|\')")
+PRICE_EU_PATTERN = re.compile(r"(?<=^|\s|\[|\'|\()([+-=≠±])?(\d+(?:[.,\-]\d+)* ?(k|K)?(usd|eur|USD|EUR|\€|\$|\£))(?=\s|$|\:|\;|\?|\!|\]|\)|\')")
 
 RESOLUTION_PATTERN = re.compile(r"\d+(×|x|X)\d+")
 """Pixel resolution like 10x20 or 10×20. Units are discarded."""
 
-NUMBER_PATTERN = re.compile(r"(?<=^|[\s\[\(\'])([\.\,\-\_\/\+\-±]?(?:\d+[\.\,\-\_\/\+\-]?)+)(?=$|[\s.,?!\-:;\]\)])")
+NUMBER_PATTERN = re.compile(r"(?<=^|\s|\[|\'|\(|\")([\.\,\-\/\+\-±]?(?:\d+[\.\,\/\+\-]?)+)(?=\s|$|\:|\;|,|\?|\!|\]|\)|\'|\")")
 """Signed integers and decimals, fractions and numeric IDs with interal dashes and underscores.
 Numbers with starting or trailing units are not considered. Lazy decimals (.1 and 1.) are considered.
 """
@@ -249,7 +263,7 @@ SUBSTANTIVE_Y = re.compile(r"(?<=\w{3,})y(?=\s|$|[.;:,])")
 VERB_IZ = re.compile(r"(?<=\w{4,})(i|y)z(?=\s|$|[.;:,])")
 """Identify American verbs ending in -iz that French and Brits write in -is"""
 
-STUFF_ER = re.compile(r"(?<=\w{3,})er(?=\s|$|[.;:,])")
+STUFF_ER = re.compile(r"(?<=\w{4,})er(?=\s|$|[.;:,])")
 """Identify French 1st group verb (infinitive) and English substantives ending in -er"""
 
 BRITISH_OUR = re.compile(r"(?<=\w{3,})our(?=\s|$|[.;:,\-])")

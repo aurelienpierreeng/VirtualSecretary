@@ -683,7 +683,7 @@ class Crawler:
             print("%s can't be parsed as URL" % website)
             return output
 
-        domain = split_domain.group(1)
+        domain = split_domain.group(2)
         include = check_contains(contains_str, index_url)
 
         # Fetch and parse current (top-most) page
@@ -766,7 +766,7 @@ class Crawler:
             return output
 
         split_domain = patterns.URL_PATTERN.search(website)
-        domain = split_domain.group(1)
+        domain = split_domain.group(2)
 
         # Sitemaps of sitemaps enclose elements in `<sitemap> </sitemap>`
         # While sitemaps of pages enclose them in `<url> </url>`.
@@ -791,6 +791,7 @@ class Crawler:
             print(currentURL, date)
 
             if '.xml' not in currentURL:
+                # TODO: discard JSON content
                 page = get_page_content(currentURL)
                 self.crawled_URL.append(currentURL)
 
