@@ -11,7 +11,10 @@ import random
 import regex as re
 import os
 import sys
-from multiprocessing import Pool
+import json
+from multiprocessing import Pool, current_process
+import multiprocessing
+import collections
 
 from collections import Counter
 
@@ -95,7 +98,10 @@ class Tokenizer():
             for key, value in self.meta_tokens_pipe.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
-                string = key.sub(value, string)
+                try:
+                    string = key.sub(value, string, timeout=30)
+                except TimeoutError:
+                    print("Meta-token detection timed out on %s with:\n%s" % (key, string))
 
         for key, value in self.abbreviations.items():
             string = string.replace(key, value)
@@ -212,7 +218,7 @@ class Tokenizer():
             `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
             `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
         """
-        string = word.strip("-,:'\"^*. ")
+        string = word.strip("=+-,:;'\"^*./`()[]{}& ")
 
         if len(string) == 0:
             # empty string
@@ -221,38 +227,35 @@ class Tokenizer():
         if string in REPLACEMENTS:
             string = REPLACEMENTS[string]
 
-        # TODO: remove le, la, les, un, une, a, an, the
-
         if string in self.meta_tokens:
             # Input is lowercase, need to fix that for meta tokens.
             return string.upper()
 
-        if "_" in string or "<" in string or ">" in string or "\\" in string or "=" in string or "~" in string or "#" in string:
+        if "_" in string or "<" in string or ">" in string or "\\" in string or "=" in string or "~" in string:
             # Technical stuff, like markup/code leftovers and such
             return None
-
-        if string in STOPWORDS:
-            return None
-
-        # Lemmatize / Stem
-        string = self.lemmatize(string)
 
         # Last chance of identifying meta-tokens in an atomic way
         if meta_tokens:
             for key, value in self.meta_tokens_pipe.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
-                if key.search(string):
-                    return value.strip()
+                if key.search(string, timeout=30):
+                    # The number sequence pattern runs before number detection.
+                    # It's mostly meant for prefiltering before processing physical units and will annoy us here.
+                    # Handle it the quick and dirty way, but if more cases like that arise in the future,
+                    # we will have to break the self.meta_tokens_pipe into what's meant to run at document-level prefiltering stage
+                    # and what's meant to run at atomic token-level here.
+                    if value == "123456789":
+                        return "_NUMBER_"
+                    else:
+                        return value.strip()
+
+        # Lemmatize / Stem
+        string = self.lemmatize(string)
 
         # Check if string is a stopword
-        if self.stopwords is not None:
-            if string in self.stopwords:
-                return None
-            else:
-                return string
-
-        return string
+        return None if ((self.stopwords is not None) and (string in self.stopwords)) else string
 
 
     def tokenize_sentence(self, sentence: str, language: str, meta_tokens: bool = True) -> list[str]:
@@ -319,12 +322,16 @@ class Tokenizer():
             tokens: a 2D list of sentences (1st axis), each containing a list of normalizel tokens and meta-tokens (2nd axis).
         """
         # TODO: prefilter n-grams ?
+        self.processed_items += 1
+        p = current_process()
+        if self.processed_items % 50 == 0 and p._identity:
+            print("P %i processed %i over %i" % (p._identity[0], self.processed_items, self.num_items))
+
         clean_text = typography_undo(str(document))
         language = guess_language(clean_text)
         clean_text = self.prefilter(clean_text, meta_tokens=meta_tokens)
         return [self.tokenize_sentence(sentence, language, meta_tokens=meta_tokens)
                 for sentence in self.split_sentences(clean_text, language)]
-
 
     def __init__(self,
                  meta_tokens: dict[re.Pattern: str] = None,
@@ -362,6 +369,8 @@ class Tokenizer():
                 # Local pathes - get everything with / or \ left over by the previous
                 # Need to go after dates for the slash date format
                 PATH_PATTERN: ' _PATH_ ',
+                # Cleanup long sequences of numbers to help the next filters to run within decent runtimes
+                NUMBER_SEQUENCE_PATTERN: "123456789",
                 # Unit numbers/quantities
                 EXPOSURE: " _EXPOSURE_ ",
                 SENSIBILITY: " _SENSIBILITY_ ",
@@ -383,10 +392,10 @@ class Tokenizer():
                 PRICE_US_PATTERN: " _PRICE_ ",
                 PRICE_EU_PATTERN: " _PRICE_ ",
                 RESOLUTION_PATTERN: " _RESOLUTION_ ",
-                # Remove HEX hashes, like IDs and commit names
-                HASH_PATTERN: ' _HASH_ ',
                 # Remove numbers
                 NUMBER_PATTERN: ' _NUMBER_ ',
+                # Remove HEX hashes, like IDs and commit names
+                HASH_PATTERN: ' _HASH_ ',
             }
         else:
             self.meta_tokens_pipe = meta_tokens
@@ -401,6 +410,9 @@ class Tokenizer():
             self.abbreviations = abbreviations
 
         self.stopwords = stopwords
+
+        self.num_items = 1
+        self.processed_items = 0
 
 
 class Data():
@@ -439,6 +451,7 @@ class Word2Vec(gensim.models.Word2Vec):
             name (str): filename of the model to save and retrieve. If the model exists already, we automatically load it. Note that this will override the `vector_size` with the parameter defined in the saved model.
             vector_size (int): number of dimensions of the word vectors
             epochs (int): number of iterations of training for the machine learning. Small corpora need 2000 and more epochs. Increases the learning time.
+            window (int): size of the token collocation window to detect
         """
         if tokenizer is not None:
             self.tokenizer = tokenizer
@@ -450,10 +463,30 @@ class Word2Vec(gensim.models.Word2Vec):
         print(f"got {len(sentences)} pieces of text")
 
         # training = [tokenize_sentences(sentence, language=language) for sentence in sentences]
+        random.shuffle(sentences)
         sentences = set(sentences)
         processes = os.cpu_count()
+
+        self.tokenizer.num_items = len(sentences) / processes
+        self.tokenizer.processed_items = 0
+        training: list[list[list[str]]] = []
+
         with Pool(processes=processes) as pool:
-            training: list[list[list[str]]] = pool.map(self.tokenizer.tokenize_per_sentence, sentences, chunksize=1)
+            runner = pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=1)
+            run = True
+            while run:
+                try:
+                    # Allow 1 minute to complete tokenization.
+                    # On Intel Xeon, most documents complete in under a second.
+                    # Some documents lead to catastrophic backtracking with the
+                    # URL regex pattern and need to be stopped the hard way.
+                    doc = runner.next(timeout=60)
+                    print(doc)
+                    training.append(doc)
+                except multiprocessing.TimeoutError:
+                    print("timeout")
+                except StopIteration:
+                    run = False
 
         print("tokenization done")
 
@@ -463,8 +496,10 @@ class Word2Vec(gensim.models.Word2Vec):
 
         # Dump words to a file to detect stopwords
         words = [word for sentence in training for word in sentence]
-        print(f"got {len(words)} words")
+        print(f"got {len(words)} individual words")
+
         counts = Counter(words)
+        print(f"got {len(counts)} unique words")
 
         # Sort words by frequency
         counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
