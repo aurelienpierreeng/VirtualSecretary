@@ -12,6 +12,8 @@ import io
 import errno
 import pickle
 import tarfile
+import time
+import numpy as np
 
 from typing import TypedDict
 from dateutil import parser
@@ -439,7 +441,6 @@ def typography_undo(string:str) -> str:
         string = string.translate(UNICODE_TO_ASCII)
         for key, value in SUBSTITUTIONS.items():
             string = string.replace(key, value)
-
         return string.strip()
     else:
         return ""
@@ -449,6 +450,7 @@ def guess_date(string: str) -> datetime:
     """Best effort to guess a date from a string using typical date/time formats"""
 
     if isinstance(string, str):
+        string = string.strip("[]{}() ")
         try:
             date = parser.parse(string)
         except Exception as e:
@@ -526,3 +528,26 @@ def get_stopwords_file(filename: str) -> dict:
     with open(path, "r") as f:
       d = dict(x.strip().split(": ", 1) for x in f)
     return d
+
+
+def timeit(runs: int = 1):
+    """Provide a `@timeit` decorator to profile the wall performance of a function.
+
+    Args:
+      - runs: how many times the function should be re-executed. Runtimes will give average and standard deviation.
+    """
+    def decorate(func):
+        def wrapper(*args, **kwargs):
+          results = []
+
+          for _ in range(runs):
+            start = time.time()
+            out = func(*args, **kwargs)
+            end = time.time()
+            results.append(end - start)
+
+          results = np.array(results)
+          print("function %s took (%f ± %f) s, average of %i runs" % (func.__name__, np.mean(results), np.std(results), results.size))
+          return out
+        return wrapper
+    return decorate
