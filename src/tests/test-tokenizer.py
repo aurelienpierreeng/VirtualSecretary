@@ -236,7 +236,7 @@ Yeah, It's not the container (mp4) that's the issue, but the codec. It's probabl
 
 You keep asking people to provide project files and snapshot and then you disappear without providing any help whatsoever just like in this thread and so many others.
 
-https://natron.readthedocs.io/en/rb-2.4/guide/tutorials-imagesequence.html how-to-convert-image-sequences-to-video-files.
+https://natron.readthedocs.io/en/rb-2.4/guide/tutorials-imagesequence.html#how-to-convert-image-sequences-to-video-files.
 
 I've already converted the PNG sequence I exported from natron into a video file using shotcut but nevertherless the instruction provided in the documentation using ffmpeg are simple and can be done, but what I have a problem is that the output file looks nothing like what I had on the viewer.
 Here is the project file
@@ -348,8 +348,23 @@ END_DATA
 
 """
 
+# Without stopwords
 tokenizer = nlp.Tokenizer()
-sentences = tokenizer.tokenize_per_sentence(text)
+
+@utils.timeit(runs=10)
+def tokenize(tokenizer, text):
+  return tokenizer.tokenize_per_sentence(text)
+
+sentences = tokenize(tokenizer, text)
+
+#for sentence in sentences:
+#  print(sentence)
+
+# With stopwords
+stopwords = list(utils.get_stopwords_file("stopwords-chantal").keys())
+tokenizer = nlp.Tokenizer(stopwords=stopwords)
+
+sentences = tokenize(tokenizer, text)
 
 for sentence in sentences:
   print(sentence)
