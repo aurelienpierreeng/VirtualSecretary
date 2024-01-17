@@ -239,17 +239,9 @@ REPLACEMENTS = {
 }
 
 # Normalize contractions and abbreviations
+# This assumes non-tokenized text and aims at
+# making tokenization more general
 ABBREVIATIONS = {
-    " n'": " ne ",
-    " c'": " ce ",
-    " j'": " je ",
-    " t'": " te ",
-    "qu'": "que ",
-    " s'": " se ",
-    " l'": " le ",
-    " d'": " de ",
-    " m'": " me ",
-
     "what's": "what is",
     "what're": "what are",
     "who's": "who is",
@@ -305,6 +297,8 @@ ABBREVIATIONS = {
     "hadn't": "had not",
     "won't": "will not",
     "shan't": "shall not",
+
+    "let's": "let us",
 
     " didnt ": " did not ",
     " cant ": " can not ",
