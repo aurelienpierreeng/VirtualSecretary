@@ -854,7 +854,7 @@ class Crawler:
         for lang in langs:
             link_tag = page.find('link', {'rel': 'alternate', 'hreflang': lang})
 
-            if link_tag and link_tag["href"]:
+            if link_tag and "href" in link_tag and link_tag["href"]:
                 translatedURL = relative_to_absolute(link_tag["href"], domain, current_url)
                 content_type, status = get_content_type(translatedURL)
 
