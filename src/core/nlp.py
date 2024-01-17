@@ -728,6 +728,11 @@ class search_methods(IntEnum):
     GREP = 3
 
 class Indexer():
+
+    def cleanup_spaces(self, post):
+        post["content"] = self.word2vec.tokenizer.clean_whitespaces(str(post["content"]))
+        return post
+
     def __init__(self,
                  data_set: list,
                  name: str,
@@ -746,12 +751,26 @@ class Indexer():
                 - `forest`: Random Forest Classifier, which is a set of decision trees. It runs about 15-20% faster than linear SVM but tends to perform marginally better in some contexts, however it produces very large models (several GB to save on disk, where SVM needs a few dozens of MB).
             features (int): the number of model features (dimensions) to retain. This sets the number of dimensions for word vectors found by word2vec, which will also be the dimensions in the last training layer.
         """
-        print(f"Init. Got {len(data_set)} items.")
-
         if word2vec:
             self.word2vec = word2vec
         else:
             raise ValueError("wv needs to be a dictionnary-like map")
+
+        # Shuffle the dataset prior to multithreading to even the probability that
+        # one process hangs significantly longer than the others
+        random.shuffle(data_set)
+        processes = os.cpu_count()
+        print(f"Init. Got {len(data_set)} items.")
+
+        # Cleanup whitespaces and remove elements too short to be meaningful
+        #for post in data_set:
+        #    post["content"] = self.word2vec.tokenizer.clean_whitespaces(post["content"])
+        with Pool(processes=processes) as pool:
+            data_set : list = pool.map(self.cleanup_spaces, data_set)
+
+        print("done with whitspaces removal")
+
+        data_set = [post for post in data_set if len(typography_undo(post["content"])) > 250]
 
         # Remove duplicated content if any.
         # For example, translated content when non-existent translations are inited with the original language.
@@ -767,43 +786,58 @@ class Indexer():
             idx_max = sizes.index(max(sizes))
             data_set.append(value[idx_max])
 
-        # Posts too short contain probably nothing useful
-        data_set = [post for post in data_set if len(self.word2vec.tokenizer.clean_whitespaces(post["content"])) > 250]
-
+        del cleaned_set
         print(f"Cleanup. Got {len(data_set)} remaining items.")
 
         # The database of web pages with limited features.
-        # Keep only pages having at least 250 letters in their content
-        self.index = {post["url"]:
-                      {"title": str(post["title"]),
-                       "excerpt": str(post["excerpt"]) if post["excerpt"] else str(post["content"])[0:800],
-                       "date": guess_date(post["date"]) if post["date"] else None,
-                       "url": post["url"],
-                       "language": guess_language(str(post["content"])),
-                       "category": post["category"] if "category" in post else None,
-                       "sentences": list({s
-                                          for s in set(
-                                              self.word2vec.tokenizer.split_sentences(
-                                                  self.word2vec.tokenizer.clean_whitespaces(str(post["content"])),
-                                                  guess_language(str(post["content"]))
-                                            ))
-                                        })
-                       }
-                      for post in data_set}
+        for post in data_set:
+            self.create_index(post)
 
-        # Build the training set from webpages
-        training_set = [Data(str(post["title"]) + "\n\n" + str(post["content"]), post["url"])
-                        for post in data_set]
+        self.index = {post["url"]: post for post in data_set}
+        del data_set # gargage collection to spare RAM
 
-        # Prepare the ranker for BM25 : list of tokens for each document
-        with Pool() as pool:
-            ranker_docs: list = pool.map(self.tokenize_parallel, training_set)
+        print("index built")
 
-        # Turn tokens into features
-        with Pool() as pool:
-            docs: list = pool.map(self.get_features_parallel, ranker_docs)
+        # List of tokens and meta-tokens for each document
+        ranker_docs: list = []
+        with Pool(processes=processes) as pool:
+            runner = pool.imap(self.tokenize_parallel, list(self.index.values()), chunksize=20)
+            run = True
+            while run:
+                try:
+                    # Allow 1 minute to complete tokenization.
+                    # On Intel Xeon, most documents complete in under a second.
+                    # Some documents lead to catastrophic backtracking with the
+                    # URL regex pattern and need to be stopped the hard way.
+                    doc = next(runner)
+                    ranker_docs.append(doc)
+                except multiprocessing.TimeoutError:
+                    print("timeout")
+                except StopIteration:
+                    run = False
 
-        self.vectors_all = np.array(docs)
+        print("tokenization done")
+
+        # Turn pages into vector features
+        docs : list = []
+        with Pool(processes=processes) as pool:
+            runner = pool.imap(self.get_features_parallel, ranker_docs, chunksize=20)
+            run = True
+            while run:
+                try:
+                    # Allow 1 minute to complete tokenization.
+                    # On Intel Xeon, most documents complete in under a second.
+                    # Some documents lead to catastrophic backtracking with the
+                    # URL regex pattern and need to be stopped the hard way.
+                    doc = next(runner)
+                    docs.append(doc)
+                except multiprocessing.TimeoutError:
+                    print("timeout")
+                except StopIteration:
+                    run = False
+
+        self.vectors_all = np.array(docs, dtype=np.float32)
+        del docs # garbage collection for RAM use
         self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
 
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
@@ -813,14 +847,25 @@ class Indexer():
         joblib.dump(self, get_models_folder(name + ".joblib.bz2"), compress=9, protocol=pickle.HIGHEST_PROTOCOL)
 
 
+    def create_index(self, post: dict):
+        post["excerpt"] = str(post["excerpt"]) \
+            if post["excerpt"] and len(post["excerpt"]) > 600 \
+            else post["content"][0:min(len(post["content"]), 800)]
+        post["date"] = guess_date(str(post["date"])) if post["date"] else None
+        post["category"] = str(post["category"]) if "category" in post else None
+        post["title"] = str(post["title"])
+        return post
+
+
     def get_features_parallel(self, tokens: list[str]) -> tuple[str, str]:
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
         # Language doesn't matter, tokenization and normalization are done already
         return self.word2vec.get_features(tokens, embed="OUT")
 
 
-    def tokenize_parallel(self, post: Data) -> list[str]:
-        tokens = self.word2vec.tokenizer.tokenize_document(post.text, meta_tokens=True)
+    def tokenize_parallel(self, post: dict) -> list[str]:
+        content = post["title"] + "\n\n" + post["content"]
+        tokens = self.word2vec.tokenizer.tokenize_document(content, meta_tokens=True)
         return tokens
 
 
@@ -860,7 +905,7 @@ class Indexer():
         if not (isinstance(query, str) or isinstance(query, re.Pattern)):
             raise ValueError("Wrong query type (%s) for GREP ranking method. Should be string or regular expression pattern" % type(query))
 
-        results = np.array([len(re.findall(query, "\n\n".join(document["sentences"])))
+        results = np.array([len(re.findall(query, document["content"], timeout=60))
                             for document in self.index.values()], dtype=np.float64)
         max_rank = np.amax(results)
         if max_rank > 0.: results /= max_rank
@@ -869,7 +914,7 @@ class Indexer():
 
     def rank_fuzzy(self, tokens: list[str]) -> np.ndarray:
         if not isinstance(tokens, list):
-            raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(query))
+            raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(tokens))
 
         return self.ranker.get_scores(tokens)
 
@@ -886,7 +931,7 @@ class Indexer():
         # then aggregate the ranking from BM25+ to it for each URL.
         # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
         norm *= len(tokens)
-        return 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
+        return np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
 
 
     def rank(self, query: str|tuple|re.Pattern, method: search_methods,
@@ -919,7 +964,7 @@ class Indexer():
 
         # Filter out documents NOT matching the pattern
         if pattern:
-            matches = [True if re.findall(pattern, "\n\n".join(document["sentences"])) else False
+            matches = [True if re.findall(pattern, document["content"], timeout=60) else False
                        for document in self.index.values()]
             matches = zip(results, matches)
             results = [result_tuple for result_tuple, match in matches if match]
