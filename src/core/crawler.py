@@ -376,7 +376,7 @@ def get_pdf_content(url: str,
         return []
 
 
-def get_page_content(url: str, content: str = None) -> BeautifulSoup | None:
+@utils.exit_after(120)
     """Request an (x)HTML page through the network with HTTP GET and feed its response to a BeautifulSoup handler. This needs a functionnal network connection.
 
     The DOM is pre-filtered as follow to keep only natural language and avoid duplicate strings:
