@@ -211,7 +211,7 @@ class Tokenizer():
             `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
             `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
         """
-        string = word.strip("=+-,:;'\"^*./`()[]{}& ")
+        string = word.strip("#=+-,:;'\"^*./`()[]{}& ")
 
         if len(string) == 0:
             # empty string
@@ -221,14 +221,14 @@ class Tokenizer():
             string = REPLACEMENTS[string]
 
         if string in self.meta_tokens:
-            # Input is lowercase, need to fix that for meta tokens.
-            return string.upper()
+            return string
 
         if "_" in string or "<" in string or ">" in string or "\\" in string or "=" in string or "~" in string:
             # Technical stuff, like markup/code leftovers and such
             return None
 
         # Last chance of identifying meta-tokens in an atomic way
+        """
         if meta_tokens:
             for key, value in self.meta_tokens_pipe.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
@@ -243,6 +243,7 @@ class Tokenizer():
                         return "_NUMBER_"
                     else:
                         return value.strip()
+        """
 
         # Lemmatize / Stem
         string = self.lemmatize(string)
@@ -341,6 +342,7 @@ class Tokenizer():
                 # Anonymize users/emails and prevent tokenizers from splitting @ from the username
                 USER: " _USER_ ",
                 # URLs and IPs - need to go before pathes
+                # URLs can contain IPs, so process them first
                 URL_PATTERN: ' _URL_ ',
                 IP_PATTERN: ' _IP_ ',
                 # File types - need to go before pathes
@@ -382,13 +384,22 @@ class Tokenizer():
                 ORDINAL: " _ORDINAL_ ",
                 ORDINAL_FR: " _ORDINAL_ ",
                 # Numerical : prices and resolutions
-                PRICE_US_PATTERN: " _PRICE_ ",
-                PRICE_EU_PATTERN: " _PRICE_ ",
+                PRICE_PATTERN: " _PRICE_ ",
                 RESOLUTION_PATTERN: " _RESOLUTION_ ",
                 # Remove numbers
                 NUMBER_PATTERN: ' _NUMBER_ ',
                 # Remove HEX hashes, like IDs and commit names
                 HASH_PATTERN: ' _HASH_ ',
+                # In-words dashes : replace by space
+                DASHES: " ",
+                # French words contractions : expand for generality
+                FRANCAIS: r"\1e ",
+                # Weird domains that are not really URLs : replace dots by space
+                MEMBERS_PATTERN: " ",
+                # Missing/partial/invalid file pathes
+                PARTIAL_PATH_REGEX: " _PATH_ ",
+                # Word alternatives like and/or : replace slash by space
+                ALTERNATIVES: " ",
             }
         else:
             self.meta_tokens_pipe = meta_tokens

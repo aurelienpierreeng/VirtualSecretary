@@ -7,24 +7,50 @@ You can use https://regex101.com/ to test these conveniently.
 
 import regex as re
 
+regex_starter = r"(?<=^|\s|\[|\(|\{|\<|\'|\"|`|;)"
+"""Start of line, or start of document, or start of markup"""
+
+regex_stopper = r"(?=$|\s|\]|\)|\}|\>|\'|\"|`|;)"
+"""End of line, or end of document, or end of markup"""
+
+end_of_word = r"(?=$|\s|\]|\)|\}|\>|\'|\"|`|;|:|,|\?|\!|\.)"
+"""End of word, or end of line, or end of document, or end of markup"""
+
+regex_algebra = r"[\+\-\=\≠\±]"
+"""Algebraic signs"""
+
+"""
+Note : the *_FAST patterns are meant to be used on tokens (single words).
+They expect to find full matches (aka the whole token matches the pattern).
+
+The non *_FAST patterns can be used on tokens or on full documents. They try
+to find matches anywhere, enclosed in whitespaces, parenthesis, brackets, etc.
+That makes them slower but more generic.
+"""
+
 # Internet-specific patterns
 
-IP_PATTERN = re.compile(r"(?=^|\s|\[|\(|\{|\<)((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[0-9a-fA-F]{1,4}:){3}[0-9a-fA-F]{1,4}))(?=$|\s|\]|\)|\}|\>)", re.IGNORECASE)
+regex_ip = r"((?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)|(?:(?:fe80::)?(?:[\da-f]{1,4}:){3,8}(?::?\/?[\da-f]{1,4})*))"
+IP_PATTERN_FAST = re.compile(r"^%s$" % regex_ip, re.IGNORECASE)
+IP_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_ip, regex_stopper), re.IGNORECASE)
 """IPv4 and IPv6 patterns where the whole IP is captured in the first group."""
 
-EMAIL_PATTERN = re.compile(r"<?([0-9a-zA-Z\-\_\+\.]+?@[0-9a-zA-Z\-\_\+]+(\.[0-9a-zA-Z\_\-]{2,})+)>?", re.IGNORECASE)
+EMAIL_PATTERN = re.compile(r"<?([0-9a-z\-\_\+\.]+?@[0-9a-z\-\_\+]+(\.[0-9a-z\_\-]{2,})+)>?", re.IGNORECASE)
 """Emails patterns like `<me@mail.com>` or `me@mail.com` where the whole address is captured in the first group."""
 
-URL_PATTERN = re.compile(r"(?<=^|\s|\[|\(|\{|\<|\")((?:http|ftp)s?)?:?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?(\/?[^?#\s\"\,\;\:>]*)(\?[^\s\#\\\/]*)?(\#[^\s\?\\\/]*)?(\?[^\s\#\\\/]*)?(?=$|\s|\]|\)|\}|\>|\")", re.IGNORECASE)
+regex_url = r"((?:http|ftp)s?)?:?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?(\/?[^?#\s\"\,\;\:>]*)(\?[^\s\#\\\/]*)?(\#[^\s\?\\\/]*)?"
+URL_PATTERN_FAST = re.compile(r"^%s$" % regex_url, re.IGNORECASE)
+URL_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_url, end_of_word), re.IGNORECASE)
 """URL patterns like `http(s)://domain.ext/page/subpage?q=x&r=0:1#anchor` or `//domain.ext/page`.
+URL must follow [RFC3986](https://www.rfc-editor.org/rfc/rfc3986#section-4.1), meaning query parameters
+should be before anchors, if any. Relying on this assumption allows a faster regex parsing.
 
 - the protocol (ftp, ftps, http, https) is captured as the first group,
 - `domain.ext` is captured as the second group,
 - `/page/etc` is the third group, including leading and trailing `/`,
-- anchor `#anchor` is the fifth group, including `#`.
 - page query parameters `?s=x&r=0`, including `?`, is
 the fourth group if the URL declares `...?params#anchor`,
-or the sixth group if the URL declares `...#anchor?params`,
+- anchor `#anchor` is the fifth group, including `#`, if the URL declares `...?params#anchor`.
 
 URLs are captured if they are:
 
@@ -34,16 +60,22 @@ URLs are captured if they are:
 
  Warning: URLs enclosed in `()`, `[]` and `{}` may retain the closing sign
  as part of the page name since `()` and `[]` are valid in URL pathes
- and parameters. You may have to parse Markdown to HTML before using
- this pattern for it to work as expected.
+ and parameters. This pattern will work on plain text only: Markdown, XML, HTML and JSON
+ will need to be parsed ahead.
  """
+
+MEMBERS_PATTERN = re.compile(r"(?<=[a-z])(\.)(?=[a-z])", re.IGNORECASE)
+"""Domain patterns without leading protocol like `cdn.company.com`
+or class members in object-oriented programming languages like `params.cookies.client`."""
 
 # Date/time
 
-DATE_PATTERN = re.compile(r"((\d{1,4})(?:-|\/)(\d{2})(?:-|\/)(\d{2,4}))")
+date_regex = r"(?<=^|\s|\[|\(|\{|\<|\'|\"|`|;)((\d{1,4})(?:-|\/)(\d{2})(?:-|\/)(\d{2,4}))(?=$|\s|\]|\)|\}|\>|\'|\"|`|;|:|,|\?|\!|\.|t)"
+DATE_PATTERN = re.compile(date_regex, re.IGNORECASE)
 """Dates like `2022-12-01`, `01-12-2022`, `01-12-22`, `01/12/2022`, `01/12/22` where the whole date is captured in the first group, then each group of digits is captured in the order of appearance, in the next 3 groups"""
 
-TIME_PATTERN = re.compile(r"(\d{1,2}) ?(?:(h|H|:|am|pm|AM|PM)) ?(\d{2}|)?(?:\:(\d{2}))? ?(h|H|am|pm|AM|PM|Z|UTC)? ?((?:\+|\-)\d{1,2})?")
+time_regex = r"(?<=^|\s|\[|\(|\{|\<|\'|\"|`|;|t)(\d{1,2}) ?(?:(h|H|:|am|pm)) ?(\d{2}|)?(?:\:(\d{2}))? ?(h|am|pm|z|utc)? ?((?:\+|\-)\d{1,4})?(?=$|\s|\]|\)|\}|\>|\'|\"|`|;|:|,|\?|\!|\.)"
+TIME_PATTERN = re.compile(time_regex, re.IGNORECASE)
 """Identify more or less standard time patterns, like :
 
 - 12h15
@@ -55,6 +87,7 @@ TIME_PATTERN = re.compile(r"(\d{1,2}) ?(?:(h|H|:|am|pm|AM|PM)) ?(\d{2}|)?(?:\:(\
 - 12:15:00Z
 - 12:15:00+01
 - 12:15:00 UTC+1
+- 11:27:45+0000
 
 Returns:
   0 (str): 1- or 2-digits hour,
@@ -87,11 +120,20 @@ FLAGS_PATTERN = re.compile(r"FLAGS \((.*?)\)")
 
 # All characters allowed in file names, aka not the following:
 # Note: whitespace is technically allowed in file names, but it's a mess to include in regexs
-filename = r"[^\#\%\<\>\&\*\{\}\\\/\?\$\!\|\=\"\'\@\n\r\t\b ]+?"
+filename = r"[^\#\%\<\>\&\*\{\}\\\/\?\$\!\|\=\"\'\@\n\r\t\b ]+"
 non_filename = r"[\#\%\<\>\&\*\{\}\\\/\?\$\!\|\=\"\'\@\n\r\t\b ]"
 
-PATH_PATTERN = re.compile(r"([A-Z]:|\.)?(\\\\|\/)(%s(\\\\|\/)?)+" % filename)
+path_regex = r"([A-Z]\:\\\\|\.\/|\~\/|\/)((?:%s(?:\\|\/)?)+)" % filename
+PATH_PATTERN = re.compile(r"%s%s%s" % (regex_starter, path_regex, end_of_word))
 """File path pattern like `~/file`, `/home/file`, `./file` or `C:\\windows`"""
+
+partial_path_regex = r"(%s(?:\\|\/)){2,}(%s)?" % (filename, filename)
+PARTIAL_PATH_REGEX = re.compile(r"%s%s%s" % (regex_starter, partial_path_regex, end_of_word))
+"""Partial, invalid path patterns missing the leading root, like `home/user/stuff`.
+We start capturing after at least two folder separators `/` or `\`.
+
+WARNING: this will collide with date detection, so run it after in the pipeline.
+"""
 
 filename = r"(?<=%s)%s" % (non_filename, filename)
 
@@ -109,73 +151,90 @@ DATABASE_PATTERN = re.compile(r"%s\.(db|sql|sqlite)(?![\.\S]\S)" % filename, re.
 
 EXECUTABLE_PATTERN = re.compile(r"%s\.(so|exe|dmg|appimage|bin|run|apk|jar|cmd|jar|workflow|action|autorun|osx|app|vb|dll|scr|bin|rpm|deb|distinfo)((?:\.[a-z0-9]+)+)?(?![a-zA-Z])" % filename, re.IGNORECASE)
 
-SHORTCUT_PATTERN = re.compile(r"(?<=^|[\s\[\(\':])(?:(?:fn|tab|ctrl|shift|alt|altgr|maj|command|cmd|option|menu|⌘))(?: ?\+ ?(?:⌘|tab|ctrl|shift|maj|alt|altgr|command|cmd|option|menu|click|clic|up|down|left|right|top|bottom|enter|return|del|suppr|home|end|pageup|pagedown|fn|home|end|insert|numlock|scroll|drag|f1|f2|f3|f4|f5|f6|f7|f8|f9|f10|f11|f12|[a-z]))+(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
+shortcut_regex = r"(?:(?:fn|tab|ctrl|shift|alt|altgr|maj|command|cmd|option|menu|⌘))(?: ?\+ ?(?:⌘|tab|ctrl|shift|maj|alt|altgr|command|cmd|option|menu|click|clic|up|down|left|right|top|bottom|enter|return|del|suppr|home|end|pageup|pagedown|fn|home|end|insert|numlock|scroll|drag|f1|f2|f3|f4|f5|f6|f7|f8|f9|f10|f11|f12|[a-z]))+"
+SHORTCUT_PATTERN = re.compile(r"%s%s%s" % (regex_starter, shortcut_regex, end_of_word), flags=re.IGNORECASE)
 
 # For performance, on some technical log files where long sequences of numbers are found,
 # we need to collapse them into smaller numbers sequences for the physical units patterns to work within reasonable timings.
 # To exclude dates and times, we detect only starting at 5 digits.
-NUMBER_SEQUENCE_PATTERN = re.compile(r"(?<=^|\s|\[|\'|\(|\")([\.\,\-\/\+\-±]?(?:\d+[\.\,\/\+\-\s]*){5,})(?=\s|$|\:|\;|,|\?|\!|\]|\)|\'|\")")
+NUMBER_SEQUENCE_PATTERN = re.compile(r"(?<=^|\s|\[|\'|\(|\")(%s?(?:\d+[\.\,\/\+\-\s]*){5,})(?=\s|$|\:|\;|,|\?|\!|\]|\)|\'|\")" % regex_algebra)
 
 # For some reason, merging both patterns in the same triggers infinite loop, so split it…
-PRICE_US_PATTERN = re.compile(r"(?<=^|\s|\[|\'|\()([+-=≠±])?((usd|eur|USD|EUR|\€|\$|\£) ?\d+(?:[.,\-]\d+)*)(k|K)?(?=\s|$|\:|\;|\?|\!|\]|\)|\')")
-PRICE_EU_PATTERN = re.compile(r"(?<=^|\s|\[|\'|\()([+-=≠±])?(\d+(?:[.,\-]\d+)* ?(k|K)?(usd|eur|USD|EUR|\€|\$|\£))(?=\s|$|\:|\;|\?|\!|\]|\)|\')")
+price_regex = r"(%s)?(?:(?:(k)?(usd|eur|\€|\$|\£) ?((?:\d+[\.\,\+\- ]?)+))|(?:((?:\d+[\.\,\+\- ]?)+) ?(k)?(usd|eur|\€|\$|\£)))" % regex_algebra
+PRICE_PATTERN = re.compile(r"%s%s%s" % (regex_starter, price_regex, end_of_word), re.IGNORECASE)
 
-RESOLUTION_PATTERN = re.compile(r"\d+(×|x|X)\d+")
+RESOLUTION_PATTERN = re.compile(r"\d+(?:×|x|X)\d+")
 """Pixel resolution like 10x20 or 10×20. Units are discarded."""
 
-NUMBER_PATTERN = re.compile(r"(?<=^|\s|\[|\'|\(|\")([\.\,\-\/\+\-±]?(?:\d+[\.\,\/\+\-]?)+)(?=\s|$|\:|\;|,|\?|\!|\]|\)|\'|\")")
+regex_number = r"(%s?(?:\d+[\.\,\/\+\- ]?)+)" % regex_algebra
+NUMBER_PATTERN_FAST = re.compile(r"^%s$" % regex_number)
+NUMBER_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_number, regex_stopper))
 """Signed integers and decimals, fractions and numeric IDs with interal dashes and underscores.
 Numbers with starting or trailing units are not considered. Lazy decimals (.1 and 1.) are considered.
 """
 
-ORDINAL = re.compile(r"(?<=^|[\s\[\(\'])([0-9]+)(st|nd|rd|th|e|er|ère|ere|nde|ème|eme)(?=$|[\s.,?!\-:;\]\)])", re.IGNORECASE)
+ORDINAL = re.compile(r"%s([0-9]+)(st|nd|rd|th|e|er|ère|ere|nde|ème|eme)%s" % (regex_starter, end_of_word), re.IGNORECASE)
 
 HASH_PATTERN = re.compile(r"([0-9a-f]){8,}", re.IGNORECASE)
 """Cryptographic hexadecimal hashes and fingerprints, of a min length of 8 characters."""
 
-MULTIPLE_LINES = re.compile(r"(?:(?: ?[\t\r\n] ?){2,})+")
+MULTIPLE_LINES = re.compile(r"(?: ?[\t\r\n]{2,} ?)+")
 """Detect more than 2 newlines and tab, possibly mixed with spaces"""
 
 MULTIPLE_SPACES = re.compile(r"( )+")
 
 # Physical quantities (unit numbers)
 
-EXPOSURE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(ev|il)s?(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
+exposure_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(ev|il)s?" % regex_algebra
+EXPOSURE = re.compile(r"%s%s%s" % (regex_starter, exposure_regex, end_of_word), flags=re.IGNORECASE)
 """Exposure values in EV or IL"""
 
-PIXELS = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?(p|px|pixels|pix)s?(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
+pixels_regex = r"(%s)? ?([0-9]+) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?(p|px|pixels|pix)s?" % regex_algebra
+PIXELS = re.compile(r"%s%s%s" % (regex_starter, pixels_regex, end_of_word), flags=re.IGNORECASE)
 
-SENSIBILITY = re.compile(r"(?<=^|[\s\[\(\'])(ISO|ASA) ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?)|([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(ISO|ASA)s?(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
+sensibility_regex = r"(iso|asa) ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?)|([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(iso|asa)s?"
+SENSIBILITY = re.compile(r"%s%s%s" % (regex_starter, sensibility_regex, end_of_word), flags=re.IGNORECASE)
 """Photographic sensibility in ISO or ASA"""
 
-LUMINANCE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(Cd\/m²|Cd\/m2|Cd\/m\^2|nit|nits)(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
+luminance_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(Cd\/m²|Cd\/m2|Cd\/m\^2|nit|nits)" % regex_algebra
+LUMINANCE = re.compile(r"%s%s%s" % (regex_starter, luminance_regex, end_of_word), flags=re.IGNORECASE)
 """Luminance/radiance in nits or Cd/m²"""
 
-DIAPHRAGM = re.compile(r"(?<=^|[\s\[\(\'])f\/?([0-9]+\.?[0-9]?)(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
-"""Photographic diaph aperture values like f/2.8 or f1.4"""
+diaphragm_regex = r"f\/([0-9]+\.?[0-9]?)"
+# Don't look ahead for end of word here since lenses focal lengthes may be followed by reference letters
+DIAPHRAGM = re.compile(r"%s%s" % (regex_starter, diaphragm_regex), flags=re.IGNORECASE)
+"""Photographic diaph aperture values like f/2.8 or f/11"""
 
-GAIN = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(dB|decibel|décibels)s?(?=$|[\s.,?!\-:;\]\)])", flags=re.IGNORECASE)
+gain_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(dB|decibel|décibel)s?" % regex_algebra
+GAIN = re.compile(r"%s%s%s" % (regex_starter, gain_regex, end_of_word), flags=re.IGNORECASE)
 """Gain, attenuation and PSNR in dB"""
 
-FILE_SIZE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?i?(b|o)s?(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
+filesize_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?i?(b|o)s?" % regex_algebra
+FILE_SIZE = re.compile(r"%s%s%s" % (regex_starter, filesize_regex, end_of_word), flags=re.IGNORECASE)
 """File and memory size in bit, byte, or octet and their multiples"""
 
-DISTANCE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(nano|n|micro|µ|milli|m|centi|c|deci|d|deca|hecto|kilo|k|mega|giga|g)?(m|meter|mètre|metre|in|inch|inche|ft|foot|feet|\'|\'\'|’|’’|\″)s?(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
+distance_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(nano|n|micro|µ|milli|m|centi|c|deci|d|deca|hecto|kilo|k|mega|giga|g)?(m|meter|mètre|metre|in|inch|inche|ft|foot|feet|\'|\'\'|’|’’|\″)s?" % regex_algebra
+DISTANCE = re.compile(r"%s%s%s" % (regex_starter, distance_regex, end_of_word), flags=re.IGNORECASE)
 """Distance in meter, inch, foot and their multiples"""
 
-PERCENT = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?\%(?=\s|$|[.,?!\-:;\]\)])")
+percent_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?\%%" % regex_algebra
+PERCENT = re.compile(r"%s%s%s" % (regex_starter, percent_regex, end_of_word))
 """Number followed by %"""
 
-WEIGHT = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(nano|n|micro|µ|milli|m|centi|c|deci|d|deca|hecto|kilo|k|mega|giga|g)?(g|gram|gramme|lb|pound)s?(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
+weight_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(nano|n|micro|µ|milli|m|centi|c|deci|d|deca|hecto|kilo|k|mega|giga|g)?(g|gram|gramme|lb|pound)s?" % regex_algebra
+WEIGHT = re.compile(r"%s%s%s" % (regex_starter, weight_regex, end_of_word), flags=re.IGNORECASE)
 """Weight (mass) in British and SI units and their multiples"""
 
-ANGLE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(deg|degree|degré|degre|°|rad|radian|sr|steradian)s?(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
+angle_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(deg|degree|degré|degre|°|rad|radian|sr|steradian)s?" % regex_algebra
+ANGLE = re.compile(r"%s%s%s" % (regex_starter, angle_regex, end_of_word), flags=re.IGNORECASE)
 """Angles in radians, degrees and steradians"""
 
-TEMPERATURE = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(°C|degC|degree C|celsius|K|°F|kelvin)(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
+temperature_regex = r"(%s)?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(°C|degC|degree C|celsius|K|°F|kelvin)" % regex_algebra
+TEMPERATURE = re.compile(r"%s%s%s" % (regex_starter, temperature_regex, end_of_word), flags=re.IGNORECASE)
 """Temperatures in °C, °F and K"""
 
-FREQUENCY = re.compile(r"(?<=^|[\s\[\(\'])([+\-=≠±])?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(nano|n|micro|µ|milli|m|centi|c|deci|d|deca|hecto|kilo|k|mega|giga|g)?(Hz|hertz)(?=\s|$|[.,?!\-:;\]\)])", flags=re.IGNORECASE)
+frequency_regex = r"(%s)?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(nano|n|micro|µ|milli|m|centi|c|deci|d|deca|hecto|kilo|k|mega|giga|g)?(Hz|hertz)" % regex_algebra
+FREQUENCY = re.compile(r"%s%s%s" % (regex_starter, frequency_regex, end_of_word), flags=re.IGNORECASE)
 """Frequencies in hertz and multiples"""
 
 
@@ -202,13 +261,13 @@ BB_CODE = re.compile(r"\[(img|quote)[a-zA-Z0-9 =\"]*?\].*?\[\/\1\]")
 MARKUP = re.compile(r"(?:\[|\{|\<)([^\n\r]+?)(?:\]|\}|\>)")
 """Identifies left-over HTML and Markdown markup, like `<...>`, `{...}`, `[...]`"""
 
-USER = re.compile(r"(\S+)?@(\S+)|(user\-?\d+)")
+USER = re.compile(r"([\w\-\+\.]+)?@([\w\-\+\.]+)|(user\-?\d+)")
 """Identifies user handles or emails"""
 
 REPEATED_CHARACTERS = re.compile(r"(.)\1{9,}")
 """Identifies any character repeated more than 9 times"""
 
-UNFINISHED_SENTENCES = re.compile(r"(?<![?!.;:])\n\n")
+UNFINISHED_SENTENCES = re.compile(r"(?<![?!.;:])\n\n|\r\n")
 """Identifies sentences finishing with 2 newlines characters without having ending punctuations"""
 
 MULTIPLE_DOTS = re.compile(r"\.{2,}")
@@ -223,60 +282,65 @@ MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
 ORDINAL_FR = re.compile(r"n° ?([0-9]+)")
 """French ordinal numbers (numéros n°)"""
 
-FRANCAIS = re.compile(r"(?<=^|[\s\(\[\:]|lors|quel)(j|t|s|l|d|qu|m|c)\'(?=[aeiouyéèàêâîôûïüäëöh])", flags=re.IGNORECASE)
+FRANCAIS = re.compile(r"%s(j|t|s|l|d|qu|lorsqu|quelqu|jusqu|m|c|n)\'(?=[aeiouyéèàêâîôûïüäëöh][\w\s])" % regex_starter, flags=re.IGNORECASE)
 """French contractions of pronouns and determinants"""
 
+DASHES = re.compile(r"(?<=\w)(-)(?=\w)", re.IGNORECASE)
+"""Dashes in the middle of ASCII/Latin compounded words. Will not work if accented or Unicode characters are immediately surrounding the dash."""
 
-PLURAL_S = re.compile(r"(?<=\w{4,})s?e{0,2}s(?=\s|$|[.;:,])")
+ALTERNATIVES = re.compile(r"(?<=[a-z])(\/)(?=[a-z])", re.IGNORECASE)
+"""Slash-separated word alternatives like `and/or` `mr/mrs`"""
+
+PLURAL_S = re.compile(r"(?<=\w{4,})s?e{0,2}s%s" % end_of_word)
 """Identify plural form of nouns (French and English), adjectives (French) and third-person present verbs (English) and second-person verbs (French) in -s."""
 
-FEMININE_E = re.compile(r"(?<=\w{4,})e{1,2}(?=\s|$|[.;:,])")
+FEMININE_E = re.compile(r"(?<=\w{4,})e{1,2}%s" % end_of_word)
 """Identify feminine form of adjectives (French) in -e."""
 
 DOUBLE_CONSONANTS = re.compile(r"(?<=\w{2,})([^aeiouy])\1")
 """Identify double consonants in the middle of words."""
 
-FEMININE_TRICE = re.compile(r"(?<=\w{4,})t(rice|eur|or)(?=\s|$|[.;:,])")
+FEMININE_TRICE = re.compile(r"(?<=\w{4,})t(rice|eur|or)%s" % end_of_word)
 """Identify French feminine nouns in -trice."""
 
-ADVERB_MENT = re.compile(r"(?<=\w{4,})e?ment(?=\s|$|[.;:,])")
+ADVERB_MENT = re.compile(r"(?<=\w{4,})e?ment%s" % end_of_word)
 """Identify French adverbs and English nouns ending en -ment"""
 
-SUBSTANTIVE_TION = re.compile(r"(?<=\w{4,})(t|s)ion(?=\s|$|[.;:,])")
+SUBSTANTIVE_TION = re.compile(r"(?<=\w{4,})(t|s)ion%s" % end_of_word)
 """Identify French and English substantives formed from verbs by adding -tion and -sion"""
 
-SUBSTANTIVE_AT = re.compile(r"(?<=\w{4,})at(?=\s|$|[.;:,])")
+SUBSTANTIVE_AT = re.compile(r"(?<=\w{4,})at%s" % end_of_word)
 """Identify French and English substantives formed from other nouns by adding -at"""
 
-PARTICIPLE_ING = re.compile(r"(?<=\w{4,})ing(?=\s|$|[.;:,])")
+PARTICIPLE_ING = re.compile(r"(?<=\w{4,})ing%s" % end_of_word)
 """Identify English substantives and present participles formed from verbs by adding -ing"""
 
-ADJECTIVE_ED = re.compile(r"(?<=\w{4,})ed(?=\s|$|[.;:,])")
+ADJECTIVE_ED = re.compile(r"(?<=\w{4,})ed%s" % end_of_word)
 """Identify English adjectives formed from verbs by adding -ed"""
 
-ADJECTIVE_TIF = re.compile(r"(?<=\w{2,})ti(f|v)(?=\s|$|[.;:,])")
+ADJECTIVE_TIF = re.compile(r"(?<=\w{2,})ti(f|v)%s" % end_of_word)
 """Identify English and French adjectives formed from verbs by adding -tif or -tive"""
 
-SUBSTANTIVE_Y = re.compile(r"(?<=\w{3,})y(?=\s|$|[.;:,])")
+SUBSTANTIVE_Y = re.compile(r"(?<=\w{3,})y%s" % end_of_word)
 """Identify English substantives ending in -y"""
 
-VERB_IZ = re.compile(r"(?<=\w{4,})(i|y)z(?=\s|$|[.;:,])")
+VERB_IZ = re.compile(r"(?<=\w{4,})(i|y)z%s" % end_of_word)
 """Identify American verbs ending in -iz that French and Brits write in -is"""
 
-STUFF_ER = re.compile(r"(?<=\w{4,})er(?=\s|$|[.;:,])")
+STUFF_ER = re.compile(r"(?<=\w{4,})er%s" % end_of_word)
 """Identify French 1st group verb (infinitive) and English substantives ending in -er"""
 
-BRITISH_OUR = re.compile(r"(?<=\w{3,})our(?=\s|$|[.;:,\-])")
+BRITISH_OUR = re.compile(r"(?<=\w{3,})our%s" % end_of_word)
 """Identify British spelling ending in -our (colour, behaviour)."""
 
-SUBSTANTIVE_ITY = re.compile(r"(?<=\w{4,})it(y|e)(?=\s|$|[.;:,])")
+SUBSTANTIVE_ITY = re.compile(r"(?<=\w{4,})it(y|e)%s" % end_of_word)
 """Identify substantives in -ity (English) and -ite (French)."""
 
-SUBSTANTIVE_IST = re.compile(r"(?<=\w{3,})is(t|m)(?=\s|$|[.;:,])")
+SUBSTANTIVE_IST = re.compile(r"(?<=\w{3,})is(t|m)%s" % end_of_word)
 """Identify substantives in -ist and -ism."""
 
-SUBSTANTIVE_IQU = re.compile(r"(?<=\w{3,})i(qu|c)(?=\s|$|[.;:,])")
+SUBSTANTIVE_IQU = re.compile(r"(?<=\w{3,})i(qu|c)%s" % end_of_word)
 """Identify French substantives in -iqu"""
 
-SUBSTANTIVE_EUR = re.compile(r"(?<=\w{3,})eur(?=\s|$|[.;:,])")
+SUBSTANTIVE_EUR = re.compile(r"(?<=\w{3,})eur%s" % end_of_word)
 """Identify French substantives -eur"""
