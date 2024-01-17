@@ -49,7 +49,7 @@ def guess_language(string: str) -> str:
     """
 
     tokenizer = RegexpTokenizer(r'\w+|[\d\.\,]+|\S+')
-    words = {token.lower() for token in tokenizer.tokenize(string)}
+    words = {token for token in tokenizer.tokenize(string)}
     scores = []
     for lang in STOPWORDS_DICT:
         scores.append(len(words.intersection(STOPWORDS_DICT[lang])))
@@ -264,13 +264,13 @@ class Tokenizer():
         Returns:
             tokens (list[str]): the list of normalized tokens.
         """
-        tokens = [self.normalize_token(token.lower(), language, meta_tokens=meta_tokens)
+        tokens = [self.normalize_token(token, language, meta_tokens=meta_tokens)
                   for token in nltk.word_tokenize(str(sentence), language=language)]
         tokens = [item for item in tokens if isinstance(item, str)]
 
         if len(tokens) == 0:
             # Tokenization seems to fail on single-word queries, try again without it
-            tokens = [self.normalize_token(sentence.lower(), "english")]
+            tokens = [self.normalize_token(sentence, "english")]
 
         return [item for item in tokens if isinstance(item, str)]
 
@@ -298,7 +298,8 @@ class Tokenizer():
         Returns:
             tokens (list[str]): a 1D list of normalized tokens and meta-tokens.
         """
-        document = typography_undo(str(document))
+        document = str(document).lower()
+        document = typography_undo(document)
 
         if language is None:
             language = guess_language(document)
@@ -322,7 +323,8 @@ class Tokenizer():
         if self.processed_items % 50 == 0 and p._identity:
             print("P %i processed %i over %i" % (p._identity[0], self.processed_items, self.num_items))
 
-        clean_text = typography_undo(str(document))
+        document = self.clean_whitespaces(str(document).lower())
+        clean_text = typography_undo(document)
         language = guess_language(clean_text)
         clean_text = self.prefilter(clean_text, meta_tokens=meta_tokens)
         return [self.tokenize_sentence(sentence, language, meta_tokens=meta_tokens)
@@ -405,7 +407,7 @@ class Tokenizer():
         else:
             self.meta_tokens_pipe = meta_tokens
 
-        self.meta_tokens = [value.lower().strip()
+        self.meta_tokens = [value.strip()
                             for value in self.meta_tokens_pipe.values()
                             if value.startswith(" _") and value.endswith("_ ")]
 
@@ -486,7 +488,6 @@ class Word2Vec(gensim.models.Word2Vec):
                     # Some documents lead to catastrophic backtracking with the
                     # URL regex pattern and need to be stopped the hard way.
                     doc = runner.next(timeout=60)
-                    print(doc)
                     training.append(doc)
                 except multiprocessing.TimeoutError:
                     print("timeout")
