@@ -19,6 +19,9 @@ from io import BytesIO
 from PIL import Image
 import numpy as np
 from urllib.parse import urljoin
+import multiprocessing
+
+from core import utils
 
 from typing import TypedDict
 
@@ -353,10 +356,11 @@ def get_pdf_content(url: str,
                 content = hyphenized.sub("", content)
 
                 if content:
-                    # Make up a dummy anchor to make URLs to document sections unique
-                    # since that's what is used as key for dictionaries
+                    # Make up a page anchor to make URLs to document sections unique
+                    # since that's what is used as key for dictionaries. Also, Chrome and Acrobat
+                    # will be able to open PDF files at the right page with this anchor.
                     result = web_page(title=chapters_titles[i],
-                                        url=f"{url}#{i}",
+                                        url=f"{url}#page={i}",
                                         date=date,
                                         content=content,
                                         excerpt=None,
@@ -377,6 +381,7 @@ def get_pdf_content(url: str,
 
 
 @utils.exit_after(120)
+def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, list[str]]:
     """Request an (x)HTML page through the network with HTTP GET and feed its response to a BeautifulSoup handler. This needs a functionnal network connection.
 
     The DOM is pre-filtered as follow to keep only natural language and avoid duplicate strings:
@@ -384,6 +389,7 @@ def get_pdf_content(url: str,
     - media tags are removed (`<iframe>`, `<embed>`, `<img>`, `<svg>`, `<audio>`, `<video>`, etc.),
     - code and machine language tags are removed (`<script>`, `<style>`, `<code>`, `<pre>`, `<math>`),
     - menus and sidebars are removed (`<nav>`, `<aside>`),
+    - forms, fields and buttons are removed(`<select>`, `<input>`, `<button>`, `<textarea>`, etc.)
     - quotes tags are removed (`<quote>`, `<blockquote>`).
 
     The HTML is un-minified to help end-of-sentences detections in cases where sentences don't end with punctuation (e.g. in titles).
@@ -393,7 +399,7 @@ def get_pdf_content(url: str,
         content: a string buffer used as HTML source. If this argument is passed, we don't fetch `url` from network and directly use this input.
 
     Returns:
-        a [bs4.BeautifulSoup][] objects initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached.
+        a [bs4.BeautifulSoup][] object initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached. The list of URLs found in page before removing meaningless markup is stored as a list of strings in the `object.links` member.
     """
 
     try:
@@ -423,17 +429,21 @@ def get_pdf_content(url: str,
         # This is going to make sentence tokenization a nightmare because BeautifulSoup doesn't add them in get_text()
         # Re-introduce here 2 carriage-returns after those tags to create paragraphs.
         unminified = re.sub(r"(\<\/(?:div|section|main|section|aside|header|footer|nav|time|article|h[1-6]|p|ol|ul|li|details|pre|dl|dt|dd|table|tr|th|td|blockquote|style|img|audio|video|iframe|embed|figure|canvas|fieldset|hr|caption|figcaption|address|form|noscript|select)\>)",
-                            r"\1\n\n\n\n", content)
+                            r"\1\n\n\n\n", content, timeout=30)
         # Same with inline-level tags, but only insert space, except for superscript and subscript
         unminified = re.sub(r"(\<\/(?:a|span|time|abbr|b|i|em|strong|code|dfn|big|kbd|label|textarea|input|option|var|q|tt)\>)",
-                            r"\1 ", unminified)
+                            r"\1 ", unminified, timeout=30)
 
         handler = BeautifulSoup(unminified, "html5lib")
 
+        # In case of recursive crawling, we need to milk the links out before we remove <nav> at the next step
+        handler.links = [url["href"] for url in handler.find_all('a', href=True) if url["href"]]
+
         # Remove any kind of machine code and symbols from the HTML doctree because we want natural language only
         # That will also make subsequent parsing slightly faster.
-        # Remove blockquotes too because they can duplicate internal content of forum pages
-        for element in handler.select('code, pre, math, style, script, svg, img, audio, video, iframe, embed, blockquote, quote, aside, nav'):
+        # Remove blockquotes too because they can duplicate internal content of forum pages.
+        # Basically, the goal is to get only the content body of the article/page.
+        for element in handler.select('code, pre, math, style, script, svg, img, picture, audio, video, iframe, embed, blockquote, quote, aside, nav, input, header, button, form, fieldset, footer, summary, dialog, textarea, select, option'):
             element.decompose()
 
         # Remove inline style and useless attributes too
@@ -618,7 +628,9 @@ def parse_page(page: BeautifulSoup, url: str,
 
 
 def check_contains(contains_str: list[str] | str, url: str):
-    if isinstance(contains_str, str):
+    if contains_str == "":
+        return True
+    elif isinstance(contains_str, str):
         return contains_str in url
     elif isinstance(contains_str, list):
         for elem in contains_str:
@@ -645,7 +657,7 @@ class Crawler:
         for url in page.find_all('a', href=True):
             nextURL = radical_url(relative_to_absolute(url["href"], domain, currentURL))
             if nextURL not in self.crawled_URL:
-                output += self.get_website_from_crawling(nextURL.rstrip("/#"), default_lang, "", langs, max_recurse_level=2, category=category, _recursion_level=1)
+                output += self.get_website_from_crawling(nextURL.rstrip("/#"), default_lang, "", langs, max_recurse_level=1, category=category, _recursion_level=0)
 
         return output
 
@@ -659,6 +671,7 @@ class Crawler:
                                   contains_str: str | list[str] = "",
                                   max_recurse_level: int = -1,
                                   category: str = None,
+                                  restrict_section: bool = False,
                                   _recursion_level: int = 0) -> list[web_page]:
         """Recursively crawl all pages of a website from internal links found starting from the `child` page. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain.
 
@@ -671,6 +684,7 @@ class Crawler:
             markup: see [core.crawler.get_page_markup][]
             max_recursion_level: this method will call itself recursively on each internal link found in the current page, starting from the `website/child` page. The `max_recursion_level` defines how many times it calls itself until it is stopped, if it is stopped. When set to `-1`, it stops when all the internal links have been crawled.
             category: arbitrary category or label set by user.
+            restrict_section: set to `True` to limit crawling to the website section defined by `://website/child/*`. This is useful when indexing parts of very large websites when you are only interested in a small subset.
             _recursion_level: __DON'T USE IT__. Everytime this method calls itself recursively, it increments this variable internally, and recursion stops when the level is equal to the `max_recurse_level`.
 
         Returns:
@@ -683,10 +697,15 @@ class Crawler:
         """
         output = []
         index_url = radical_url(website + child)
+        #print("trying", index_url)
 
         # Abort now if the page was already crawled or recursion level reached
-        if index_url in self.crawled_URL or \
-            (max_recurse_level > -1 and _recursion_level >= max_recurse_level):
+        if index_url in self.crawled_URL:
+            #print("already crawled")
+            return output
+
+        if max_recurse_level > -1 and _recursion_level >= max_recurse_level:
+            #print("max recursivity level reached")
             return output
 
         # Extract the domain name, to prepend it if we find relative URL while parsing
@@ -697,12 +716,23 @@ class Crawler:
 
         domain = split_domain.group(2)
         include = check_contains(contains_str, index_url)
+        #print("processing", index_url, "include", include)
 
         # Fetch and parse current (top-most) page
         content_type, status = get_content_type(index_url)
 
-        if "text" in content_type and status:
+        # Recall we passed there, whether or not we actually mined something
+        self.crawled_URL.append(index_url)
+
+        # FIXME: we nest 7 levels of if here. It's ugly but I don't see how else
+        # to cover so many cases.
+        if status and "text" in content_type \
+            and "javascript" not in content_type \
+            and "css" not in content_type \
+            and "json" not in content_type:
+
             index = get_page_content(index_url)
+
             if include or _recursion_level == 0:
                 # For the first recursion level, ignore "url contains" rule to allow parsing index pages
                 if index:
@@ -710,31 +740,46 @@ class Crawler:
                     output += self._parse_original(index, index_url, default_lang, markup, None, category)
                     output += self._parse_translations(index, domain, index_url, markup, None, langs, category)
                 else:
-                    # Some websites display PDF in web applets on pages
+                    # Some wgebsites display PDF in web applets on pages
                     # advertising content-type=text/html but UTF8 codecs
                     # fail to decode because it's actually not HTML but PDF.
                     # If we end up here, it's most likely what we have.
                     output += get_pdf_content(index_url, default_lang, category=category)
 
-            # Recall we passed there, whether or not we actually mined something
-            self.crawled_URL.append(index_url)
-
             # Follow internal links whether or not this page was mined
             if index and _recursion_level + 1 != max_recurse_level:
-                for url in index.find_all('a', href=True):
-                    currentURL = radical_url(relative_to_absolute(url["href"], domain, index_url))
-                    if domain in currentURL:
-                        # Recurse only through local pages
-                        _child = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
+                for url in index.links:
+                    currentURL = radical_url(relative_to_absolute(url, domain, index_url))
+                    if currentURL in self.crawled_URL:
+                        continue
+
+                    current_address = patterns.URL_PATTERN.search(currentURL)
+                    if not current_address:
+                        continue
+
+                    current_domain = current_address.group(2)
+                    current_page = current_address.group(3)
+                    current_url_params = current_address.group(4) if current_address.group(4) else ""
+
+                    if not restrict_section and domain == current_domain:
+                        # Recurse only through local pages, aka :
+                        # 1. domains match
                         output += self.get_website_from_crawling(
-                            website, default_lang, child=_child, langs=langs, markup=markup, contains_str=contains_str,
-                            _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, category=category)
+                            website, default_lang, child=current_page + current_url_params, langs=langs, markup=markup, contains_str=contains_str,
+                            _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category)
+                    elif restrict_section and domain == current_domain and child in current_page:
+                        # Recurse only through local subsections, aka :
+                        # 1. domains match
+                        # 2. current page is in a subsection of current child
+                        output += self.get_website_from_crawling(
+                            website, default_lang, child=current_page + current_url_params, langs=langs, markup=markup, contains_str=contains_str,
+                            _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category)
                     elif include:
                         # Follow internal and external links on only one recursivity level.
                         # Aka HTML reference pages (Wikipedia) and attached PDF (docs, manuals, spec sheets)
                         output += self.get_website_from_crawling(
-                            currentURL.rstrip("/#"), default_lang, "", langs, contains_str="", max_recurse_level=2, category=category,
-                            _recursion_level=1)
+                            currentURL, default_lang, "", langs, contains_str="", max_recurse_level=1, restrict_section=restrict_section, category=category,
+                            _recursion_level=0)
 
         elif "pdf" in content_type and status:
             output += get_pdf_content(index_url, default_lang, category=category)
