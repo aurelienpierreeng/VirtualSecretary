@@ -303,12 +303,16 @@ REPLACEMENT_MAP = {
     "ô": "o",
     "á": "a", # should not exist in French
     "à": "a",
+    "ù": "u",
     "î": "i",
     "û": "u",
     "ï": "i",
     "ë": "e",
     "ü": "u",
     "ö": "o",
+    "ç": "c",
+    "": " ",
+    "": " ",
     # Spaces
     "\u2002": " ",  # En space
     "\u2003": " ",  # Em space
@@ -350,7 +354,7 @@ REPLACEMENT_MAP = {
     "·": " ",
     "👍": " ",
     "✔": " ",
-
+    "×": "x"
 }
 
 # For 1:1 character replacement, we can use a fast character map
@@ -433,14 +437,16 @@ def typography_undo(string:str) -> str:
     [^1]: https://daringfireball.net/projects/smartypants/
     [^2]: https://eng.aurelienpierre.com/wp-scholar/
     """
-
-    # Note: a quick and dirty way of discarding Unicode entities would be to
-    # encode to ASCII, ignoring errors, and re-encode to UTF-8. But that would
-    # remove valid accented characters too.
     if string and isinstance(string, str):
+        # Perform educated Unicode character removal with closest ASCII symbol(s)
         string = string.translate(UNICODE_TO_ASCII)
         for key, value in SUBSTITUTIONS.items():
             string = string.replace(key, value)
+
+        # Blindly remove all remaining non-ASCII characters:
+        # emojis, bullets, non-latin characters including Chinese, Japanese, Greek, etc.
+        string = string.encode("ASCII", "ignore").decode()
+
         return string.strip()
     else:
         return ""
