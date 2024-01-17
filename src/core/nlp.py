@@ -515,7 +515,7 @@ class Word2Vec(gensim.models.Word2Vec):
         print("stopwords saved")
 
         loss_logger = LossLogger()
-        super().__init__(training, vector_size=vector_size, window=window, min_count=min_count, workers=processes, epochs=epochs, ns_exponent=-0.5, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=0)
+        super().__init__(training, vector_size=vector_size, window=window, min_count=min_count, workers=processes, epochs=epochs, ns_exponent=0.75, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=0, max_final_vocab=100000)
         print("training done")
 
         self.save(self.pathname)
