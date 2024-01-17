@@ -549,7 +549,7 @@ class Word2Vec(gensim.models.Word2Vec):
         return None
 
 
-    def get_wordvec(self, word: str, embed:str = "IN") -> np.ndarray | None:
+    def get_wordvec(self, word: str, embed:str = "IN") -> np.ndarray[np.float32] | None:
         """Return the vector associated to a word, through a dictionnary of words.
 
         Arguments:
@@ -568,9 +568,9 @@ class Word2Vec(gensim.models.Word2Vec):
         # The word or its correction are found in DB
         if x is not None:
             if embed == "OUT":
-                vec = self.syn1neg[self.wv.key_to_index[x]]
+                vec = self.syn1neg[self.wv.key_to_index[x]].astype(np.float32)
             elif embed == "IN":
-                vec = self.wv[x]
+                vec = self.wv[x].astype(np.float32)
             else:
                 raise ValueError("Invalid option")
 
@@ -580,7 +580,7 @@ class Word2Vec(gensim.models.Word2Vec):
             return None
 
 
-    def get_features(self, tokens: list[str], embed: str = "IN") -> np.ndarray:
+    def get_features(self, tokens: list[str], embed: str = "IN") -> np.ndarray[np.float32]:
         """Calls [core.nlp.Word2Vec.get_wordvec][] over a list of tokens and returns a single vector representing the whole list.
 
         Arguments:
@@ -590,7 +590,7 @@ class Word2Vec(gensim.models.Word2Vec):
         Returns:
             the centroid of word embedding vectors associated with the input tokens (aka the average vector), or the null vector if no word from the list was found in dictionnary.
         """
-        features = np.zeros(self.vector_size)
+        features = np.zeros(self.vector_size, dtype=np.float32)
         i = 0
 
         for token in tokens:
