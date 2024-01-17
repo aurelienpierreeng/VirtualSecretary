@@ -76,7 +76,7 @@ class Tokenizer():
         string = MULTIPLE_SPACES.sub(" ", string)
 
         # Paragraphs (ended with \n\n) that don't have ending punctuation should have one.
-        string = UNFINISHED_SENTENCES.sub(".\n\n", string)
+        #string = UNFINISHED_SENTENCES.sub(".\n\n", string)
 
         return string.strip()
 
@@ -94,19 +94,20 @@ class Tokenizer():
             # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
             string = key.sub(value, string)
 
+        for key, value in self.abbreviations.items():
+            string = string.replace(key, value)
+
+
         if meta_tokens:
             for key, value in self.meta_tokens_pipe.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
                 try:
-                    string = key.sub(value, string, timeout=30)
+                    string = key.sub(value, string, timeout=15)
                 except TimeoutError:
                     print("Meta-token detection timed out on %s with:\n%s" % (key, string))
 
-        for key, value in self.abbreviations.items():
-            string = string.replace(key, value)
-
-        return self.clean_whitespaces(string)
+        return string
 
 
     def lemmatize(self, word: str) -> str:
