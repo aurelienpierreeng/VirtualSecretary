@@ -175,7 +175,9 @@ Numbers with starting or trailing units are not considered. Lazy decimals (.1 an
 
 ORDINAL = re.compile(r"%s([0-9]+)(st|nd|rd|th|e|er|ère|ere|nde|ème|eme)%s" % (regex_starter, end_of_word), re.IGNORECASE)
 
-HASH_PATTERN = re.compile(r"([0-9a-f]){8,}", re.IGNORECASE)
+regex_hash = r"([0-9a-f]){8,}"
+HASH_PATTERN_FAST = re.compile(r"^%s$" % regex_hash, re.IGNORECASE)
+HASH_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_hash, end_of_word), re.IGNORECASE)
 """Cryptographic hexadecimal hashes and fingerprints, of a min length of 8 characters."""
 
 MULTIPLE_LINES = re.compile(r"(?: ?[\t\r\n]{2,} ?)+")

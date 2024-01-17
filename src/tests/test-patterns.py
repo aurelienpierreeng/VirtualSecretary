@@ -8,6 +8,17 @@ sys.path.append(os.path.dirname(SCRIPT_DIR))
 from core.patterns import *
 from core.utils import timeit
 
+tokens = ["2045", "e62fabc2", "2.5", "4.999.23"]
+
+for token in tokens:
+    hash_result = HASH_PATTERN_FAST.match(token)
+    number_result = NUMBER_PATTERN_FAST.match(token)
+    if hash_result:
+        print("hash match", hash_result.group(0))
+    if number_result:
+        print("number match", number_result.group(0))
+
+
 @timeit(runs=100000)
 def find_pattern(pattern: re.Pattern, string: str):
     return re.findall(pattern, string)

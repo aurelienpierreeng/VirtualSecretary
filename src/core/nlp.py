@@ -70,6 +70,11 @@ class Tokenizer():
         BASE_64: " "}
     """Dictionnary of regular expressions (keys) to find and replace by the provided strings (values). Cleanup repeated characters, including ellipses and question marks, leftover BBcode and XML markup, base64-encoded strings and French pronominal contractions (e.g "me + a" contracted into "m'a")."""
 
+    internal_meta_tokens: dict[re.Pattern: str] = {
+        HASH_PATTERN_FAST: "_HASH_",
+        NUMBER_PATTERN_FAST: "_NUMBER_"}
+    """Dictionnary of regular expressions (keys) to find in full-tokens and replace by meta-tokens. Use simplified regex patterns for performance."""
+
     def clean_whitespaces(self, string:str) -> str:
         # Collapse multiple newlines and spaces
         string = MULTIPLE_LINES.sub("\n\n", string)
@@ -212,39 +217,30 @@ class Tokenizer():
             `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
             `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
         """
-        string = word.strip("#=+-,:;'\"^*./`()[]{}& ")
+        string = word.strip("?!#=+-,:;'\"^*./`()[]{}& \n\r\t")
 
-        if len(string) == 0:
-            # empty string
+        if len(string) == 0 or " " in string or "\n" in string:
+            # empty string or
+            # tokenizer failed to split tokens on spaces
             return None
 
         if string in REPLACEMENTS:
             string = REPLACEMENTS[string]
 
-        if string in self.meta_tokens:
-            return string
+        if string.upper() in self.meta_tokens:
+            return string.upper()
 
         if "_" in string or "<" in string or ">" in string or "\\" in string or "=" in string or "~" in string:
             # Technical stuff, like markup/code leftovers and such
             return None
 
         # Last chance of identifying meta-tokens in an atomic way
-        """
         if meta_tokens:
-            for key, value in self.meta_tokens_pipe.items():
+            for key, value in self.internal_meta_tokens.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
-                if key.search(string, timeout=30):
-                    # The number sequence pattern runs before number detection.
-                    # It's mostly meant for prefiltering before processing physical units and will annoy us here.
-                    # Handle it the quick and dirty way, but if more cases like that arise in the future,
-                    # we will have to break the self.meta_tokens_pipe into what's meant to run at document-level prefiltering stage
-                    # and what's meant to run at atomic token-level here.
-                    if value == "123456789":
-                        return "_NUMBER_"
-                    else:
-                        return value.strip()
-        """
+                if key.match(string, timeout=10):
+                    return value
 
         # Lemmatize / Stem
         string = self.lemmatize(string)
@@ -407,9 +403,9 @@ class Tokenizer():
         else:
             self.meta_tokens_pipe = meta_tokens
 
-        self.meta_tokens = [value.strip()
+        self.meta_tokens = {value.strip()
                             for value in self.meta_tokens_pipe.values()
-                            if value.startswith(" _") and value.endswith("_ ")]
+                            if value.startswith(" _") and value.endswith("_ ")}
 
         if abbreviations is None:
             self.abbreviations = ABBREVIATIONS
@@ -768,9 +764,7 @@ class Indexer():
         with Pool(processes=processes) as pool:
             data_set : list = pool.map(self.cleanup_spaces, data_set)
 
-        print("done with whitspaces removal")
-
-        data_set = [post for post in data_set if len(typography_undo(post["content"])) > 250]
+        print("done with whitespaces removal")
 
         # Remove duplicated content if any.
         # For example, translated content when non-existent translations are inited with the original language.
