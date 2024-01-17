@@ -7,18 +7,19 @@ Logging and filter finding utilities.
 
 from datetime import datetime, timezone, timedelta
 import os
-import regex as re
 import io
 import errno
 import pickle
 import tarfile
 import time
-import numpy as np
+import signal
 
 from typing import TypedDict
 from dateutil import parser
 from core.patterns import MULTIPLE_SPACES, MULTIPLE_LINES
 
+import numpy as np
+import regex as re
 
 filter_entry = TypedDict("filter_entry", {"path": str, "filter": str, "protocol": str })
 """Dictionnary type representating a Virtual Secretary filter
@@ -456,11 +457,10 @@ def guess_date(string: str) -> datetime:
     """Best effort to guess a date from a string using typical date/time formats"""
 
     if isinstance(string, str):
-        string = string.strip("[]{}() ")
         try:
             date = parser.parse(string)
         except Exception as e:
-            print(e)
+            print("Date parser got an error:", e)
             date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
     elif isinstance(string, datetime):
         date = string
@@ -557,3 +557,39 @@ def timeit(runs: int = 1):
           return out
         return wrapper
     return decorate
+
+def exit_after(s: int):
+    """Define a decorator `exit_after(n)` that stops a function after `n` seconds.
+
+    Mostly intended for text parsing functions that get fed unchecked text inputs from the web.
+    In that case, some really bad XML or super-long log files can make the parsing loop hang forever.
+    This decorator will skip them without breaking the loop.
+
+    Args:
+        s: number of seconds
+
+    Returns:
+        the output of the function or None if it timed out.
+    """
+    def outer(fn):
+        def inner(*args, **kwargs):
+            def out_of_time(signum, frame):
+                raise TimeoutError
+
+            result = None
+
+            # Raise a TimeoutError after s seconds
+            signal.signal(signal.SIGALRM, out_of_time)
+            signal.alarm(s)
+
+            try:
+                result = fn(*args, **kwargs)
+            except TimeoutError:
+                print(f"function {fn.__name__} timed out after {s} seconds with inputs {args} {kwargs}")
+            finally:
+                # Reset the timer
+                signal.alarm(0)
+
+            return result
+        return inner
+    return outer
