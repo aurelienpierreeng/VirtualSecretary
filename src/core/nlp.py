@@ -111,97 +111,90 @@ class Tokenizer():
 
     def lemmatize(self, word: str) -> str:
         """Find the root (lemma) of words to help topical generalization."""
-        # Simplify double consonants. They are irregular, people misspell them and they vary between languages.
-        word = DOUBLE_CONSONANTS.sub(r"\1", word)
+        lemmas = {
+            # Simplify double consonants. They are irregular, people misspell them and they vary between languages.
+            DOUBLE_CONSONANTS: r"\1",
+            # Remove final "s" or "es" as a plural mark.
+            # Ex : lenses -> len, lens -> len
+            PLURAL_S: "",
+            # Replace British spelling of -our words by American spelling
+            # Ex : colour -> color, behaviour -> behavior,
+            # but tour -> tour, pour -> pour
+            BRITISH_OUR: "or",
+            # Remove final -ity and -ite from substantives:
+            # Ex : activity -> activ, activite -> activ
+            # but cite -> cite, city -> city
+            # Caveat : due to upstream removal of accents, medical conditions in French
+            # based on inflammations (meningite, hepatite, bronchite, vulvite) will get removed there too.
+            SUBSTANTIVE_ITY: "",
+            # Remove final "e" as feminine mark (in French)
+            # Ex : lense -> lens, profile -> profil, manage -> manag, capitale -> capital
+            FEMININE_E: "",
+            # Remove -tor, -teur, -tric,
+            # Ex : acteur -> act, actor -> act, actric -> act
+            FEMININE_TRICE: "t",
+            # Remove -ing from participle present, maybe used as substantives
+            # Ex : being -> be, acting -> act, managing -> manag
+            # DISABLED: too much meaning lost.
+            # word = PARTICIPLE_ING.sub("", word)
+            # Remove -ed from adjectives
+            # Ex : acted -> act, managed -> manag, aplied -> apli
+            ADJECTIVE_ED: "",
+            # Remove -ment and -ement from substantives and adverbs
+            # Ex : management -> manag, imediatement -> imediat
+            ADVERB_MENT: "",
+            # Remove -tion and -sion
+            # Ex : action -> act, application -> applicat, comision -> comis
+            SUBSTANTIVE_TION: r"\1",
+            # Remove -ism and -ist from substantives
+            # Ex : feminism -> femin, feminist -> femin, artist -> art
+            # but exist -> exist
+            # Caveat : consist -> consi
+            SUBSTANTIVE_IST: "",
+            # Remove -at
+            # Note : may finish the job from previous step for -ation
+            # Ex : reliquat -> reliqu, optimisat -> optimis, neutralizat -> neutraliz
+            SUBSTANTIVE_AT: "",
+            # Remove -tif and -tiv from adjectives
+            # Note : final -e was already removed above.
+            # Ex : actif -> act, activ -> act, optimisation -> optimisat, neutralization -> neutralizat
+            ADJECTIVE_TIF: "t",
+            # Replace final -y by -i.
+            # Note : This is because applied -> aplied -> apli,
+            # while apply -> aply, so finish aply -> apli for consistency.
+            SUBSTANTIVE_Y: "i",
+            # Replace final -er if there is more than 4 letters before
+            # Ex : optimizer -> optimiz, instaler -> instal, player -> play, higher -> high
+            # but power -> power, her -> her, there -> ther -> ther
+            # Caveat : master -> mast and lower -> lower
+            STUFF_ER: "",
+            # Replace -iz/-iz by -is/-ys for American English, to unify with British and French
+            # Ex : optimiz -> optimis, neutraliz -> neutralis, analyz -> analys
+            # Caveat : size -> siz -> sis
+            VERB_IZ: r"\1s",
+            # Replace -eur by -or
+            # Ex: serveur -> servor, curseur -> cursor, meileur -> meilor
+            SUBSTANTIVE_EUR: "or",
+            # We might be tempted to remove -al here, as in
+            # profesional, tribal, analytical. Problem is collision with
+            # apeal, instal, overal, reveal, portal, gimbal.
+            # Leave it as-is and let the embedding figure it out.
+            # Replace -iqu by -ic
+            # This has the double goal of making French closer to English, but
+            # also to stem verbs the same as nouns
+            # Ex : aplique -> aplic (same as aplication -> aplicat -> aplic)
+            # politiqu -> politic, expliqu -> explic
+            SUBSTANTIVE_IQU: "i",
+        }
 
-        # Remove final "s" or "es" as a plural mark.
-        # Ex : lenses -> len, lens -> len
-        word = PLURAL_S.sub("", word)
-
-        # Replace British spelling of -our words by American spelling
-        # Ex : colour -> color, behaviour -> behavior,
-        # but tour -> tour, pour -> pour
-        word = BRITISH_OUR.sub("or", word)
-
-        # Remove final -ity and -ite from substantives:
-        # Ex : activity -> activ, activite -> activ
-        # but cite -> cite, city -> city
-        # Caveat : due to upstream removal of accents, medical conditions in French
-        # based on inflammations (meningite, hepatite, bronchite, vulvite) will get removed there too.
-        word = SUBSTANTIVE_ITY.sub("", word)
-
-        # Remove final "e" as feminine mark (in French)
-        # Ex : lense -> lens, profile -> profil, manage -> manag, capitale -> capital
-        word = FEMININE_E.sub("", word)
-
-        # Remove -tor, -teur, -tric,
-        # Ex : acteur -> act, actor -> act, actric -> act
-        word = FEMININE_TRICE.sub("t", word)
-
-        # Remove -ing from participle present, maybe used as substantives
-        # Ex : being -> be, acting -> act, managing -> manag
-        # DISABLED: too much meaning lost.
-        # word = PARTICIPLE_ING.sub("", word)
-
-        # Remove -ed from adjectives
-        # Ex : acted -> act, managed -> manag, aplied -> apli
-        word = ADJECTIVE_ED.sub("", word)
-
-        # Remove -ment and -ement from substantives and adverbs
-        # Ex : management -> manag, imediatement -> imediat
-        word = ADVERB_MENT.sub("", word)
-
-        # Remove -tion and -sion
-        # Ex : action -> act, application -> applicat, comision -> comis
-        word = SUBSTANTIVE_TION.sub(r"\1", word)
-
-        # Remove -ism and -ist from substantives
-        # Ex : feminism -> femin, feminist -> femin, artist -> art
-        # but exist -> exist
-        # Caveat : consist -> consi
-        word = SUBSTANTIVE_IST.sub("", word)
-
-        # Remove -at
-        # Note : may finish the job from previous step for -ation
-        # Ex : reliquat -> reliqu, optimisat -> optimis, neutralizat -> neutraliz
-        word = SUBSTANTIVE_AT.sub("", word)
-
-        # Remove -tif and -tiv from adjectives
-        # Note : final -e was already removed above.
-        # Ex : actif -> act, activ -> act, optimisation -> optimisat, neutralization -> neutralizat
-        word = ADJECTIVE_TIF.sub("t", word)
-
-        # Replace final -y by -i.
-        # Note : This is because applied -> aplied -> apli,
-        # while apply -> aply, so finish aply -> apli for consistency.
-        word = SUBSTANTIVE_Y.sub("i", word)
-
-        # Replace final -er if there is more than 3 letters before
-        # Ex : optimizer -> optimiz, instaler -> instal, player -> play, higher -> high
-        # but power -> power, her -> her, there -> ther -> ther
-        # Caveat : master -> mast and lower -> lower
-        word = STUFF_ER.sub("", word)
-
-        # Replace -iz/-iz by -is/-ys for American English, to unify with British and French
-        # Ex : optimiz -> optimis, neutraliz -> neutralis, analyz -> analys
-        # Caveat : size -> siz -> sis
-        word = VERB_IZ.sub(r"\1s", word)
-
-        # Replace -eur by -or
-        # Ex: serveur -> servor, curseur -> cursor, meileur -> meilor
-        word = SUBSTANTIVE_EUR.sub("or", word)
-
-        # We might be tempted to remove -al here, as in
-        # profesional, tribal, analytical. Problem is collision with
-        # apeal, instal, overal, reveal, portal, gimbal.
-        # Leave it as-is and let the embedding figure it out.
-
-        # Replace -iqu by -ic
-        # This has the double goal of making French closer to English, but
-        # also to stem verbs the same as nouns
-        # Ex : aplique -> aplic (same as aplication -> aplicat -> aplic)
-        # politiqu -> politic, expliqu -> explic
-        word = SUBSTANTIVE_IQU.sub("i", word)
+        for key, value in lemmas.items():
+                # Note: since Python 3.8 or so, dictionnaries are ordered.
+                # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
+                # Allow only 10 s for each pattern because we run on individual tokens here.
+                try:
+                    word = key.sub(value, word, timeout=10)
+                except TimeoutError:
+                    print("Lemmatization timed out on %s with:\n%s" % (key, word))
 
         return word
 
