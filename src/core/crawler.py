@@ -71,8 +71,7 @@ def get_content_type(url: str) -> tuple[str, bool]:
     try:
         response = requests.head(url, timeout=60, headers=headers, allow_redirects=True)
         content_type = response.headers['content-type']
-        status = response.status_code != 404 and response.status_code != 403
-        print(url, content_type, status)
+        status = response.status_code == 200
         return content_type, status
     except:
         return "", False
