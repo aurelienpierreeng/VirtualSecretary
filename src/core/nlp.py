@@ -940,56 +940,6 @@ class Indexer():
         """
         return self.index[url]
 
-
-    def get_snippet_by_vector(self, page, query):
-        if not isinstance(query, tuple):
-            raise ValueError("Wrong query type (%s) for AI/FUZZY ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
-
-        vector = query[0]
-        norm = query[1]
-        tokens = query[2]
-
-        vectors_all = []
-
-        for sentence in page['sentences']:
-            sentence_tokens = self.word2vec.tokenizer.tokenize_document(sentence, meta_tokens=True)
-            vectors_all.append(self.word2vec.get_features(sentence_tokens, embed="OUT"))
-
-        if vectors_all:
-            vectors_all = np.array(vectors_all)
-            all_norms = np.linalg.norm(vectors_all, axis=1)
-            return np.nan_to_num(np.dot(vectors_all, vector) / (norm * all_norms))
-        else:
-            return np.array([])
-
-    def get_snippet_by_regex(self, page, query):
-        if not (isinstance(query, str) or isinstance(query, re.Pattern)):
-            raise ValueError("Wrong query type (%s) for GREP ranking method. Should be a string or a regex pattern." % type(query))
-
-        return np.array([float(len(re.findall(query, sentence)))
-                         for sentence in page['sentences']])
-
-
-
-    def get_snippet(self, page:dict, query: tuple|str|re.Pattern, method: search_methods):
-        """Return the 5 best-matching sentences from a document with regard to the search query."""
-
-        if method == search_methods.GREP:
-            similarities = self.get_snippet_by_regex(page, query)
-        else:
-            similarities = self.get_snippet_by_vector(page, query)
-
-        # Return the n most similar sentences in the document in descending order of similarity
-        # That is, if we have at least n sentences
-        num_elem = min(similarities.size, 5)
-        index_best = list(np.argpartition(similarities, -num_elem)[-num_elem:])
-
-        if len(index_best) > 0:
-            return [(page['sentences'][i], similarities[i]) for i in sorted(index_best) if similarities[i]]
-        else:
-            return []
-
-
     def get_related(self, post: tuple, n: int = 15) -> list:
         """Get the n closest keywords from the query."""
 
