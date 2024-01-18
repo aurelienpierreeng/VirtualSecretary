@@ -925,7 +925,7 @@ class Indexer():
         # then aggregate the ranking from BM25+ to it for each URL.
         # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
         norm *= len(tokens)
-        return np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
+        return 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
 
 
     def rank(self, query: str|tuple|re.Pattern, method: search_methods,
