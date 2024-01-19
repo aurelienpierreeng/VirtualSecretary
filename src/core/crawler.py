@@ -503,7 +503,7 @@ def get_page_markup(page: BeautifulSoup, markup: str|tuple|list[str]|list[tuple]
             results = [tag.get_text() for tag in elements]
             output += "\n\n".join(results)
 
-    return output
+    return utils.clean_whitespaces(output)
 
 
 def get_excerpt(html: BeautifulSoup) -> str | None:
