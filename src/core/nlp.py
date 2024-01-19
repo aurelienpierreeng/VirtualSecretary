@@ -834,6 +834,12 @@ class Indexer():
         del docs # garbage collection for RAM use
         self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
 
+        # Extract the 5 most relevant topics of each doc
+        for i, key in enumerate(self.index):
+            vector, norm, tokens = self.vectorize_query(ranker_docs[i])
+            topics = self.get_related((vector, "", []), n=5)
+            self.index[key]["topics"] = topics
+
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
         self.ranker = BM25Okapi(ranker_docs, k1=1.7, b=0.95)
 
