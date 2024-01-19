@@ -439,6 +439,11 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, li
         # In case of recursive crawling, we need to milk the links out before we remove <nav> at the next step
         handler.links = [url["href"] for url in handler.find_all('a', href=True) if url["href"]]
 
+        # Same with h1 because we will remove <header> and that's where it might be
+        # Doe h2 as well since we are at it.
+        handler.h1 = {tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h1")}
+        handler.h2 = {tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h2")}
+
         # Remove any kind of machine code and symbols from the HTML doctree because we want natural language only
         # That will also make subsequent parsing slightly faster.
         # Remove blockquotes too because they can duplicate internal content of forum pages.
@@ -598,9 +603,6 @@ def parse_page(page: BeautifulSoup, url: str,
     if not date:
         date = get_date(page)
 
-    h1 = {tag.get_text() for tag in page.find_all("h1")}
-    h2 = {tag.get_text() for tag in page.find_all("h2")}
-
     # Get content - easy : user-request
     content = get_page_markup(page, markup=markup)
 
@@ -608,6 +610,8 @@ def parse_page(page: BeautifulSoup, url: str,
     title = page.find("title")
     if title:
         title = title.get_text()
+    elif len(page.h1) > 0:
+        title = list(page.h1)[0]
     elif len(content) > 50:
         title = content[0:50]
 
@@ -617,8 +621,8 @@ def parse_page(page: BeautifulSoup, url: str,
                           date=date,
                           content=content,
                           excerpt=excerpt,
-                          h1=h1,
-                          h2=h2,
+                          h1=page.h1,
+                          h2=page.h2,
                           lang=lang,
                           category=category)
         print(result)
