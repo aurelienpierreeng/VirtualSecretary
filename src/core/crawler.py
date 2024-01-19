@@ -646,11 +646,43 @@ def check_contains(contains_str: list[str] | str, url: str):
 
 
 class Crawler:
+    no_follow: list[str] = [
+        "api.whatsapp.com/share",
+        "api.whatsapp.com/send",
+        "pinterest.fr/pin/create",
+        "pinterest.com/pin/create",
+        "facebook.com/sharer",
+        "twitter.com/intent/tweet",
+        "reddit.com/submit",
+        "t.me/share", # Telegram share
+        "linkedin.com/share",
+        "bufferapp.com/add",
+        "getpocket.com/edit",
+        "tumblr.com/share",
+        "mailto:",
+        "/profile/",
+        "/login/",
+        "/user/",
+        "/member/",
+        ".css",
+        ".js",
+        ".json",
+        ]
+    """List of URLs sub-strings that will disable crawling if they are found in URLs. Mostly social networks sharing links."""
+
     def __init__(self):
         """Crawl a website from its sitemap or by following internal links recusively from an index page."""
 
         self.crawled_URL: list[str] = []
         """List of URLs already visited"""
+
+    def discard_link(self, url):
+        """Returns True if the url is found in the `self.no_follow` list"""
+        for elem in self.no_follow:
+            if elem in url:
+                return True
+
+        return False
 
 
     def get_immediate_links(self, page, domain, currentURL, default_lang, langs, category) -> list[web_page]:
@@ -704,7 +736,7 @@ class Crawler:
         #print("trying", index_url)
 
         # Abort now if the page was already crawled or recursion level reached
-        if index_url in self.crawled_URL:
+        if self.discard_link(index_url) or index_url in self.crawled_URL:
             #print("already crawled")
             return output
 
