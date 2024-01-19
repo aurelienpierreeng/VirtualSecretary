@@ -16,7 +16,7 @@ import signal
 
 from typing import TypedDict
 from dateutil import parser
-from core.patterns import MULTIPLE_SPACES, MULTIPLE_LINES
+from core.patterns import MULTIPLE_SPACES, MULTIPLE_LINES, MULTIPLE_NEWLINES
 
 import numpy as np
 import regex as re
@@ -452,6 +452,12 @@ def typography_undo(string:str) -> str:
     else:
         return ""
 
+def clean_whitespaces(string:str) -> str:
+    # Collapse multiple newlines and spaces
+    string = MULTIPLE_LINES.sub("\n\n", string)
+    string = MULTIPLE_SPACES.sub(" ", string)
+    string = MULTIPLE_NEWLINES.sub("\n\n", string)
+    return string.strip()
 
 def guess_date(string: str) -> datetime:
     """Best effort to guess a date from a string using typical date/time formats"""

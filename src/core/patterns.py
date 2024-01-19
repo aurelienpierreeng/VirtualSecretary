@@ -130,7 +130,7 @@ PATH_PATTERN = re.compile(r"%s%s%s" % (regex_starter, path_regex, end_of_word))
 partial_path_regex = r"(%s(?:\\|\/)){2,}(%s)?" % (filename, filename)
 PARTIAL_PATH_REGEX = re.compile(r"%s%s%s" % (regex_starter, partial_path_regex, end_of_word))
 """Partial, invalid path patterns missing the leading root, like `home/user/stuff`.
-We start capturing after at least two folder separators `/` or `\`.
+We start capturing after at least two folder separators (slash or backslash).
 
 WARNING: this will collide with date detection, so run it after in the pipeline.
 """
@@ -182,6 +182,9 @@ HASH_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_hash, end_of_word), 
 
 MULTIPLE_LINES = re.compile(r"(?: ?[\t\r\n]{2,} ?)+")
 """Detect more than 2 newlines and tab, possibly mixed with spaces"""
+
+MULTIPLE_NEWLINES = re.compile(r"(?: ?[\t\r\n]+ ?){2,}")
+"""Detect broken sequences of newlines and spaces."""
 
 MULTIPLE_SPACES = re.compile(r"( )+")
 
