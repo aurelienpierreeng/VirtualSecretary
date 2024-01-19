@@ -459,19 +459,21 @@ def clean_whitespaces(string:str) -> str:
     string = MULTIPLE_NEWLINES.sub("\n\n", string)
     return string.strip()
 
-def guess_date(string: str) -> datetime:
+def guess_date(string: str | datetime) -> datetime:
     """Best effort to guess a date from a string using typical date/time formats"""
+    # If no timezone/offset is provided, default to UTC
+    tz = timezone(timedelta(0))
 
     if isinstance(string, str):
         try:
-            date = parser.parse(string)
+            date = parser.parse(string, default=datetime.fromtimestamp(0, tz=tz))
         except Exception as e:
             print("Date parser got an error:", e)
-            date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
+            date = datetime.fromtimestamp(0, tz=tz)
     elif isinstance(string, datetime):
-        date = string
+        date = string.replace(tzinfo=tz)
     else:
-        date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
+        date = datetime.fromtimestamp(0, tz=tz)
 
     return date
 
