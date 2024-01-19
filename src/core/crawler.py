@@ -541,6 +541,7 @@ def get_date(html: BeautifulSoup):
 
     - `<meta property="article:modified_time" content="...">`
     - `<time datetime="...">`
+    - `<relative-time datetime="...">`
     - `<div class="dateline">...</div>`
 
     Arguments:
@@ -558,12 +559,16 @@ def get_date(html: BeautifulSoup):
         test = html.find("time", {"datetime": True})
         return test["datetime"] if test else None
 
-    def method_3(html):
+    def method_3(html: BeautifulSoup):
+        test = html.find("relative-time", {"datetime": True})
+        return test["datetime"] if test else None
+
+    def method_4(html):
         test = html.find("div", {"class": "dateline"})
         return test.get_text() if test else None
 
     date = None
-    bag_of_methods = (method_1, method_2, method_3)
+    bag_of_methods = (method_1, method_2, method_3, method_4)
 
     i = 0
     while not date and i < len(bag_of_methods):
