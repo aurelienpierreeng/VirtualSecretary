@@ -399,7 +399,7 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, li
         content: a string buffer used as HTML source. If this argument is passed, we don't fetch `url` from network and directly use this input.
 
     Returns:
-        a [bs4.BeautifulSoup][] object initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached. The list of URLs found in page before removing meaningless markup is stored as a list of strings in the `object.links` member.
+        a [bs4.BeautifulSoup][] object initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached. The list of URLs found in page before removing meaningless markup is stored as a list of strings in the `object.links` member. `object.h1` and `object.h2` contain a set of headers 1 and 2 found in the page before removing any markup.
     """
 
     try:
@@ -685,7 +685,7 @@ class Crawler:
         return False
 
 
-    def get_immediate_links(self, page, domain, currentURL, default_lang, langs, category) -> list[web_page]:
+    def get_immediate_links(self, page, domain, currentURL, default_lang, langs, category, contains_str) -> list[web_page]:
         """Follow internal and external links contained in a webpage only to one recursivity level,
         including PDF files and HTML pages. This is useful to index references docs linked from a page.
         """
@@ -693,7 +693,7 @@ class Crawler:
         for url in page.find_all('a', href=True):
             nextURL = radical_url(relative_to_absolute(url["href"], domain, currentURL))
             if nextURL not in self.crawled_URL:
-                output += self.get_website_from_crawling(nextURL.rstrip("/#"), default_lang, "", langs, max_recurse_level=1, category=category, _recursion_level=0)
+                output += self.get_website_from_crawling(nextURL.rstrip("/#"), default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, _recursion_level=0)
 
         return output
 
@@ -769,7 +769,7 @@ class Crawler:
 
             index = get_page_content(index_url)
 
-            if include or _recursion_level == 0:
+            if include or _recursion_level == 0 or ".pdf" in index_url:
                 # For the first recursion level, ignore "url contains" rule to allow parsing index pages
                 if index:
                     # Valid HTML response
@@ -833,7 +833,8 @@ class Crawler:
                                  sitemap: str = "/sitemap.xml",
                                  langs: tuple[str] = ("en", "fr"),
                                  markup: str = "body",
-                                 category: str = None) -> list[web_page]:
+                                 category: str = None,
+                                 contains_str: str | list[str] = "") -> list[web_page]:
         """Recursively crawl all pages of a website from links found in a sitemap. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain. Sitemaps of sitemaps are followed recursively.
 
         Arguments:
@@ -843,6 +844,7 @@ class Crawler:
             langs: ISO-something 2-letters code of the languages for which we attempt to fetch the translation if available, looking for the HTML `<link rel="alternate" hreflang="...">` tag.
             markup: see [core.crawler.get_page_markup][]
             category: arbitrary category or label
+            contains_str: limit recursive crawling from sitemap-defined pages to pages containing this string or list of strings. Will get passed as-is to [get_website_from_crawling][].
 
         Returns:
             a list of all valid pages found. Invalid pages (wrong markup, empty HTML response, 404 errors) will be silently ignored.
@@ -894,7 +896,7 @@ class Crawler:
                     output += self._parse_translations(page, domain, currentURL, markup, date, langs, category)
 
                     # Follow internal and external links on only one recursivity level
-                    output += self.get_immediate_links(page, domain, currentURL, default_lang, langs, category)
+                    output += self.get_immediate_links(page, domain, currentURL, default_lang, langs, category, contains_str)
             else:
                 # We got a sitemap of sitemaps, recurse over the sub-sitemaps
                 _sitemap = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
