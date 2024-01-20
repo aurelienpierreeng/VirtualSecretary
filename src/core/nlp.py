@@ -10,11 +10,8 @@ from enum import IntEnum
 import random
 import regex as re
 import os
-import sys
-import json
 from multiprocessing import Pool, current_process
 import multiprocessing
-import collections
 
 from collections import Counter
 
@@ -28,15 +25,14 @@ import numpy as np
 
 import nltk
 from nltk.tokenize import RegexpTokenizer
-from nltk.stem import WordNetLemmatizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
 from rank_bm25 import BM25Okapi
 
-from core.patterns import *
-from core.utils import get_models_folder, typography_undo, guess_date
-from core.language import *
+from .patterns import *
+from .utils import get_models_folder, typography_undo, guess_date, clean_whitespaces
+from .language import *
 
 
 def guess_language(string: str) -> str:

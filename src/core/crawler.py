@@ -21,7 +21,7 @@ import numpy as np
 from urllib.parse import urljoin
 import multiprocessing
 
-from core import utils
+from . import utils
 
 from typing import TypedDict
 

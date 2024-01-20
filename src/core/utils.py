@@ -16,7 +16,7 @@ import signal
 
 from typing import TypedDict
 from dateutil import parser
-from core.patterns import MULTIPLE_SPACES, MULTIPLE_LINES, MULTIPLE_NEWLINES
+from .patterns import MULTIPLE_SPACES, MULTIPLE_LINES, MULTIPLE_NEWLINES
 
 import numpy as np
 import regex as re
