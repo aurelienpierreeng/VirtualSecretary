@@ -28,3 +28,4 @@ mkdocstrings-python
 markdown-callouts
 black
 griffe
+levenshtein

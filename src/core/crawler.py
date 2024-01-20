@@ -1,6 +1,6 @@
 """Module containing utilities to crawl websites for HTML, XML and PDF pages for their text content. PDF can be read from their text content if any, or through optical characters recognition for scans. Websites can be crawled from a `sitemap.xml` file or by following internal links recursively from and index page. Each page is aggregated on a list of [core.crawler.web_page][] objects, meant to be used as input to train natural language AI models and to index and rank for search engines.
 
-© 2023 - Aurélien Pierre
+© 2023-2024 - Aurélien Pierre
 """
 
 import regex as re
@@ -20,6 +20,8 @@ from PIL import Image
 import numpy as np
 from urllib.parse import urljoin
 import multiprocessing
+import Levenshtein
+from datetime import datetime, timezone, timedelta
 
 from . import utils
 
@@ -54,6 +56,295 @@ class web_page(TypedDict):
 
     category: str
     """Arbitrary category or label set by user"""
+
+
+class Deduplicator():
+    urls_to_ignore: list[str] = [
+        "/tag/",
+        "/tags/",
+        "/category/",
+        "/categories/",
+        "/author/",
+        "/authors/",
+        "/archive/",
+        "/archives/",
+        "/profil/",
+        "/profiles/",
+        "/user/",
+        "/users/",
+        "/login/",
+        "/signup/",
+        "/member/",
+        "/members/",
+        "/cart/",
+        "/shop/"
+    ]
+    """URL substrings to find in URLs and remove matching web pages: mostly WordPress archive pages, user profiles and login pages."""
+
+    def discard_post(self, url):
+        for elem in self.urls_to_ignore:
+            if elem in url:
+                return True
+
+        return False
+
+    def prepare_urls(self, posts: list[web_page]) -> dict[str: list[web_page]]:
+        """Find the canonical URL of each post and aggregate a list of matching pages in a
+        `canonical_url: [candidates]` dict
+
+        Precompute datetime object and minified ASCII content variant for later processing.
+        """
+        cleaned_set = {}
+
+        for elem in posts:
+            url = patterns.URL_PATTERN.match(elem["url"])
+            if url and not self.discard_post(elem["url"]):
+                # Canonify the URL: remove params and anchors
+                protocol = url.group(1)
+                domain = url.group(2)
+                page = url.group(3)
+                params = url.group(4)
+                anchor = url.group(5)
+
+                if "/#/" in elem["url"]:
+                    # Matrix chat links use # as a "page" and make anchor detection fail big time
+                    new_url = elem["url"]
+                else:
+                    new_url = protocol + "://" + domain + page
+
+                if params and params.startswith("?lang="):
+                    # Non SEO-friendly way of translating pages.
+                    # Need to keep it
+                    new_url += params
+
+                if anchor and anchor.startswith("#page="):
+                    # Long PDF are indexed by page. Keep it.
+                    new_url += anchor
+
+                # Replace URL by canonical stuff
+                elem["url"] = new_url
+
+                # Get cleaned-up content for distance detection
+                elem["content"] = utils.clean_whitespaces(str(elem["content"]))
+                if "parsed" not in elem:
+                    elem["parsed"] = utils.typography_undo(elem["content"].lower())
+
+                if "length" not in elem:
+                    elem["length"] = len(elem["parsed"])
+
+                # Get datetime for age comparison
+                if "datetime" not in elem:
+                    elem["datetime"] = utils.guess_date(elem["date"])
+
+                # Create a dict where the key is the canonical URL
+                # and we aggregate the list of matching objects sharing the same URL.
+                cleaned_set.setdefault(new_url, [])
+                cleaned_set[new_url].append(elem)
+
+        return cleaned_set
+
+
+    def get_unique_urls(self, posts: dict[str: list[web_page]]) -> dict[str: list[web_page]]:
+        """Pick the most recent, or otherwise the longer, candidate for each canonical URL.
+
+        Return:
+            `canonical_url: web_page` dictionnary
+
+        """
+        for url, candidates in posts.items():
+            elected = None
+            length = 0
+            date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
+
+            for candidate in candidates:
+                cand_date = candidate["datetime"]
+                cand_length = candidate["length"]
+                vote = False
+
+                if cand_length > length:
+                    # Replace by longer content if any
+                    length = cand_length
+                    vote = True
+
+                if cand_date > date:
+                    # Replace by more recent content if any
+                    date = cand_date
+                    vote = True
+                elif cand_date < date:
+                    # Cancel replacement if candidate is older
+                    vote = False
+                # else: same age or both undefined date, let length decide
+
+                if vote:
+                    elected = candidate
+
+            # Replace the list of candidates by the elected one for this URL
+            candidates = elected
+
+        return posts
+
+
+    def prepare_content(self, posts: dict[str: list[web_page]]) -> dict[str: list[web_page]]:
+        """Find the canonical content for each post and aggregate a list of matching pages"
+
+        Returns:
+            a `canonical_content: list[web_pages]` dictionnary.
+
+        """
+        cleaned_set = {}
+        for url, elem in posts.items():
+            content = elem[0]["parsed"]
+            cleaned_set.setdefault(content, [])
+            cleaned_set[content].append(elem[0])
+
+        return cleaned_set
+
+
+    def get_unique_content(self, posts: dict[str: list[web_page]]) -> dict[str: list[web_page]]:
+        """Pick the most recent candidate for each canonical content.
+
+        Return:
+            `canonical content: web_page` dictionnary
+
+        """
+        for content, candidates in posts.items():
+            elected = None
+            length = 0
+            date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
+
+            for candidate in candidates:
+                if candidate["datetime"] > date:
+                    # Replace by more recent content if any
+                    date = candidate["datetime"]
+                    elected = candidate
+
+            # Replace the list of candidates by the elected one for this URL
+            candidates = elected
+
+        return posts
+
+
+    def get_close_content(self, posts: dict[str: list[web_page]], threshold: float = 0.90, distance: float = 500) -> dict[str: list[web_page]]:
+        """Find near-duplicate by computing the Levenshtein distance between pages contents.
+
+        Params:
+            posts: dictionnary mapping an unused key to a liste of `crawler.web_page`
+            threshold: the minimum distance ratio of Lenvenshtein metric for 2 contents to be assumed duplicates
+            distance: for efficiency, the list of web_page is first sorted alphabetically by URL, assuming duplicates
+            will share at least the beginning of their URL. From there, duplicates are searched ahead in the list up
+            to this distance.
+
+        """
+
+        # Sort posts by URL since we have the most probability
+        # to find duplicates at similar URLs
+        posts = {post[0]["url"]: post[0] for post in posts.values()}
+        posts = dict(sorted(posts.items()))
+
+        elements = [value for value in posts.values()]
+        replacements = np.arange(len(elements), dtype=np.int64)
+
+        for i in range(len(elements)):
+            if replacements[i] == i:
+                # Collect the indices of the near-duplicates
+                # The similarity matrix is symmetric,
+                # no need to process the lower triangle
+                indices = [j for j in range(i, min(len(posts), i + distance))
+                           if i == j
+                           or (replacements[j] == j
+                               and Levenshtein.ratio(elements[i]["parsed"], elements[j]["parsed"]) > threshold)]
+
+                if len(indices) > 1:
+                    print(i, "found", len(indices) - 1, "duplicates")
+
+                    length = 0
+                    date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
+                    elected = -1
+
+                    # If duplicates, find the most recent or the longest
+                    for idx in indices:
+                        vote = False
+                        if elements[idx]["length"] > length:
+                            length = elements[idx]["length"]
+                            vote = True
+
+                        if elements[idx]["datetime"] > date:
+                            date = elements[idx]["datetime"]
+                            vote = True
+                        elif elements[idx]["datetime"] < date:
+                            vote = False
+
+                        if vote:
+                            elected = idx
+
+                    if elected > -1:
+                        # Write the index of the best candidate for the current position
+                        replacements[i] = elected
+
+                        # Void the other candidates
+                        # Note : idx should be always > i since we test forward
+                        for idx in indices:
+                            if idx != elected:
+                                replacements[idx] = -1
+
+                    # else : replacements[i] = i still
+                # else : replacements[i] = i still
+            # else: element already removed
+
+        return [elements[i] for i in replacements if i > -1]
+
+    def process(self, posts: list[web_page]):
+        """Launch the actual duplicate finder"""
+
+        print(len(posts))
+        cleaned_set = self.prepare_urls(posts)
+        cleaned_set = self.get_unique_urls(cleaned_set)
+
+        print(len(cleaned_set))
+
+        cleaned_set = self.prepare_content(cleaned_set)
+        cleaned_set = self.get_unique_content(cleaned_set)
+
+        print(len(cleaned_set))
+
+        if self.threshold < 1.0:
+            cleaned_set = self.get_close_content(cleaned_set, threshold=self.threshold, distance=self.distance)
+        else:
+            cleaned_set = [value[0] for value in cleaned_set.values()]
+
+        print(len(cleaned_set))
+
+        return cleaned_set
+
+    def __init__(self, threshold: float = 0.9, distance: int = 500):
+        """Instanciate a duplicator object.
+
+        The duplicates factorizing takes a list of [core.crawler.web_page][] and happens when calling [core.crawler.Deduplicator.process][].
+
+        Duplication detection is done using canonical URLs (removing
+        query parameters and anchors) and lowercased, ASCII-converted content.
+
+        You can edit (append or replace) the list of URLs to ignore
+        [core.crawler.Deduplicator.urls_to_ignore][] before doing the actual process.
+
+        Optionaly, near-duplicates are detected too by computing the
+        Levenshtein distance between pages contents (lowercased and
+        ASCII-converted). This brings a significant performance penalty
+        on large datasets.
+
+        Arguments:
+            threshold: the minimum Levenshtein distance ratio between 2 pages contents
+                for those pages to be considered near-duplicates and be factorized. If set to
+                1.0, the near-duplicates detection is bypassed which results in a huge speed up.
+            distance: the near-duplicates search is performed on the nearest elements after the
+                [core.crawler.web_page][] list has been ordered alphabetically by URL, for performance, assuming near-duplicates
+                will most likely be found on the same domain and at a resembling path.
+                The distance parameters defines how many elements ahead we will look into.
+
+        """
+
+        self.threshold = threshold
+        self.distance = distance
 
 
 headers = {
