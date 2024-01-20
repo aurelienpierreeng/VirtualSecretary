@@ -71,17 +71,6 @@ class Tokenizer():
         NUMBER_PATTERN_FAST: "_NUMBER_"}
     """Dictionnary of regular expressions (keys) to find in full-tokens and replace by meta-tokens. Use simplified regex patterns for performance."""
 
-    def clean_whitespaces(self, string:str) -> str:
-        # Collapse multiple newlines and spaces
-        string = MULTIPLE_LINES.sub("\n\n", string)
-        string = MULTIPLE_SPACES.sub(" ", string)
-
-        # Paragraphs (ended with \n\n) that don't have ending punctuation should have one.
-        #string = UNFINISHED_SENTENCES.sub(".\n\n", string)
-
-        return string.strip()
-
-
     def prefilter(self, string:str, meta_tokens:bool = True) -> str:
         """Tokenizers split words based on unsupervised machine-learned models. Sometimes, they work weird.
         For example, in emails and user handles like `@user`, they would split `@` and `user` as 2 different tokens,
@@ -278,7 +267,11 @@ class Tokenizer():
 
 
     def tokenize_document(self, document:str, language:str = None, meta_tokens: bool = True) -> list[str]:
-        """Cleanup and tokenize a document or a sentence as an atomic element, meaning we don't split it into sentences. Use this either for search-engine purposes (into a document's body) or if the document is already split into sentences.
+        """Cleanup and tokenize a document or a sentence as an atomic element, meaning we don't split it into sentences. Use this either for search-engine purposes (into a document's body) or if the document is already split into sentences. The document text needs to have been prepared and cleaned, which means :
+
+        - lowercased (optional but recommended) with `str.lower()`,
+        - translated from Unicode to ASCII (optional but recommended) with [utils.typography_undo()][],
+        - cleaned up for sequences of whitespaces with [utils.cleanup_whitespaces()][]
 
         Note:
             the language is detected internally if not provided as an optional argument. When processing a single sentence extracted from a document, instead of the whole document, it is more accurate to run the language detection on the whole document, ahead of calling this method, and pass on the result here.
@@ -290,18 +283,19 @@ class Tokenizer():
         Returns:
             tokens (list[str]): a 1D list of normalized tokens and meta-tokens.
         """
-        document = str(document).lower()
-        document = typography_undo(document)
-
         if language is None:
             language = guess_language(document)
 
-        document = self.prefilter(document, meta_tokens=meta_tokens)
-        return self.tokenize_sentence(document, language, meta_tokens=meta_tokens)
+        clean_text = self.prefilter(document, meta_tokens=meta_tokens)
+        return self.tokenize_sentence(clean_text, language, meta_tokens=meta_tokens)
 
 
     def tokenize_per_sentence(self, document: str, meta_tokens: bool = True) -> list[list[str]]:
-        """Cleanup and tokenize a whole document as a list of sentences, meaning we split it into sentences before tokenizing. Use this to train a Word2Vec (embedding) model so each token is properly embedded into its syntactic context.
+        """Cleanup and tokenize a whole document as a list of sentences, meaning we split it into sentences before tokenizing. Use this to train a Word2Vec (embedding) model so each token is properly embedded into its syntactic context. The document text needs to have been prepared and cleaned, which means :
+
+        - lowercased (optional but recommended) with `str.lower()`,
+        - translated from Unicode to ASCII (optional but recommended) with [utils.typography_undo()][],
+        - cleaned up for sequences of whitespaces with [utils.cleanup_whitespaces()][]
 
         Note:
             the language is detected internally.
@@ -315,10 +309,8 @@ class Tokenizer():
         if self.processed_items % 50 == 0 and p._identity:
             print("P %i processed %i over %i" % (p._identity[0], self.processed_items, self.num_items))
 
-        document = self.clean_whitespaces(str(document).lower())
-        clean_text = typography_undo(document)
-        language = guess_language(clean_text)
-        clean_text = self.prefilter(clean_text, meta_tokens=meta_tokens)
+        language = guess_language(document)
+        clean_text = self.prefilter(document, meta_tokens=meta_tokens)
         return [self.tokenize_sentence(sentence, language, meta_tokens=meta_tokens)
                 for sentence in self.split_sentences(clean_text, language)]
 
@@ -720,11 +712,6 @@ class search_methods(IntEnum):
     GREP = 3
 
 class Indexer():
-
-    def cleanup_spaces(self, post):
-        post["content"] = self.word2vec.tokenizer.clean_whitespaces(str(post["content"]))
-        return post
-
     def __init__(self,
                  data_set: list,
                  name: str,
@@ -753,31 +740,6 @@ class Indexer():
         random.shuffle(data_set)
         processes = os.cpu_count()
         print(f"Init. Got {len(data_set)} items.")
-
-        # Cleanup whitespaces and remove elements too short to be meaningful
-        #for post in data_set:
-        #    post["content"] = self.word2vec.tokenizer.clean_whitespaces(post["content"])
-        with Pool(processes=processes) as pool:
-            data_set : list = pool.map(self.cleanup_spaces, data_set)
-
-        print("done with whitespaces removal")
-
-        # Remove duplicated content if any.
-        # For example, translated content when non-existent translations are inited with the original language.
-        cleaned_set = {}
-        for post in data_set:
-            cleaned_set.setdefault(post["content"], []).append(post)
-
-        data_set = []
-        for value in cleaned_set.values():
-            # Lazy trick : measure memory size of each duplicate and keep the heaviest
-            # assuming it's the most "complete"
-            sizes = [sys.getsizeof(elem) for elem in value]
-            idx_max = sizes.index(max(sizes))
-            data_set.append(value[idx_max])
-
-        del cleaned_set
-        print(f"Cleanup. Got {len(data_set)} remaining items.")
 
         # The database of web pages with limited features.
         for post in data_set:
@@ -830,24 +792,46 @@ class Indexer():
         del docs # garbage collection for RAM use
         self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
 
+        print("vectorization done")
+
         # Extract the 5 most relevant topics of each doc
         for i, key in enumerate(self.index):
             vector, norm, tokens = self.vectorize_query(ranker_docs[i])
-            topics = self.get_related((vector, "", []), n=5)
-            self.index[key]["topics"] = topics
+            if len(tokens) > 0:
+                topics = self.get_related((vector, "", []), n=5)
+                self.index[key]["topics"] = topics
+            else:
+                self.index[key]["topics"] = []
 
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
         self.ranker = BM25Okapi(ranker_docs, k1=1.7, b=0.95)
+
+        # From there we only need the input embedding matrix, ditch the output one to spare RAM
+        del self.word2vec.syn1neg
+
+        # Remove the parsed text variant for the same reason.
+        for post in self.index.values():
+            del post["parsed"]
 
         # Save the model to a reusable object
         joblib.dump(self, get_models_folder(name + ".joblib.bz2"), compress=9, protocol=pickle.HIGHEST_PROTOCOL)
 
 
     def create_index(self, post: dict):
-        post["excerpt"] = str(post["excerpt"]) \
-            if post["excerpt"] and len(post["excerpt"]) > 600 \
-            else post["content"][0:min(len(post["content"]), 800)]
-        post["date"] = guess_date(str(post["date"])) if post["date"] else None
+        if not post["excerpt"] or len(post["excerpt"]) < 600:
+            post["excerpt"] = str(post["content"])[0:min(len(post["content"]), 600)]
+        else:
+            post["excerpt"] = str(post["excerpt"])
+
+        if "datetime" not in post:
+            # Reuse data set by crawler.Deduplicator if available
+            post["datetime"] = guess_date(str(post["date"])) if post["date"] else None
+
+        if "parsed" not in post:
+            # Reuse data set by crawler.Deduplicator if available
+            post["content"] = clean_whitespaces(str(post["content"]))
+            post["parsed"] = typography_undo(post["content"].lower())
+
         post["category"] = str(post["category"]) if "category" in post else None
         post["title"] = str(post["title"])
         return post
@@ -860,9 +844,7 @@ class Indexer():
 
 
     def tokenize_parallel(self, post: dict) -> list[str]:
-        content = post["title"] + "\n\n" + post["content"]
-        tokens = self.word2vec.tokenizer.tokenize_document(content, meta_tokens=True)
-        return tokens
+        return self.word2vec.tokenizer.tokenize_document(post["parsed"], meta_tokens=True)
 
 
     @classmethod
