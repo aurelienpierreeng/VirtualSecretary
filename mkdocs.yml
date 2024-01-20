@@ -81,7 +81,6 @@ plugins:
 - offline
 - mkdocstrings:
     enabled: !ENV [ENABLE_MKDOCSTRINGS, true]
-    custom_templates: templates
     default_handler: python
     enable_inventory: true
     watch:

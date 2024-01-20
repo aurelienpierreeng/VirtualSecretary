@@ -28,6 +28,14 @@ from core import utils
 # Init a crawler object
 cr = crawler.Crawler()
 
+# Add URLs to ignore when crawling, for performance.
+# for example if those URLs are crawled in another data set.
+cr.no_follow += [
+  "aurelienpierre.com",
+  "persons-profile-",
+  "/view-album/",
+]
+
 # Scrape one site using the sitemap
 output = cr.get_website_from_sitemap("https://ansel.photos",
                                       "en",
@@ -43,10 +51,17 @@ output += cr.get_website_from_crawling("https://community.ansel.photos",
 
 # ... can keep appending as many websites as you want to `output` list
 
+dedup = crawler.Deduplicator()
+dedup.urls_to_ignore += [
+  # Can add other urls to ignore here too.
+]
+output = dedup.process(output)
+
 utils.save_data(output, "ansel")
+# You will find the dataset saved as a pickle Python object in a .tar.gz in ./data/
 ```
 
-!!! Warning
+!!! Note
 
     In the above example, we reuse the `cr` object between the "sitemap" and the "recurse" calls. It means that the second call will inherit the [Crawler.crawled_URL][core.crawler.Crawler.crawled_URL] list from the previous, which contains all the URLs already processed. All URLs from this list will be ignored in the next calls. This can be good to avoid duplicates, but can be bad for some use cases. For those cases, instantiate a new `Crawler` object instead of reusing the previous one.
 

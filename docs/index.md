@@ -3,10 +3,12 @@
 ## Presentation
 
 <figure style="float:left;" markdown>
-![](/assets/secretary.png){ align=left width="300" }
+![](assets/secretary.png){ align=left width="300" }
   <figcaption markdown>Secretary icons by [UltimateArm](https://www.flaticon.com/authors/ultimatearm)</figcaption>
 </figure>
- The Virtual Secretary is a Python framework allowing to write custom filters and actions to __automate your digital office workflows__. It provides connectors to synchronize information across:
+
+ The Virtual Secretary is a Python framework allowing to write custom filters and actions to __automate your digital office workflows__ and
+ improve __information processing and retrieval__. It provides connectors to synchronize information across:
 
 * your emails,
 * your contacts (address books),
@@ -15,7 +17,13 @@
     * your agenda events,
     * your database entries.
 
-It aims at __making your ultra-connected office life less stressful__, by cross-checking and pre-filtering information for you, such that you get a digest of only the important/urgent information, and can deal with less important information later, at your own pace.
+
+> __Secretary__: _a person who works in an office, working for another person, dealing with mail and phone calls, keeping records, arranging meetings with people, etc._ ([Oxford dictionnary](https://www.oxfordlearnersdictionaries.com/definition/english/secretary?q=secretary))
+
+
+Human secretaries were able to use their knowledge, agreed-upon rules and their best judgment to assess whether any unplanned event (visitor, phone call, mail) was worth disturbing your planning and workflow. To cut on expenses, they have been replaced by computers and software, which send you notifications for everything, without discernment. The result is you are disturbed all the time, you have to process huge amounts of info, so you only gained more stress and more work.
+
+The Virtual Secretary aims at __making your ultra-connected office life less stressful__, by cross-checking and pre-filtering information for you, such that you get a digest of only the important/urgent information, and can deal with less important information later, at your own pace.
 
 The framework provides an high-level Python API allowing you to efficiently write simple and advanced email filters, unleashing the full power of the Python programming language, along with its powerful ecosystem of packages for data mining, machine learning, regular expression search, etc.
 
@@ -25,12 +33,24 @@ The Virtual Secretary works standalone: it doesn't need any intermediate piece 
 
 Internally, it provides low-level features exposed through a nice programming interface allowing to write clean and elegant filters:
 
-* connection to __IMAP and SMTP mail servers__ through SSL and StartTLS, allowing to fetch, parse, delete and send threaded emails (tested with Hotmail/Live, Gmail, [Dovecot](https://www.dovecot.org/) and [Exim](https://www.exim.org/)),
+* connection to __IMAP and SMTP mail servers__ through SSL and StartTLS (tested with Hotmail/Live, Gmail, [Dovecot](https://www.dovecot.org/) and [Exim](https://www.exim.org/)):
+    - fetch, parse, and inject email content, headers and attachments into arbitrary Python scripts,
+    - tag and sort/move emails into IMAP folders based on manual filters (Python scripts) or AI classifiers,
+    - send automatic replies (auto-responder).
+* __HTML, PDF and XML__ crawling, parsing and indexing with OCR :
+    - crawl websites recursively, for content and links,
+    - easily create natural language corpora to train specialized AI language models that speak your business slang,
+    - create specialized search engines aggregating internal and external resources you need for your job (reference implementation of a server-side interface: [Chantal](https://chantal.aurelienpierre.com)),
 * connection to __Instagram__ through their OAuth2 and Rest API _(read-only)_,
+  - duplicate comments into your mailbox to centralize,
 * __email authentication__ (spam detection) through [SPF](https://en.wikipedia.org/wiki/Sender_Policy_Framework), [DKIM](https://en.wikipedia.org/wiki/DomainKeys_Identified_Mail) and [ARC](https://en.wikipedia.org/wiki/Authenticated_Received_Chain),
+    - basic SPF and DKIM checks get rid of 90% of spam emails without relying on flimsy machine learning. Go figure why mail providers don't do it…
 * connection to __CardDAV address book servers__ (tested with [SabreDAV](https://sabre.io/), used by [NextCloud](https://nextcloud.com/)  and [Owncloud](https://owncloud.com/) servers) _(read-only)_,
-* __natural language processing with machine-learning classifier__ ([SVM](https://en.wikipedia.org/wiki/Support_vector_machine) on top of [word2vec](https://en.wikipedia.org/wiki/Word2vec)), allowing to train your own AI against your own emails in your own language and perform automatic tagging and sorting based on content,
-* filters can be processed on a desktop or on a server, on demand or as a Cron job. A locking mechanism prevents more than one instance to process each mailbox. AI classifiers can be trained locally on desktop and sent to run on the server,
+    - reuse your contact info to label and sort emails
+* __Machine-learning language classifier__ ([SVM](https://en.wikipedia.org/wiki/Support_vector_machine) and decision trees on top of [word2vec](https://en.wikipedia.org/wiki/Word2vec)), allowing to train your own AI against your own emails in your own language and perform automatic tagging and sorting based on content,
+    - perform topic recognition in emails or documents,
+    - find relevant resources from a query (search engine) or an email body (auto-responder).
+* __works on server or desktop__, on demand or as a Cron job. A locking mechanism prevents more than one instance to process each mailbox. AI classifiers can be trained locally on desktop and sent to run on the server,
 * an overridable internal logging mechanism prevents emails from being processed more than once, so automatic actions that are manually reverted are not performed again on the next run.
 
 ## Examples of applications
