@@ -754,7 +754,7 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, li
         return None
 
 
-def get_page_markup(page: BeautifulSoup, markup: str|tuple|list[str]|list[tuple]) -> str:
+def get_page_markup(page: BeautifulSoup, markup: str|tuple|list[str]|list[tuple]|None) -> str:
     """Extract the text content of an HTML page DOM by targeting only the specific tags.
 
     Arguments:
@@ -764,6 +764,8 @@ def get_page_markup(page: BeautifulSoup, markup: str|tuple|list[str]|list[tuple]
             - (str): the single tag to select. For example, `"body"` will select `<body>...</body>`.
             - (tuple): the tag and properties to select. For example, `("div", { "class": "right" })` will select `<div class="right">...</div>`.
             - all combinations of the above can be chained in lists.
+            - None: don't parse the page internal content. Links, 
+            h1 and h2 headers will still be parsed.
 
     Returns:
         The text content of all instances of all tags in markup as a single string, if any, else an empty string.
@@ -776,6 +778,9 @@ def get_page_markup(page: BeautifulSoup, markup: str|tuple|list[str]|list[tuple]
         >>> get_page_markup(page, [("div", {"id": "content"}), "details", ("div", {"class": "comment-reply"})])
     """
     output = ""
+
+    if markup is None:
+        return output
 
     if not isinstance(markup, list):
         markup = [markup]
@@ -1148,7 +1153,7 @@ class Crawler:
                                  default_lang: str,
                                  sitemap: str = "/sitemap.xml",
                                  langs: tuple[str] = ("en", "fr"),
-                                 markup: str = "body",
+                                 markup: str | tuple[str] = "body",
                                  category: str = None,
                                  contains_str: str | list[str] = "") -> list[web_page]:
         """Recursively crawl all pages of a website from links found in a sitemap. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain. Sitemaps of sitemaps are followed recursively.
