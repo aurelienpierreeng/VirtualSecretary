@@ -1102,7 +1102,7 @@ class Crawler:
                     # advertising content-type=text/html but UTF8 codecs
                     # fail to decode because it's actually not HTML but PDF.
                     # If we end up here, it's most likely what we have.
-                    output += get_pdf_content(index_url, default_lang, category=category)
+                    output += self._parse_pdf_content(index_url, default_lang, category=category)
                     #print("no page object")
 
             # Follow internal links whether or not this page was mined
@@ -1151,7 +1151,7 @@ class Crawler:
 
         elif "pdf" in content_type and status:
             #print("got pdf")
-            output += get_pdf_content(index_url, default_lang, category=category)
+            output += self._parse_pdf_content(index_url, default_lang, category=category)
             # No link to follow from PDF docmuents
         else:
             # Got an image, video, compressed file, binary, etc.
@@ -1241,21 +1241,8 @@ class Crawler:
         return output
 
 
-    def _crawl_pdf(self, page, domain, default_lang, category):
-        """Try to crawl all PDF documents from links referenced in an HTML page."""
-        output = []
-
-        if page:
-            for url in page.find_all('a', href=True):
-                link = radical_url(relative_to_absolute(url["href"], domain, None))
-                if link not in self.crawled_URL:
-                    content_type, status = get_content_type(link)
-                    if "pdf" in content_type and status:
-                        output += get_pdf_content(link, default_lang, category=category)
-
-                    self.crawled_URL.append(link)
-
-        return output
+    def _parse_pdf_content(self, link, default_lang, category=""):
+        return get_pdf_content(link, default_lang, category=category)
 
 
     def _parse_original(self, page, url, default_lang, markup, date, category):
