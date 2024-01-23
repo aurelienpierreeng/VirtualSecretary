@@ -31,7 +31,7 @@ from sklearn.svm import SVC
 from rank_bm25 import BM25Okapi
 
 from .patterns import *
-from .utils import get_models_folder, typography_undo, guess_date, clean_whitespaces
+from .utils import get_models_folder, typography_undo, guess_date, clean_whitespaces, timeit
 from .language import *
 
 
@@ -712,6 +712,7 @@ class search_methods(IntEnum):
     GREP = 3
 
 class Indexer():
+    @timeit()
     def __init__(self,
                  data_set: list,
                  name: str,
@@ -750,30 +751,10 @@ class Indexer():
 
         print("index built")
 
-        # List of tokens and meta-tokens for each document
-        ranker_docs: list = []
+        # List of tokens/meta-tokens and vector translation for each document
+        docs: list = []
         with Pool(processes=processes) as pool:
             runner = pool.imap(self.tokenize_parallel, list(self.index.values()), chunksize=20)
-            run = True
-            while run:
-                try:
-                    # Allow 1 minute to complete tokenization.
-                    # On Intel Xeon, most documents complete in under a second.
-                    # Some documents lead to catastrophic backtracking with the
-                    # URL regex pattern and need to be stopped the hard way.
-                    doc = next(runner)
-                    ranker_docs.append(doc)
-                except multiprocessing.TimeoutError:
-                    print("timeout")
-                except StopIteration:
-                    run = False
-
-        print("tokenization done")
-
-        # Turn pages into vector features
-        docs : list = []
-        with Pool(processes=processes) as pool:
-            runner = pool.imap(self.get_features_parallel, ranker_docs, chunksize=20)
             run = True
             while run:
                 try:
@@ -788,15 +769,14 @@ class Indexer():
                 except StopIteration:
                     run = False
 
-        self.vectors_all = np.array(docs, dtype=np.float32)
-        del docs # garbage collection for RAM use
+        self.vectors_all = np.array([doc[1] for doc in docs], dtype=np.float32)
         self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
 
         print("vectorization done")
 
         # Extract the 5 most relevant topics of each doc
         for i, key in enumerate(self.index):
-            vector, norm, tokens = self.vectorize_query(ranker_docs[i])
+            vector, norm, tokens = self.vectorize_query(docs[i][0])
             if len(tokens) > 0:
                 topics = self.get_related((vector, "", []), n=5)
                 self.index[key]["topics"] = topics
@@ -804,7 +784,10 @@ class Indexer():
                 self.index[key]["topics"] = []
 
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
-        self.ranker = BM25Okapi(ranker_docs, k1=1.7, b=0.95)
+        self.ranker = BM25Okapi([doc[0] for doc in docs], k1=1.7, b=0.95)
+
+        # garbage collection for RAM use
+        del docs
 
         # From there we only need the input embedding matrix, ditch the output one to spare RAM
         del self.word2vec.syn1neg
@@ -837,12 +820,6 @@ class Indexer():
         return post
 
 
-    def get_features_parallel(self, tokens: list[str]) -> tuple[str, str]:
-        """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
-        # Language doesn't matter, tokenization and normalization are done already
-        return self.word2vec.get_features(tokens, embed="OUT")
-
-
     def tokenize_parallel(self, post: dict) -> list[str]:
         content = typography_undo(str(post["title"]).lower())
 
@@ -854,7 +831,10 @@ class Indexer():
 
         content += "\n\n" + post["parsed"]
 
-        return self.word2vec.tokenizer.tokenize_document(content, meta_tokens=True)
+        tokens = self.word2vec.tokenizer.tokenize_document(content, meta_tokens=True)
+        features = self.word2vec.get_features(tokens, embed="OUT")
+
+        return (tokens, features)
 
 
     @classmethod
