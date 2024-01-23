@@ -999,6 +999,8 @@ class Crawler:
             if nextURL in self.crawled_URL:
                 continue
 
+            self.crawled_URL.append(nextURL)
+
             current_address = patterns.URL_PATTERN.search(nextURL)
             if not current_address:
                 continue
