@@ -132,6 +132,15 @@ dmypy.json
 config*/*
 workspace.code-workspace
 src/user_scripts/*.py
+src/user_scripts/*.sh
 models/*
 data/*
 src/web/*
+*.ini
+*.txt
+
+# Heady stuff that has no business in codebase
+*.tar.gz
+*.tar.bz
+*.zip
+*.gzip
