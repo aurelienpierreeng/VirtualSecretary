@@ -5,6 +5,36 @@ repo_name: aurelienpierreeng/VirtualSecretary
 edit_uri: blob/main/docs/
 copyright: Copyright &copy; 2022-2023 Aurélien PIERRE
 
+nav:
+  - Home: index.md
+  - Getting started:
+    - starting/index.md
+    - Install: starting/1-install.md
+    - Configure: starting/2-configure.md
+    - Run: starting/3-run.md
+    - Example filters: starting/4-example-filters.md
+    - Writing custom filters: starting/5-writing-filters.md
+    - Crawling pages: starting/6-crawling-pages.md
+  - Filter API:
+    - Emails: Filter API/emails.md
+    - CardDAV: Filter API/carddav.md
+    - Instagram: Filter API/Instagram.md
+    - Implement your own protocols: Filter API/your-own-protocols.md
+  - Core package:
+    - core/index.md
+    - App main script: core/1-main.md
+    - Secretary manager: core/2-secretary.md
+    - Protocols connector: core/3-connectors.md
+    - Page crawler: core/4-crawler.md
+    - Natural language processor: core/5-nlp.md
+    - Regular expressions patterns: core/6-patterns.md
+    - Utilities: core/7-utils.md
+  - Background:
+    - Why ?: background/1-why.md
+    - Proposed workflow: background/2-Proposed-workflow.md
+    - Email authentication: background/3-Authentication.md
+    - Risk analysis: background/4-Risk-analysis.md
+
 
 theme:
   name: material
@@ -14,12 +44,15 @@ theme:
     - content.code.annotate
     - content.code.copy
     - content.tooltips
+    - navigation.expand
     - navigation.instant
     - navigation.top
     - navigation.sections
     - navigation.footer
     - navigation.indexes
     - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.tracking
     - search.highlight
     - search.suggest
     - toc.follow
