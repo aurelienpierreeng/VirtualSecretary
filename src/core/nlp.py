@@ -942,7 +942,7 @@ class Indexer():
 
         # Filter out documents NOT matching the pattern
         if pattern:
-            matches = [True if re.findall(pattern, document["content"], timeout=60) else False
+            matches = [True if re.findall(pattern, document["content"], flags=re.IGNORECASE, timeout=60) else False
                        for document in self.index.values()]
             matches = zip(results, matches)
             results = [result_tuple for result_tuple, match in matches if match]
