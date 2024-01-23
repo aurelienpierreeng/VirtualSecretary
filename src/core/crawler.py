@@ -26,6 +26,7 @@ from datetime import datetime, timezone, timedelta
 from . import utils
 
 from typing import TypedDict
+from collections import Counter
 
 class web_page(TypedDict):
     """Typed dictionnary representing a web page and its metadata. It can also be used for any text document having an URL/URI"""
@@ -105,6 +106,12 @@ class Deduplicator():
                 page = url.group(3)
                 params = url.group(4)
                 anchor = url.group(5)
+
+                # Special case for Wikipedia mobile version:
+                # redirect to desktop version
+                domain = domain.replace(".m.wikipedia.org", ".wikipedia.org")
+
+                elem["domain"] = domain
 
                 if "/#/" in elem["url"]:
                     # Matrix chat links use # as a "page" and make anchor detection fail big time
@@ -313,6 +320,19 @@ class Deduplicator():
             cleaned_set = [value[0] for value in cleaned_set.values()]
 
         print(len(cleaned_set))
+
+        # List all unique domains with their frequency
+        counts = Counter([post["domain"] for post in cleaned_set])
+        print(f"got {len(counts)} unique domains")
+
+        # Sort words by frequency
+        counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
+
+
+        with open(utils.get_models_folder("domains"), 'w', encoding='utf8') as f:
+            for key, value in counts.items():
+                f.write(f"{key}: {value}\n")
+
 
         return cleaned_set
 
