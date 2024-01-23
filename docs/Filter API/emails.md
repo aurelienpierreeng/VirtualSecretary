@@ -33,3 +33,5 @@ Unfortunately, IMAP actions still have to use the IMAP UID.
 ::: protocols.imap_server.Server
 
 ::: protocols.imap_object.EMail
+
+::: protocols.smtp_server.Server

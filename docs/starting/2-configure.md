@@ -42,19 +42,21 @@ Finally, the mnemonic name of the filter, separated again by a dash `-` from the
 
 That should leave you with something like :
 
-* `/config/`:
-  * `/common/`:
-    * `00-imap-spam.py`
-    * `01-imap-urgent.py`
-    * `LEARN-imap-ban-ip.py`
-  * `/me/`:
-    * `settings.ini`
-    * `03-imap-family.py`
-    * `04-imap-banks.px`
-  * `/pro/`:
-    * `settings.ini`
-    * `03-imap-colleagues.py`
-    * `04-imap-clients.py`
+* `./config/`:
+    * `/common/`:
+        * `00-imap-spam.py`
+        * `01-imap-urgent.py`
+        * `LEARN-imap-ban-ip.py`
+    * `/me/`:
+        * `settings.ini`
+        * `03-imap-family.py`
+        * `04-imap-banks.px`
+    * `/pro/`:
+        * `settings.ini`
+        * `03-imap-colleagues.py`
+        * `04-imap-clients.py`
+* `./src/`
+    * `core` and `protocols` modules (not covered in this section).
 
 ## Connectors
 

@@ -84,25 +84,25 @@ The `/src/mailserver.py` script decodes and parses emails content, and provides 
   * `Email.msg` is a property that instanciate an `EmailMessage` object from the standard Python package [`email`](https://docs.python.org/3/library/email.message.html). Most of the methods in `Email` are helpers and proxies on top of this object. All the methods of `EmailMessage` can be accessed from there.
   * `Email.headers` is the list of header fields found in the message. It is a proxy for `EmailMessage.keys()` from the standard Python package [`email`](https://docs.python.org/3/library/email.message.html). The header fields can then be accessed as a Python dictionnary:
     * Basic fields:
-      * `EMail["From"]`: sender of the email, either an single email like `j.doe@server.com` or a name/email pair like `"John Doe" <j.doe@server.com>`. For convenience, the email addresses and names are parsed and provided as lists in the method `names, addresses = EMail.get_sender()` as `['j.doe@server.com']` no matter how it is declared in `EMails["From"]`,
-      * `EMail["Date"]`: date of sending of the email,
-      * `EMail["Subject"]`: subject of the email, may be set to empty string,
-      * `EMail["To"]`: recipient of the email, mandatory but mildly irrelevant here,
-      * `EMail["Message-ID"]`: an unique ID set by the SMTP server that sent the email. It should be defined but some spam emails don't have one.
+        * `EMail["From"]`: sender of the email, either an single email like `j.doe@server.com` or a name/email pair like `"John Doe" <j.doe@server.com>`. For convenience, the email addresses and names are parsed and provided as lists in the method `names, addresses = EMail.get_sender()` as `['j.doe@server.com']` no matter how it is declared in `EMails["From"]`,
+        * `EMail["Date"]`: date of sending of the email,
+        * `EMail["Subject"]`: subject of the email, may be set to empty string,
+        * `EMail["To"]`: recipient of the email, mandatory but mildly irrelevant here,
+        * `EMail["Message-ID"]`: an unique ID set by the SMTP server that sent the email. It should be defined but some spam emails don't have one.
     * Special fields:
-      * `EMail["Return-Path"]`: usually used by newsletters and auto mailing, it sets the email address to notify when an email bounces (can't be delivered). Mailing-lists software can then run scripts that fetch bounces from the email capturing them and remove the bouncing address from their lists.
-      * `EMail["Reply-To"]`: the preferred email address to be used if you intend on replying to this email (typically the same as the one which sent it, but not necessarily),
-      * `Email["In-Reply-To"`: if the current email is a reply to another email, this header stores the `Message-ID` of that particular email.
-      * `Email["References"]`: if the current email is a reply to another email, this header stores the `Message-ID` of that particular email (aka duplicates the `In-Reply-To` field) but also all the `Message-ID` of the previous emails in the thread. This allows email clients to follow threads.
-      * `EMail["Delivery-date"]`: date and time of delivery on your IMAP server.
+        * `EMail["Return-Path"]`: usually used by newsletters and auto mailing, it sets the email address to notify when an email bounces (can't be delivered). Mailing-lists software can then run scripts that fetch bounces from the email capturing them and remove the bouncing address from their lists.
+        * `EMail["Reply-To"]`: the preferred email address to be used if you intend on replying to this email (typically the same as the one which sent it, but not necessarily),
+        * `Email["In-Reply-To"`: if the current email is a reply to another email, this header stores the `Message-ID` of that particular email.
+        * `Email["References"]`: if the current email is a reply to another email, this header stores the `Message-ID` of that particular email (aka duplicates the `In-Reply-To` field) but also all the `Message-ID` of the previous emails in the thread. This allows email clients to follow threads.
+        * `EMail["Delivery-date"]`: date and time of delivery on your IMAP server.
     * Mass-mailing (newsletters or spam) fields :
-      * `EMail["Precedence"]`: set to `bulk` if the email was sent through a mass-mailing system, good hint to detect newsletters,
-      * `EMail["List-Unsubscribe"]` : for bulk emails, this must to be set to either an unique link to follow to unsubscribe from the mailing list, or an email address to which send some email to opt-out the mailing list. Many spam emails don't define it, which is a good clue.
-      * `EMail["List-Unsubscribe-Post"]` : defines the method to unsubscribe from the mailing list. Should be set to `List-Unsubscribe=One-Click`, which means you only need to visit the URL set in `EMail["List-Unsubscribe"]` to get removed from the mailing list. Unfortunately, most spammers use a double opt-out technique where you need to visit the link AND click on a confirmation button, which means you can't script a mass-unsubscribe filter.
-      * `EMail["List-ID"]`: the mailing-list of that current email.
+        * `EMail["Precedence"]`: set to `bulk` if the email was sent through a mass-mailing system, good hint to detect newsletters,
+        * `EMail["List-Unsubscribe"]` : for bulk emails, this must to be set to either an unique link to follow to unsubscribe from the mailing list, or an email address to which send some email to opt-out the mailing list. Many spam emails don't define it, which is a good clue.
+        * `EMail["List-Unsubscribe-Post"]` : defines the method to unsubscribe from the mailing list. Should be set to `List-Unsubscribe=One-Click`, which means you only need to visit the URL set in `EMail["List-Unsubscribe"]` to get removed from the mailing list. Unfortunately, most spammers use a double opt-out technique where you need to visit the link AND click on a confirmation button, which means you can't script a mass-unsubscribe filter.
+        * `EMail["List-ID"]`: the mailing-list of that current email.
     * Custom fields: user agents are allowed to define their own custom fields, starting with `X`:
-      * `EMail["X-Mailer"]`: user agent sending the email,
-      * `EMail["X-Spam-Status"]`, `EMail["X-Spam-Score"]`, `EMail["X-Spam-Bar"]`, `EMail["X-Ham-Report"]`, `EMail["X-Spam-Flag"]`: SpamAssassin headers giving clues on whether the message is spam or not.
+        * `EMail["X-Mailer"]`: user agent sending the email,
+        * `EMail["X-Spam-Status"]`, `EMail["X-Spam-Score"]`, `EMail["X-Spam-Bar"]`, `EMail["X-Ham-Report"]`, `EMail["X-Spam-Flag"]`: SpamAssassin headers giving clues on whether the message is spam or not.
     * Any header entry found in email will create a field here, accessible through the header name as a key in the dictionnary. The above fields are given as examples to get started, more can be found in the [RFC822](https://www.w3.org/Protocols/rfc822/3_Lexical.html#z1).
   * `EMail.flags` is a flat string of characters containing all the IMAP flags, standard and user-defined, like `\Seen` if the message has been read or `Junk` if Thunderbird detected it as spam, or any custom flag you set. User-defined flags are treated as labels or tags by most email clients.
   * `EMail.ips` is a list of all the IP of the servers through which your email transited before getting into your mailbox. It is parsed from the `Received` headers, which contains the whole server route taken by the email.
@@ -135,11 +135,11 @@ The `EMail` class references the `MailServer` instance containing the active IMA
 
 * `print(EMail)` will print a condensed version of the email, including subject, date, sender, flags, UID, etc. Useful for debugging.
 * **Tagging** :
-  * `EMail.tag(keyword:str)` : allows to add any tag (also named keyword or flag or label) to your emails. Note that Thunderbird has a quirk here : any tag you add programmatically here will need to be added also in Thunderbird GUI in order to appear in Thunderbird. NextCloud Mail (and apparently Horde, which provides the base libs for NextCloud Mail) detects them automatically and shows them without any fuss.
-  * `EMail.untag(keyword:str)` : allows to remove any tag from your emails.
-  * `EMail.mark_as_important(mode:str)` : add or remove the `\Flagged` standard flag which is interpreted by most clients as an "important" label. The `mode` needs be set to `"add"` or `"remove"`. It is an alias of `EMail.tag("\\Flagged")` and `EMail.untag("\\Flagged")`.
-  * `EMail.mark_as_read(mode:str)` : add or remove the `\Seen` standard flag which is interpreted by clients as "read". The `mode` is set as the previous. It is also an alias of `EMail.tag` and `EMail.untag`.
-  * `EMail.mark_as_answered(mode:str)` : add or remove the `\Answered` standard flag. The `mode` is set as the previous. It is again an alias of `EMail.tag` and `EMail.untag`.
+    * `EMail.tag(keyword:str)` : allows to add any tag (also named keyword or flag or label) to your emails. Note that Thunderbird has a quirk here : any tag you add programmatically here will need to be added also in Thunderbird GUI in order to appear in Thunderbird. NextCloud Mail (and apparently Horde, which provides the base libs for NextCloud Mail) detects them automatically and shows them without any fuss.
+    * `EMail.untag(keyword:str)` : allows to remove any tag from your emails.
+    * `EMail.mark_as_important(mode:str)` : add or remove the `\Flagged` standard flag which is interpreted by most clients as an "important" label. The `mode` needs be set to `"add"` or `"remove"`. It is an alias of `EMail.tag("\\Flagged")` and `EMail.untag("\\Flagged")`.
+    * `EMail.mark_as_read(mode:str)` : add or remove the `\Seen` standard flag which is interpreted by clients as "read". The `mode` is set as the previous. It is also an alias of `EMail.tag` and `EMail.untag`.
+    * `EMail.mark_as_answered(mode:str)` : add or remove the `\Answered` standard flag. The `mode` is set as the previous. It is again an alias of `EMail.tag` and `EMail.untag`.
 * **Moving** : `EMail.move(folder:str)` : move the email to the specified folder, like `INBOX`. If the folder does not exist, it will be automatically created. Folders can be hierarchical, for example `INBOX.Money.Taxes`, in which case the parent folders will be created too if needed. Note that folder names are case-sensitive. To see what folders are available in your mail account, look at the first lines of the `sync.log` in your email subfolder : they will be listed.
 * **Deleting** : `EMail.delete()` : entirely removes an email from your mailbox. This is without recuperation and will not use the trash bin. If you want to use the trash been, you need to move the email to trash, for example with `EMail.move("Email.server.trash)`.
 * **Mark as spam** : `EMail.spam(spam_folder="INBOX.spam")` : add the `Junk` flag to the email (like Thunderbird) and move the email to the spam folder. Check that it's the right folder for your mail server.
