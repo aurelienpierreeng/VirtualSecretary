@@ -844,7 +844,17 @@ class Indexer():
 
 
     def tokenize_parallel(self, post: dict) -> list[str]:
-        return self.word2vec.tokenizer.tokenize_document(post["parsed"], meta_tokens=True)
+        content = typography_undo(str(post["title"]).lower())
+
+        if post["h1"]:
+            content += "\n\n" + typography_undo("\n\n".join(list(post["h1"])).lower())
+
+        if post["h2"]:
+            content += "\n\n" + typography_undo("\n\n".join(list(post["h2"])).lower())
+
+        content += "\n\n" + post["parsed"]
+
+        return self.word2vec.tokenizer.tokenize_document(content, meta_tokens=True)
 
 
     @classmethod
