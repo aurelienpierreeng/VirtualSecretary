@@ -840,11 +840,16 @@ class Indexer():
     @classmethod
     def load(cls, name: str):
         """Load an existing trained model by its name from the `../models` folder."""
-        model = joblib.load(get_models_folder(name) + ".joblib.bz2")
-        if isinstance(model, Indexer):
-            return model
-        else:
-            raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
+        try:
+            model = joblib.load(get_models_folder(name) + ".joblib")
+            if isinstance(model, Indexer):
+                return model
+        except:
+            model = joblib.load(get_models_folder(name) + ".joblib.bz2")
+            if isinstance(model, Indexer):
+                return model
+            else:
+                raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
 
 
     def tokenize_query(self, query:str, language: str = None, meta_tokens: bool = True) -> list[str]:
