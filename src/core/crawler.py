@@ -1028,8 +1028,6 @@ class Crawler:
             if nextURL in self.crawled_URL:
                 continue
 
-            self.crawled_URL.append(nextURL)
-
             current_address = patterns.URL_PATTERN.search(nextURL)
             if not current_address:
                 continue
@@ -1041,6 +1039,8 @@ class Crawler:
 
             if nextURL not in self.crawled_URL and not (domain in current_domain and external_only):
                 output += self.get_website_from_crawling(current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, _recursion_level=0)
+
+            self.crawled_URL.append(nextURL)
 
         return output
 
