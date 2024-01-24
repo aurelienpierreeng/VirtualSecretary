@@ -764,6 +764,9 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, li
         handler.h1 = {tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h1")}
         handler.h2 = {tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h2")}
 
+        # Same with date: sometimes put in <header>
+        handler.date = get_date(handler)
+
         # Remove any kind of machine code and symbols from the HTML doctree because we want natural language only
         # That will also make subsequent parsing slightly faster.
         # Remove blockquotes too because they can duplicate internal content of forum pages.
@@ -931,7 +934,7 @@ def parse_page(page: BeautifulSoup, url: str,
 
     # Get date - hard if no sitemap with timestamps.
     if not date:
-        date = get_date(page)
+        date = page.date
 
     # Get content - easy : user-request
     content = get_page_markup(page, markup=markup)
@@ -983,12 +986,15 @@ class Crawler:
         "pinterest.com/pin/create",
         "facebook.com/sharer",
         "twitter.com/intent/tweet",
+        "twitter.com/share",
         "reddit.com/submit",
         "t.me/share", # Telegram share
         "linkedin.com/share",
+        "vk.com/share.php",
         "bufferapp.com/add",
         "getpocket.com/edit",
         "tumblr.com/share",
+        "translate.google.com/translate", # Machine-translated pages
         "mailto:",
         "/profile/",
         "/login/",
