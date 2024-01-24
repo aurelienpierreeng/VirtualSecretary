@@ -192,6 +192,17 @@ class Tokenizer():
         return word
 
 
+    def normalize_text(self, document:str) -> str:
+        """Prepare text for tokenization by converting it to lowercase ASCII characters.
+
+        This will loose accents, diacritics and capitals, which means some nuance will be lost
+        at the benefit of generality. In case this does not suit your usecase, you may
+        inherit the `Tokenizer` class, build a child class and re-implement this method
+        """
+
+        return typography_undo(str(document).lower())
+
+
     def normalize_token(self, word: str, language: str, meta_tokens: bool = True):
         """Return normalized, lemmatized and stemmed word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
 
@@ -845,7 +856,7 @@ class Indexer():
         if "parsed" not in post:
             # Reuse data set by crawler.Deduplicator if available
             post["content"] = clean_whitespaces(str(post["content"]))
-            post["parsed"] = typography_undo(post["content"].lower())
+            post["parsed"] = self.word2vec.tokenizer.normalize_text(post["content"])
 
         post["category"] = str(post["category"]) if "category" in post else None
         post["title"] = str(post["title"])
@@ -853,13 +864,13 @@ class Indexer():
 
 
     def tokenize_parallel(self, post: dict) -> list[str]:
-        content = typography_undo(str(post["title"]).lower())
+        content = self.word2vec.tokenizer.normalize_text(post["title"])
 
         if post["h1"]:
-            content += "\n\n" + typography_undo("\n\n".join(list(post["h1"])).lower())
+            content += "\n\n" + self.word2vec.tokenizer.normalize_text("\n\n".join(list(post["h1"])))
 
         if post["h2"]:
-            content += "\n\n" + typography_undo("\n\n".join(list(post["h2"])).lower())
+            content += "\n\n" + self.word2vec.tokenizer.normalize_text("\n\n".join(list(post["h2"])))
 
         content += "\n\n" + post["parsed"]
 
