@@ -119,8 +119,9 @@ class Deduplicator():
                 else:
                     new_url = protocol + "://" + domain + page
 
-                if params and params.startswith("?lang="):
-                    # Non SEO-friendly way of translating pages.
+                if params and (params.startswith("?lang=") or params.startswith("?v=") \
+                    or not self.discard_params):
+                    # Non SEO-friendly way of translating pages and Youtube videos
                     # Need to keep it
                     new_url += params
 
@@ -336,7 +337,7 @@ class Deduplicator():
 
         return cleaned_set
 
-    def __init__(self, threshold: float = 0.9, distance: int = 500):
+    def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True):
         """Instanciate a duplicator object.
 
         The duplicates factorizing takes a list of [core.crawler.web_page][] and happens when calling [core.crawler.Deduplicator.process][].
@@ -360,11 +361,19 @@ class Deduplicator():
                 [core.crawler.web_page][] list has been ordered alphabetically by URL, for performance, assuming near-duplicates
                 will most likely be found on the same domain and at a resembling path.
                 The distance parameters defines how many elements ahead we will look into.
+            discard_params: on modern CMS that enable "pretty URLs" (URL rewriting), pages will be indexed
+                by a `domain/section/subsection/page` and URL query parameters will most likely be used my meaningless
+                pages like social sharing links or search results page so this parameter can be set to `True`
+                to discard those.
+                On Rest-API-driven websites, streaming websites and old CMS using "ugly URLS",
+                pages will be indexed by `domain?content=id` and the query parameters need to be kept by setting
+                this parameter to `False`
 
         """
 
         self.threshold = threshold
         self.distance = distance
+        self.discard_params = discard_params
 
 
 headers = {
