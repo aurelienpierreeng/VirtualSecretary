@@ -29,3 +29,4 @@ markdown-callouts
 black
 griffe
 levenshtein
+scipy

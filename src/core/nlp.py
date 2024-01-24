@@ -23,10 +23,12 @@ import pickle
 
 import numpy as np
 
+
 import nltk
 from nltk.tokenize import RegexpTokenizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
+from scipy.signal import convolve2d
 
 from rank_bm25 import BM25Okapi
 
@@ -589,6 +591,24 @@ class Word2Vec(gensim.models.Word2Vec):
 
         return features
 
+
+    def tokens_to_indices(self, tokens: list[str]) -> np.ndarray[np.int32]:
+        """Convert a list of tokens to a list of their index number in the Word2Vec vocabulary.
+        This yields a more compact, albeit purely symbolic, representation of a tokenized document
+        as a series of integers.
+
+        The conversion is reversible and the original token can be found with `self.wv.index_to_key[i]`,
+        where `i` is the index number output (for each token) from here.
+
+        Return:
+            the list of indices as 32 bits integers, meaning the Word2Vec vocabulary needs to contain fewer
+            than 4.29 billions words.
+        """
+        return np.array([self.wv.get_index(token)
+                         for token in tokens
+                         if token in self.wv], dtype=np.int32)
+
+
 class Classifier(nltk.classify.SklearnClassifier):
     def __init__(self,
                  training_set: list[Data],
@@ -770,9 +790,27 @@ class Indexer():
                     run = False
 
         self.vectors_all = np.array([doc[1] for doc in docs], dtype=np.float32)
+        """Store the list of document-wise vector embeddings, where the vector represents
+        the (un-normalized) centroid of tokens vectors contained the document.
+
+        Documents are on the first axis.
+        """
+
         self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
+        """Store the list of L2 norms for each document vector representation."""
+
+        self.collocations = [doc[2] for doc in docs]
+        """Store the list of document tokens encoded by their index number in the
+        Word2Vec vocabulary. Unknown tokens are discarded. This gives a symbolic
+        and more compact representation of tokens collocations in documents (32 bits/token).
+
+        Documents are on the first axis.
+        """
 
         print("vectorization done")
+
+        # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
+        self.ranker = BM25Okapi([doc[0] for doc in docs], k1=1.7, b=0.95)
 
         # Extract the 5 most relevant topics of each doc
         for i, key in enumerate(self.index):
@@ -782,12 +820,6 @@ class Indexer():
                 self.index[key]["topics"] = topics
             else:
                 self.index[key]["topics"] = []
-
-        # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
-        self.ranker = BM25Okapi([doc[0] for doc in docs], k1=1.7, b=0.95)
-
-        # garbage collection for RAM use
-        del docs
 
         # From there we only need the input embedding matrix, ditch the output one to spare RAM
         del self.word2vec.syn1neg
@@ -833,8 +865,9 @@ class Indexer():
 
         tokens = self.word2vec.tokenizer.tokenize_document(content, meta_tokens=True)
         features = self.word2vec.get_features(tokens, embed="OUT")
+        indices = self.word2vec.tokens_to_indices(tokens)
 
-        return (tokens, features)
+        return (tokens, features, indices)
 
 
     @classmethod
@@ -874,6 +907,81 @@ class Indexer():
         return vector, norm, tokenized_query
 
 
+    @timeit()
+    def find_query_pattern(self,
+                           indexed_query: np.ndarray[np.int32],
+                           documents: list[tuple[int, str, float]],
+                           fast=False) -> np.ndarray[np.float32]:
+        """The rankers methods treat documents as continuous bag of words (CBOW).
+        As such, they are good for topic extraction (aboutness), but they do not care about words colocations
+        and ordering, therefore they loose syntactical meaning.
+
+        This method adds an additional layer of detection using convolution filters that
+        will detect word sequences, direct or reversed, and correct the similarity factor set by the
+        other ranking methods using that collocation factor.
+
+        Its major drawback is to be 100 to 500 times slower than the other rankers, due to 2D convolutions,
+        which means it needs to run an a subset of the search index, after previous methods were tried,
+        to refine a previous ranking.
+
+        Parameters:
+            indexed_query: the search query tokens translated into their integer indices in the Word2Vec vocabulary.
+            Use [core.nlp.Word2Vec.tokens_to_indices][] to convert the tokenized query.
+            documents: a symbolic list of documents, as a `(index, url, similarity)` tuple.
+            fast: if `True`, uses a simplified variant that is 6 times faster and only uses local averages.
+            Results from this method are rather inaccurate, for example, for a request like `token_1 token_2`,
+            sentences repeating `token_1` twice will score as much as sentences containing the desired sequence
+            `token_1 token_2`. If `False`, use the convolutional filter.
+
+        References:
+            Text Matching as Image Recognition, Liang Pang, Yanyan Lan, Jiafeng Guo, Jun Xu, Shengxian Wan, and Xueqi Cheng. (2016).
+            https://arxiv.org/pdf/1602.06359.pdf
+
+        """
+        if not fast:
+            kernel_direct = np.eye(indexed_query.size, dtype=np.float32) / indexed_query.size
+            kernel_reverse = np.rot90(np.eye(3, dtype=np.float32)) / 3.
+
+        kernel_query = np.ones(indexed_query.shape, dtype=np.float32) / indexed_query.size
+
+        results = []
+
+        for doc in documents:
+            index = doc[0]
+            url = doc[1]
+            similarity = doc[2]
+
+            collocations = self.collocations[index]
+            if collocations.size > indexed_query.size:
+                if fast:
+                    # Fast variant of the following method. (6 times faster)
+                    # Looses info about tokens order and yields disputable results regarding relevance.
+                    interaction = (collocations[:, np.newaxis] == indexed_query).any(axis=1) / indexed_query.size
+                else:
+                    # Build the interaction matrix: True where doc[i] == indexed_query[j]
+                    # Loosely inspired by https://arxiv.org/pdf/1610.08136.pdf
+                    interaction = np.equal(collocations[:, np.newaxis], indexed_query)
+
+                    # Find permutations of tokens, by packs of 3.
+                    # Inspired by https://arxiv.org/pdf/1602.06359.pdf
+                    direct = convolve2d(interaction, kernel_direct, mode='same', boundary='fill', fillvalue=0)
+                    reverse = convolve2d(interaction, kernel_reverse, mode='same', boundary='fill', fillvalue=0)
+
+                    # Sum both filters output and then average over the query direction
+                    interaction = (direct + reverse).sum(axis=1) / (2. * indexed_query.size)
+
+                # Moving average along the doc direction
+                scores = np.convolve(interaction, kernel_query, mode="same")
+                max_score = np.max(scores)
+
+                results.append((index, url, similarity + max_score))
+
+            else:
+                results.append(doc)
+
+        return results
+
+    @timeit()
     def rank_grep(self, query: re.Pattern|str) -> np.ndarray:
         if not (isinstance(query, str) or isinstance(query, re.Pattern)):
             raise ValueError("Wrong query type (%s) for GREP ranking method. Should be string or regular expression pattern" % type(query))
@@ -885,13 +993,14 @@ class Indexer():
         return results
 
 
+    @timeit()
     def rank_fuzzy(self, tokens: list[str]) -> np.ndarray:
         if not isinstance(tokens, list):
             raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(tokens))
 
         return self.ranker.get_scores(tokens)
 
-
+    @timeit()
     def rank_ai(self, query: tuple) -> np.ndarray:
         if not isinstance(query, tuple):
             raise ValueError("Wrong query type (%s) for AI ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
@@ -901,10 +1010,8 @@ class Indexer():
         tokens = query[2]
 
         # Compute the cosine similarity of centroids between query and documents,
-        # then aggregate the ranking from BM25+ to it for each URL.
-        # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
         norm *= len(tokens)
-        return 0.97 * np.dot(self.vectors_all, vector) / (norm * self.all_norms) + 0.03 * self.ranker.get_scores(tokens)
+        return np.nan_to_num(np.dot(self.vectors_all, vector) / (norm * self.all_norms))
 
 
     def rank(self, query: str|tuple|re.Pattern, method: search_methods,
@@ -924,7 +1031,9 @@ class Indexer():
         # Note : match needs at least Python 3.10
         match method:
             case search_methods.AI:
-                aggregates = self.rank_ai(query)
+                # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
+                # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
+                aggregates = 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])
             case search_methods.FUZZY:
                 aggregates = self.rank_fuzzy(query)
             case search_methods.GREP:
@@ -932,21 +1041,32 @@ class Indexer():
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
 
-        results = zip(self.index.keys(), # URLs
-                      np.nan_to_num(aggregates)) # similarity metric
-
-        # Filter out documents NOT matching the pattern
-        if pattern:
-            matches = [True if re.findall(pattern, document["content"], flags=re.IGNORECASE, timeout=60) else False
-                       for document in self.index.values()]
-            matches = zip(results, matches)
-            results = [result_tuple for result_tuple, match in matches if match]
+        # So far, we are dealing with the full index because operations are fairly CPU-friendly.
+        # Starting at the next step, we will remove elements, so we need to keep indices in memory.
+        results = zip(range(len(self.index)), self.index.keys(), aggregates)
 
         # Filter out documents based on URL filter if provided
         if filter_callback:
-            results = [(url, similarity) for url, similarity in results if filter_callback(url, **kargs)]
+            results = [(index, url, similarity)
+                       for index, url, similarity in results
+                       if filter_callback(url, **kargs)]
 
-        return sorted(set(results), key=lambda x:x[1], reverse=True)
+        # Filter out documents NOT matching the pattern
+        if pattern:
+            results = [result
+                       for result in results
+                       if re.findall(pattern, self.index[result[1]]["content"], flags=re.IGNORECASE, timeout=60)]
+
+        # Sort out whatever remains by similarity coeff and keep only the 300 first elements
+        ranked = sorted(results, key=lambda x:x[2], reverse=True)[0:400]
+
+        # Now is time for the really heavy stuff: find tokens in sequential order
+        if isinstance(query, tuple) and isinstance(query[2], list) and len(query[2]) > 2:
+            indexed_query = self.word2vec.tokens_to_indices(query[2])
+            results = self.find_query_pattern(indexed_query, ranked)
+            ranked = sorted(results, key=lambda x:x[2], reverse=True)
+
+        return [(url, similarity) for _, url, similarity in ranked]
 
 
     def get_page(self, url:str) -> dict:
@@ -957,6 +1077,7 @@ class Indexer():
             This is no issue if you feed it the output of `self.rank()` but mind that otherwise.
         """
         return self.index[url]
+
 
     def get_related(self, post: tuple, n: int = 15) -> list:
         """Get the n closest keywords from the query."""
