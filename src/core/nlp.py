@@ -823,14 +823,9 @@ class Indexer():
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
         self.ranker = BM25Okapi([doc[0] for doc in docs], k1=1.7, b=0.95)
 
-        # Extract the 5 most relevant topics of each doc
-        for i, key in enumerate(self.index):
-            vector, norm, tokens = self.vectorize_query(docs[i][0])
-            if len(tokens) > 0:
-                topics = self.get_related((vector, "", []), n=5)
-                self.index[key]["topics"] = topics
-            else:
-                self.index[key]["topics"] = []
+        # Write topics in index
+        for i, key in enumerate(self.index.keys()):
+            self.index[key]["topics"] = docs[i][3]
 
         # From there we only need the input embedding matrix, ditch the output one to spare RAM
         del self.word2vec.syn1neg
@@ -878,7 +873,15 @@ class Indexer():
         features = self.word2vec.get_features(tokens, embed="OUT")
         indices = self.word2vec.tokens_to_indices(tokens)
 
-        return (tokens, features, indices)
+        # Extract the 5 most relevant topics of each doc.
+        # We need to re-vectorize the doc with the IN embedding matrix.
+        vector, _, tokens = self.vectorize_query(tokens)
+        if len(tokens) > 0:
+            topics = self.get_related((vector, "", []), n=5)
+        else:
+            topics = []
+
+        return (tokens, features, indices, topics)
 
 
     @classmethod
