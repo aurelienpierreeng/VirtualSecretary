@@ -878,6 +878,9 @@ def get_date(html: BeautifulSoup):
     Returns:
         The content of the meta tag if any.
     """
+    def method_0(html: BeautifulSoup):
+        test = html.find("meta", {"name": "date", "content": True})
+        return test["content"] if test else None
 
     def method_1(html: BeautifulSoup):
         test = html.find("meta", {"property": "article:modified_time", "content": True})
@@ -896,7 +899,7 @@ def get_date(html: BeautifulSoup):
         return test.get_text() if test else None
 
     date = None
-    bag_of_methods = (method_1, method_2, method_3, method_4)
+    bag_of_methods = (method_0, method_1, method_2, method_3, method_4)
 
     i = 0
     while not date and i < len(bag_of_methods):
