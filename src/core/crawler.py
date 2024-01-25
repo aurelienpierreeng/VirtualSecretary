@@ -113,8 +113,9 @@ class Deduplicator():
 
                 elem["domain"] = domain
 
-                if "/#/" in elem["url"]:
+                if "/#/" in elem["url"] or "web.archive.org" in elem["url"]:
                     # Matrix chat links use # as a "page" and make anchor detection fail big time
+                    # webarchive URLS have twice "http(s)://", that fails too.
                     new_url = elem["url"]
                 else:
                     new_url = protocol + "://" + domain + page
@@ -710,7 +711,6 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, li
     - code and machine language tags are removed (`<script>`, `<style>`, `<code>`, `<pre>`, `<math>`),
     - menus and sidebars are removed (`<nav>`, `<aside>`),
     - forms, fields and buttons are removed(`<select>`, `<input>`, `<button>`, `<textarea>`, etc.)
-    - quotes tags are removed (`<quote>`, `<blockquote>`).
 
     The HTML is un-minified to help end-of-sentences detections in cases where sentences don't end with punctuation (e.g. in titles).
 
@@ -867,6 +867,7 @@ def get_date(html: BeautifulSoup):
 
     Looks for HTML tags:
 
+    - `<meta name="date" content="...">`
     - `<meta property="article:modified_time" content="...">`
     - `<time datetime="...">`
     - `<relative-time datetime="...">`
