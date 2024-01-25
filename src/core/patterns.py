@@ -38,7 +38,7 @@ IP_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_ip, regex_stopper), re
 EMAIL_PATTERN = re.compile(r"<?([0-9a-z\-\_\+\.]+?@[0-9a-z\-\_\+]+(\.[0-9a-z\_\-]{2,})+)>?", re.IGNORECASE)
 """Emails patterns like `<me@mail.com>` or `me@mail.com` where the whole address is captured in the first group."""
 
-regex_url = r"((?:http|ftp)s?)?:?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?(\/?[^?#\s\"\,\;\:>]*)(\?[^\s\#\\\/]*)?(\#[^\s\?\\\/]*)?"
+regex_url = r"((?:http|ftp)s?)?:?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?(\/?[^?#\s\"\,\;>]*)(\?[^\s\#\\\/]*)?(\#[^\s\?\\\/]*)?"
 URL_PATTERN_FAST = re.compile(r"^%s$" % regex_url, re.IGNORECASE)
 URL_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_url, end_of_word), re.IGNORECASE)
 """URL patterns like `http(s)://domain.ext/page/subpage?q=x&r=0:1#anchor` or `//domain.ext/page`.
