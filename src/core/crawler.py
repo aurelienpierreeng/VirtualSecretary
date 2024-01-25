@@ -771,7 +771,7 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, li
         # That will also make subsequent parsing slightly faster.
         # Remove blockquotes too because they can duplicate internal content of forum pages.
         # Basically, the goal is to get only the content body of the article/page.
-        for element in handler.select('code, pre, math, style, script, svg, img, picture, audio, video, iframe, embed, blockquote, quote, aside, nav, input, header, button, form, fieldset, footer, summary, dialog, textarea, select, option'):
+        for element in handler.select('code, pre, math, style, script, svg, img, picture, audio, video, iframe, embed, aside, nav, input, header, button, form, fieldset, footer, summary, dialog, textarea, select, option'):
             element.decompose()
 
         # Remove inline style and useless attributes too
