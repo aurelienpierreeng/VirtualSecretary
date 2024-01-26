@@ -448,6 +448,7 @@ class LossLogger(CallbackAny2Vec):
 
 
 class Word2Vec(gensim.models.Word2Vec):
+    @timeit()
     def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5, min_count=5, sample=0.0005, tokenizer: Tokenizer = None):
         """Train, re-train or retrieve an existing word2vec word embedding model
 
@@ -839,8 +840,8 @@ class Indexer():
 
 
     def create_index(self, post: dict):
-        if not post["excerpt"] or len(post["excerpt"]) < 600:
-            post["excerpt"] = str(post["content"])[0:min(len(post["content"]), 600)]
+        if not post["excerpt"] or len(post["excerpt"]) < 800:
+            post["excerpt"] = str(post["content"])[0:min(len(post["content"]), 800)]
         else:
             post["excerpt"] = str(post["excerpt"])
 
@@ -1069,7 +1070,7 @@ class Indexer():
         if pattern:
             results = [result
                        for result in results
-                       if re.findall(pattern, self.index[result[1]]["content"], flags=re.IGNORECASE, timeout=60)]
+                       if re.findall(pattern, self.index[result[1]]["content"], timeout=5)]
 
         # Sort out whatever remains by similarity coeff and keep only the 300 first elements
         ranked = sorted(results, key=lambda x:x[2], reverse=True)[0:400]
