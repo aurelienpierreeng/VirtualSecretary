@@ -681,7 +681,7 @@ def get_pdf_content(url: str,
                     # since that's what is used as key for dictionaries. Also, Chrome and Acrobat
                     # will be able to open PDF files at the right page with this anchor.
                     result = web_page(title=chapters_titles[i],
-                                        url=f"{url}#page={i}",
+                                        url=f"{url}#page={i + 1}",
                                         date=date,
                                         content=content,
                                         excerpt=None,
