@@ -547,7 +547,7 @@ class Word2Vec(gensim.models.Word2Vec):
         return None
 
 
-    def get_wordvec(self, word: str, embed:str = "IN") -> np.ndarray[np.float32] | None:
+    def get_wordvec(self, word: str, embed:str = "IN", normalize: bool = True) -> np.ndarray[np.float32] | None:
         """Return the vector associated to a word, through a dictionnary of words.
 
         Arguments:
@@ -572,8 +572,10 @@ class Word2Vec(gensim.models.Word2Vec):
             else:
                 raise ValueError("Invalid option")
 
-            norm = np.linalg.norm(vec)
-            return vec / norm if norm > 0. else vec
+            if normalize:
+                norm = np.linalg.norm(vec)
+
+            return vec / norm if normalize and norm > 0. else vec
         else:
             return None
 
@@ -824,9 +826,16 @@ class Indexer():
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
         self.ranker = BM25Okapi([doc[0] for doc in docs], k1=1.7, b=0.95)
 
-        # Write topics in index
+        # Write topics in index, then find 5 closest other pages
         for i, key in enumerate(self.index.keys()):
             self.index[key]["topics"] = docs[i][3]
+
+            in_vector = docs[i][4]
+            if in_vector is not None and (in_vector != 0.).any():
+                in_norm = np.linalg.norm(in_vector)
+                similarity = np.nan_to_num(np.dot(self.vectors_all, in_vector))# / (in_norm * self.all_norms))
+                five_best = sorted(zip(self.index.keys(), similarity), key=lambda x:x[1], reverse=True)[0:10]
+                self.index[key]["related"] = [item[0] for item in five_best]
 
         # From there we only need the input embedding matrix, ditch the output one to spare RAM
         del self.word2vec.syn1neg
@@ -835,8 +844,12 @@ class Indexer():
         for post in self.index.values():
             del post["parsed"]
 
+        self.save(name)
+
+
+    def save(self, name):
         # Save the model to a reusable object
-        joblib.dump(self, get_models_folder(name + ".joblib.bz2"), compress=9, protocol=pickle.HIGHEST_PROTOCOL)
+        joblib.dump(self, get_models_folder(name + ".joblib"), compress=0, protocol=pickle.HIGHEST_PROTOCOL)
 
 
     def create_index(self, post: dict):
@@ -882,7 +895,7 @@ class Indexer():
         else:
             topics = []
 
-        return (tokens, features, indices, topics)
+        return (tokens, features, indices, topics, vector)
 
 
     @classmethod
@@ -892,7 +905,7 @@ class Indexer():
             model = joblib.load(get_models_folder(name) + ".joblib")
             if isinstance(model, Indexer):
                 return model
-        except:
+        except FileNotFoundError:
             model = joblib.load(get_models_folder(name) + ".joblib.bz2")
             if isinstance(model, Indexer):
                 return model
