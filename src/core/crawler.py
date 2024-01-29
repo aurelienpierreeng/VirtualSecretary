@@ -21,6 +21,7 @@ import numpy as np
 from urllib.parse import urljoin
 import multiprocessing
 import Levenshtein
+import random
 from datetime import datetime, timezone, timedelta
 
 from . import utils
@@ -377,10 +378,25 @@ class Deduplicator():
         self.discard_params = discard_params
 
 
-headers = {
-            'User-Agent': 'Virtual Secretary 0.1 Unix',
-            'From': 'youremail@domain.example'  # This is another valid field
-            }
+def get_header():
+    # Evasive manoeuvres to escape bot detection
+
+    ua = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.1 Safari/605.1.15",
+        ]
+
+    #time.sleep(random.randint(0,5))
+    return {
+        'User-Agent': random.choice(ua),
+        'Referer': "https://www.google.com",
+    }
+
 
 def get_content_type(url: str) -> tuple[str, bool]:
     """Probe an URL for HTTP headers only to see what type of content it returns.
@@ -393,7 +409,7 @@ def get_content_type(url: str) -> tuple[str, bool]:
             - `False` if there is some kind of error or empty response.
     """
     try:
-        response = requests.head(url, timeout=60, headers=headers, allow_redirects=True)
+        response = requests.head(url, timeout=60, headers=get_header(), allow_redirects=True)
         content_type = response.headers['content-type']
         status = response.status_code == 200
         return content_type, status
@@ -610,8 +626,9 @@ def get_pdf_content(url: str,
         # Open the document from local or remote storage
         document : BytesIO
         if not file_path:
-            page = requests.get(url, timeout=30, headers=headers, allow_redirects=True)
-            print(f"{url}: {page.status_code}")
+            page = requests.get(url, timeout=30, headers=get_header(), allow_redirects=True)
+            print(f"{page.url}: {page.status_code}")
+            url = page.url
 
             if page.status_code != 200:
                 print("couldn't download %s" % url)
@@ -702,7 +719,7 @@ def get_pdf_content(url: str,
 
 
 @utils.exit_after(120)
-def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, list[str]]:
+def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, str]:
     """Request an (x)HTML page through the network with HTTP GET and feed its response to a BeautifulSoup handler. This needs a functionnal network connection.
 
     The DOM is pre-filtered as follow to keep only natural language and avoid duplicate strings:
@@ -719,16 +736,19 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, li
         content: a string buffer used as HTML source. If this argument is passed, we don't fetch `url` from network and directly use this input.
 
     Returns:
-        a [bs4.BeautifulSoup][] object initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached. The list of URLs found in page before removing meaningless markup is stored as a list of strings in the `object.links` member. `object.h1` and `object.h2` contain a set of headers 1 and 2 found in the page before removing any markup.
+        a tuple with:
+            1. [bs4.BeautifulSoup][] object initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached. The list of URLs found in page before removing meaningless markup is stored as a list of strings in the `object.links` member. `object.h1` and `object.h2` contain a set of headers 1 and 2 found in the page before removing any markup. `object.date` contains the best-guess for the date.
+            2. the final URL of the retrieved page, which might be different from the input URL if HTTP redirections happened.
     """
 
     try:
         if content is None and url is not None:
-            page = requests.get(url, timeout=30, headers=headers, allow_redirects=True)
-            print(f"{url}: {page.status_code}")
+            page = requests.get(url, timeout=30, headers=get_header(), allow_redirects=True)
+            print(f"{page.url}: {page.status_code}")
+            url = page.url
 
             if page.status_code != 200:
-                return None
+                return None, url
 
             # Of course some institutionnal websites don't use UTF-8, so let's guess
             content = page.content
@@ -779,11 +799,11 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, li
             for tag in handler.find_all(attrs={attribute: True}):
                 del tag[attribute]
 
-        return handler
+        return handler, url
 
     except Exception as e:
         print(e)
-        return None
+        return None, url
 
 
 def get_page_markup(page: BeautifulSoup, markup: str|tuple|list[str]|list[tuple]|None) -> str:
@@ -1133,7 +1153,12 @@ class Crawler:
             and "css" not in content_type \
             and "json" not in content_type:
 
-            index = get_page_content(index_url)
+            index, new_url = get_page_content(index_url)
+
+            # Account for HTTP redirections
+            if new_url != index_url:
+                self.crawled_URL.append(new_url)
+                index_url = new_url
 
             if include or _recursion_level == 0 or ".pdf" in index_url:
                 # For the first recursion level, ignore "url contains" rule to allow parsing index pages
@@ -1236,7 +1261,7 @@ class Crawler:
         """
         output = []
 
-        index_page = get_page_content(website + sitemap)
+        index_page, _ = get_page_content(website + sitemap)
         if not index_page:
             return output
 
@@ -1266,9 +1291,13 @@ class Crawler:
             print(currentURL, date)
 
             if '.xml' not in currentURL:
-                # TODO: discard JSON content
-                page = get_page_content(currentURL)
                 self.crawled_URL.append(currentURL)
+                page, new_url = get_page_content(currentURL)
+
+                # Account for HTTP redirections
+                if new_url != currentURL:
+                    self.crawled_URL.append(new_url)
+                    currentURL = new_url
 
                 if page:
                     # We got a proper web page, parse it
@@ -1309,7 +1338,14 @@ class Crawler:
                 content_type, status = get_content_type(translatedURL)
 
                 if "text" in content_type and status:
-                    translated_page = get_page_content(translatedURL)
+                    self.crawled_URL.append(translatedURL)
+                    translated_page, new_url = get_page_content(translatedURL)
+
+                    # Account for HTTP redirections
+                    if new_url != translatedURL:
+                        self.crawled_URL.append(new_url)
+                        translatedURL = new_url
+
                     output += self._parse_original(translated_page, translatedURL, lang, markup, date, category)
 
                 self.crawled_URL.append(translatedURL)
