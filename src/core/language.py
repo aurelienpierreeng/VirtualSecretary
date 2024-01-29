@@ -232,10 +232,6 @@ REPLACEMENTS = {
     "€": "_MONEY_",
     "£": "_MONEY_",
     "$": "_MONEY_",
-
-    "quelle": "quel",
-    "quelles": "quel",
-    "quels": "quel",
 }
 
 # Normalize contractions and abbreviations
