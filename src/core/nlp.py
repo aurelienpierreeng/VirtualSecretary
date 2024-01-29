@@ -215,7 +215,7 @@ class Tokenizer():
             `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
             `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
         """
-        string = word.strip("?!#=+-,:;'\"^*./`()[]{}& \n\r\t")
+        string = word.strip("?!#=+-,:;'\"^*./`()[]{}& \n\r\t<>")
 
         if len(string) == 0 or " " in string or "\n" in string:
             # empty string or
@@ -228,9 +228,10 @@ class Tokenizer():
         if string.upper() in self.meta_tokens:
             return string.upper()
 
-        if "_" in string or "<" in string or ">" in string or "\\" in string or "=" in string or "~" in string:
-            # Technical stuff, like markup/code leftovers and such
-            return None
+        # In case we caught variables names using underscores, merge with camelcase
+        # It's not technically natural language (though programming languages are...)
+        # but some technical stuff may help diagnosing issues in software matters.
+        string = string.replace("_", "")
 
         # Last chance of identifying meta-tokens in an atomic way
         if meta_tokens:
