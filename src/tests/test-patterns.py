@@ -101,11 +101,14 @@ Blah [link](https://at.dot.com/page/)
 Meh [https://at.dot.com/page]
 https://web.archive.org/web/20181103230658im_/http://atelier-malopelli.com/wp-content/uploads/2016/03/Universelle-Sol-Re%CC%81-2-.jpg
 http://localhost:2080
+<a href="https://web.archive.org/web/20181103230658im_/http://atelier-malopelli.com/wp-content/uploads/2016/03/Universelle-Sol-Re%CC%81-2-.jpg">
+<http://domain.ext/page/subpage/?q=x&r=0:1+i#stuff>
+<title>http://domain.ext/page/subpage/?q=x&r=0:1+i#stuff</title>
 """
 
 matches = find_pattern(URL_PATTERN, samples)
 
-[print(m) for m in matches].
+[print(m) for m in matches]
 
 samples = """
 2001:0db8:0000:85a3:0000:0000:ac1f:8001

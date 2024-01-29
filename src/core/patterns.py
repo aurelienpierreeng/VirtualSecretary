@@ -7,13 +7,13 @@ You can use https://regex101.com/ to test these conveniently.
 
 import regex as re
 
-regex_starter = r"(?<=^|\s|\[|\(|\{|\<|\'|\"|`|;)"
+regex_starter = r"(?<=^|\s|\[|\(|\{|\<|\'|\"|`|;|\>)"
 """Start of line, or start of document, or start of markup"""
 
-regex_stopper = r"(?=$|\s|\]|\)|\}|\>|\'|\"|`|;)"
+regex_stopper = r"(?=$|\s|\]|\)|\}|\>|\'|\"|`|;|\<)"
 """End of line, or end of document, or end of markup"""
 
-end_of_word = r"(?=$|\s|\]|\)|\}|\>|\'|\"|`|;|:|,|\?|\!|\.)"
+end_of_word = r"(?=$|\s|\]|\)|\}|\>|\'|\"|`|;|:|,|\?|\!|\.|\<)"
 """End of word, or end of line, or end of document, or end of markup"""
 
 regex_algebra = r"[\+\-\=\≠\±]"
@@ -38,7 +38,7 @@ IP_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_ip, regex_stopper), re
 EMAIL_PATTERN = re.compile(r"<?([0-9a-z\-\_\+\.]+?@[0-9a-z\-\_\+]+(\.[0-9a-z\_\-]{2,})+)>?", re.IGNORECASE)
 """Emails patterns like `<me@mail.com>` or `me@mail.com` where the whole address is captured in the first group."""
 
-regex_url = r"((?:http|ftp)s?)?:?\/\/([^:\/\?\#\s\\]+)(?:\:[0-9]*)?(\/?[^?#\s\"\,\;>]*)(\?[^\s\#\\\/]*)?(\#[^\s\?\\\/]*)?"
+regex_url = r"((?:http|ftp)s?)?:?\/\/([A-Za-z0-9-_.~]+)(?:\:[0-9]*)?(\/?[A-Za-z0-9-_.~:\/\[\]@!$&'()*+,;=%]*)(\?[A-Za-z0-9-_.~:\/\[\]@!$&'()*+,;=%]*)?(\#[A-Za-z0-9-_.~:\/\[\]@!$&'()*+,;=%]*)?"
 URL_PATTERN_FAST = re.compile(r"^%s$" % regex_url, re.IGNORECASE)
 URL_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_url, end_of_word), re.IGNORECASE)
 """URL patterns like `http(s)://domain.ext/page/subpage?q=x&r=0:1#anchor` or `//domain.ext/page`.
