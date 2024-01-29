@@ -1029,7 +1029,7 @@ class Indexer():
         return self.ranker.get_scores(tokens)
 
     @timeit()
-    def rank_ai(self, query: tuple) -> np.ndarray:
+    def rank_ai(self, query: tuple, fast: bool = False) -> np.ndarray:
         if not isinstance(query, tuple):
             raise ValueError("Wrong query type (%s) for AI ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
 
@@ -1037,9 +1037,27 @@ class Indexer():
         norm = query[1]
         tokens = query[2]
 
-        # Compute the cosine similarity of centroids between query and documents,
-        norm *= len(tokens)
-        return np.nan_to_num(np.dot(self.vectors_all, vector) / (norm * self.all_norms))
+        if fast:
+            # The following seems very close to the next in terms of results.
+            # Experimentally, I saw very little difference in rankings, at least not in the first results.
+            # The by-the-book is perhaps more immune to keywords stuffing and more sensitive to structure.
+            # Differences appear in the tail of the ranking, mostly.
+            return np.nan_to_num(np.dot(self.vectors_all, vector) / (norm * self.all_norms))
+        else:
+            # This is the by-the-book dual embedding space as defined in
+            # https://arxiv.org/pdf/1602.01137.pdf
+            aggregate = np.zeros(self.all_norms.shape, dtype=np.float32)
+            n = 0
+
+            for token in tokens:
+                # Compute the cosine similarity of centroids between query and documents,
+                vector = self.word2vec.get_wordvec(token, embed="IN", normalize=False)
+                if vector is not None:
+                    norm = np.linalg.norm(vector)
+                    aggregate += np.nan_to_num(np.dot(self.vectors_all, vector) / (norm * self.all_norms))
+                    n += 1
+
+            return aggregate / n
 
 
     def rank(self, query: str|tuple|re.Pattern, method: search_methods,
