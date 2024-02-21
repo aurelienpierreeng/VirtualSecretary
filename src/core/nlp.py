@@ -73,6 +73,7 @@ class Tokenizer():
         NUMBER_PATTERN_FAST: "_NUMBER_"}
     """Dictionnary of regular expressions (keys) to find in full-tokens and replace by meta-tokens. Use simplified regex patterns for performance."""
 
+
     def prefilter(self, string:str, meta_tokens:bool = True) -> str:
         """Tokenizers split words based on unsupervised machine-learned models. Sometimes, they work weird.
         For example, in emails and user handles like `@user`, they would split `@` and `user` as 2 different tokens,
@@ -84,18 +85,17 @@ class Tokenizer():
         for key, value in self.characters_cleanup.items():
             # Note: since Python 3.8 or so, dictionnaries are ordered.
             # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
-            string = key.sub(value, string)
+            string = key.sub(value, string, concurrent=True)
 
         for key, value in self.abbreviations.items():
             string = string.replace(key, value)
-
 
         if meta_tokens:
             for key, value in self.meta_tokens_pipe.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
                 try:
-                    string = key.sub(value, string, timeout=15)
+                    string = key.sub(value, string, timeout=15, concurrent=True)
                 except TimeoutError:
                     print("Meta-token detection timed out on %s with:\n%s" % (key, string))
 
@@ -185,7 +185,7 @@ class Tokenizer():
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
                 # Allow only 10 s for each pattern because we run on individual tokens here.
                 try:
-                    word = key.sub(value, word, timeout=10)
+                    word = key.sub(value, word, timeout=10, concurrent=True)
                 except TimeoutError:
                     print("Lemmatization timed out on %s with:\n%s" % (key, word))
 
@@ -238,7 +238,7 @@ class Tokenizer():
             for key, value in self.internal_meta_tokens.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
-                if key.match(string, timeout=10):
+                if key.match(string, timeout=10, concurrent=True):
                     return value
 
         # Lemmatize / Stem
@@ -478,7 +478,7 @@ class Word2Vec(gensim.models.Word2Vec):
         training: list[list[list[str]]] = []
 
         with Pool(processes=processes) as pool:
-            runner = pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=1)
+            runner = pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=8)
             run = True
             while run:
                 try:
@@ -834,7 +834,7 @@ class Indexer():
             in_vector = docs[i][4]
             if in_vector is not None and (in_vector != 0.).any():
                 in_norm = np.linalg.norm(in_vector)
-                similarity = np.nan_to_num(np.dot(self.vectors_all, in_vector))# / (in_norm * self.all_norms))
+                similarity = np.nan_to_num(np.dot(self.vectors_all, in_vector)) / (in_norm * self.all_norms))
                 five_best = sorted(zip(self.index.keys(), similarity), key=lambda x:x[1], reverse=True)[0:10]
                 self.index[key]["related"] = [item[0] for item in five_best]
 
@@ -848,9 +848,9 @@ class Indexer():
         self.save(name)
 
 
-    def save(self, name):
+    def save(self, name: str):
         # Save the model to a reusable object
-        joblib.dump(self, get_models_folder(name + ".joblib"), compress=0, protocol=pickle.HIGHEST_PROTOCOL)
+        joblib.dump(self, get_models_folder(name + ".joblib"), compress=1, protocol=pickle.HIGHEST_PROTOCOL)
 
 
     def create_index(self, post: dict):
