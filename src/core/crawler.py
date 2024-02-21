@@ -105,18 +105,27 @@ class Deduplicator():
                 protocol = url.group(1)
                 domain = url.group(2)
                 page = url.group(3)
-                params = url.group(4)
-                anchor = url.group(5)
+                params = url.group(4) if url.group(4) else ""
+                anchor = url.group(5) if url.group(5) else ""
 
-                # Special case for Wikipedia mobile version:
-                # redirect to desktop version
+                # Wikipedia mobile version: redirect to desktop version
                 domain = domain.replace(".m.wikipedia.org", ".wikipedia.org")
-
                 elem["domain"] = domain
 
-                if "/#/" in elem["url"] or "web.archive.org" in elem["url"]:
+                # See if an https variant of the http page is available.
+                # This avoids http/https duplicates.
+                if protocol == "http":
+                    test_url = "https://" + domain + page + params + anchor
+                    try:
+                        response = requests.head(test_url, timeout=10, headers=get_header(), allow_redirects=True)
+                        if response.status_code == 200:
+                            # Found a valid page -> convert to https
+                            protocol = "https"
+                    except:
+                        pass
+
+                if "/#/" in elem["url"]:
                     # Matrix chat links use # as a "page" and make anchor detection fail big time
-                    # webarchive URLS have twice "http(s)://", that fails too.
                     new_url = elem["url"]
                 else:
                     new_url = protocol + "://" + domain + page
@@ -328,14 +337,12 @@ class Deduplicator():
         counts = Counter([post["domain"] for post in cleaned_set])
         print(f"got {len(counts)} unique domains")
 
-        # Sort words by frequency
+        # Sort domains by frequency
         counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
-
 
         with open(utils.get_models_folder("domains"), 'w', encoding='utf8') as f:
             for key, value in counts.items():
                 f.write(f"{key}: {value}\n")
-
 
         return cleaned_set
 
