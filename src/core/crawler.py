@@ -409,12 +409,19 @@ def get_content_type(url: str) -> tuple[str, bool]:
             - `False` if there is some kind of error or empty response.
     """
     try:
-        response = requests.head(url, timeout=60, headers=get_header(), allow_redirects=True)
+        response = requests.head(url, timeout=30, headers=get_header(), allow_redirects=True)
+
+        if response.status_code != 200 and url.startswith("http://"):
+            # Some websites referenced as http now use https but don't redirect properly
+            url = url.replace("http://", "https://")
+            response = requests.head(url, timeout=30, headers=get_header(), allow_redirects=True)
+
         content_type = response.headers['content-type']
         status = response.status_code == 200
-        return content_type, status
+
+        return content_type, status, response.url
     except:
-        return "", False
+        return "", False, url
 
 
 def relative_to_absolute(URL: str, domain: str, current_page: str) -> str:
@@ -1140,11 +1147,15 @@ class Crawler:
         #print("processing", index_url, "include", include)
 
         # Fetch and parse current (top-most) page
-        content_type, status = get_content_type(index_url)
+        content_type, status, new_url = get_content_type(index_url)
         print("HEADERS:", index_url, content_type, status)
 
         # Recall we passed there, whether or not we actually mined something
         self.crawled_URL.append(index_url)
+
+        if index_url != new_url:
+            self.crawled_URL.append(new_url)
+            index_url = new_url
 
         # FIXME: we nest 7 levels of if here. It's ugly but I don't see how else
         # to cover so many cases.
@@ -1335,10 +1346,15 @@ class Crawler:
 
             if link_tag and "href" in link_tag and link_tag["href"]:
                 translatedURL = relative_to_absolute(link_tag["href"], domain, current_url)
-                content_type, status = get_content_type(translatedURL)
+                content_type, status, new_url = get_content_type(translatedURL)
+
+                self.crawled_URL.append(translatedURL)
+
+                if translatedURL != new_url:
+                    self.crawled_URL.append(new_url)
+                    translatedURL = new_url
 
                 if "text" in content_type and status:
-                    self.crawled_URL.append(translatedURL)
                     translated_page, new_url = get_page_content(translatedURL)
 
                     # Account for HTTP redirections
