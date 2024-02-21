@@ -1059,11 +1059,21 @@ class Crawler:
         return False
 
 
-    def get_immediate_links(self, page, domain, currentURL, default_lang, langs, category, contains_str, external_only: bool = False) -> list[web_page]:
+    def get_immediate_links(self, page, domain, currentURL, default_lang, langs, category, contains_str, internal_links: str = "any") -> list[web_page]:
         """Follow internal and external links contained in a webpage only to one recursivity level,
         including PDF files and HTML pages. This is useful to index references docs linked from a page.
+
+        Args:
+            internal_links: defines what to do with links found inside the HTML page body/content:
+                - `any`: follow and include all links found in page, no matter what domain they point to,
+                - `internal`: follow and include links found in page only if they point to the same domain as the current page,
+                - `external`: follow and include links found in page only if they point to a different domain than the current page,
+                - `ignore`: don't follow internal links
         """
         output = []
+        if internal_links == "ignore":
+            return output
+
         for url in page.links:
             nextURL = relative_to_absolute(url, domain, currentURL)
             if nextURL in self.crawled_URL:
@@ -1078,7 +1088,20 @@ class Crawler:
             current_page = current_address.group(3)
             current_params = current_address.group(4) if current_address.group(4) else ""
 
-            if nextURL not in self.crawled_URL and not (domain in current_domain and external_only):
+            include = False
+            if internal_links == "external":
+                # Follow internal links only if they point outside the current domain
+                include = domain not in current_domain
+            elif internal_links == "any":
+                # Follow all internal links
+                include = True
+            elif internal_links == "internal":
+                # Follow internal links only if they point inside the current domain
+                include = domain in current_domain
+            else:
+                raise ValueError("Internal link following mode %s is unknown" % internal_links)
+
+            if nextURL not in self.crawled_URL and include:
                 output += self.get_website_from_crawling(current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, _recursion_level=0)
 
             self.crawled_URL.append(nextURL)
@@ -1249,7 +1272,7 @@ class Crawler:
                                  markup: str | tuple[str] = "body",
                                  category: str = None,
                                  contains_str: str | list[str] = "",
-                                 external_only: bool = False) -> list[web_page]:
+                                 internal_links: str = "any") -> list[web_page]:
         """Recursively crawl all pages of a website from links found in a sitemap. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain. Sitemaps of sitemaps are followed recursively.
 
         Arguments:
@@ -1260,7 +1283,11 @@ class Crawler:
             markup: see [core.crawler.get_page_markup][]
             category: arbitrary category or label
             contains_str: limit recursive crawling from sitemap-defined pages to pages containing this string or list of strings. Will get passed as-is to [get_website_from_crawling][].
-            external_only: follow links from internal pages (outside of sitemaps) only if they point to an external domain.
+            internal_links: defines what to do with links found inside the HTML page body/content.
+                - `any`: follow and include all links found in page, no matter what domain they point to,
+                - `internal`: follow and include links found in page only if they point to the same domain as the current page,
+                - `external`: follow and include links found in page only if they point to a different domain than the current page,
+                - `ignore`: don't follow internal links
 
         Returns:
             a list of all valid pages found. Invalid pages (wrong markup, empty HTML response, 404 errors) will be silently ignored.
@@ -1316,12 +1343,12 @@ class Crawler:
                     output += self._parse_translations(page, domain, currentURL, markup, date, langs, category)
 
                     # Follow internal and external links on only one recursivity level
-                    output += self.get_immediate_links(page, domain, currentURL, default_lang, langs, category, contains_str, external_only=external_only)
+                    output += self.get_immediate_links(page, domain, currentURL, default_lang, langs, category, contains_str, internal_links=internal_links)
             else:
                 # We got a sitemap of sitemaps, recurse over the sub-sitemaps
                 _sitemap = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
                 output += self.get_website_from_sitemap(
-                    website, default_lang, sitemap=_sitemap, langs=langs, markup=markup, category=category, external_only=external_only)
+                    website, default_lang, sitemap=_sitemap, langs=langs, markup=markup, category=category, internal_links=internal_links)
 
         return output
 
