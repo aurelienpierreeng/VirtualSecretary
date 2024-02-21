@@ -1137,3 +1137,38 @@ class Indexer():
 
         # wv.similar_by_vector returns a list of (word, distance) tuples
         return [elem[0] for elem in self.word2vec.wv.similar_by_vector(vector, topn=n) if elem[0] not in tokens]
+
+
+    def filter_items(self, callback:callable, *args, **kwargs):
+        """Allow to filter out the items contains in the indexer, using the callback function.
+        This can be used to create a subset of the indexer.
+
+        `callback` will be called in loop on each page item of the indexer and will receive the following arguments:
+
+            - `self`, the current [core.nlp.Indexer][] object,
+            - `self.index` page item values (`dict` resembling [core.crawler.web_page][] but with additional fields),
+            - `self.vectors_all` vector (1D `numpy.ndarray`)
+            - `self.all_norms` norm of the previous vector (32 bits float scalar),
+            - `self.collocations` list of tokens represented by their integer index (list of 32 bits `int`)
+            - `*args`,
+            - `**kwargs`.
+
+        `callback` needs to return `True` if the page is to be included in the resulting index, `False` if it is to be discarded.
+
+        Once the `callback` loop exits, all members of the current instance are updated. You may want to call
+        [core.nlp.Indexer.save][] next, to save the result to disk.
+        """
+
+        print(f"starting with {len(self.index)} items")
+        pack = [(page, vector, norm, collocations)
+                for page, vector, norm, collocations
+                in zip(self.index.values(), self.vectors_all, self.all_norms, self.collocations)
+                if callback(self, page, vector, norm, collocations, *args, **kwargs)]
+
+        print(f"ending with {len(pack)} items")
+        self.index = { page[0]["url"]: page[0] for page in pack }
+        self.vectors_all = np.array([ page[1] for page in pack], dtype=np.float32)
+        self.all_norms = np.array([page[2] for page in pack], dtype=np.float32)
+        self.collocations = [page[3] for page in pack]
+        self.ranker =  BM25Okapi([[self.word2vec.wv.index_to_key[i] for i in page]
+                                  for page in self.collocations], k1=1.7, b=0.95)
