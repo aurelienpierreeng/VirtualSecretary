@@ -13,6 +13,7 @@ import pickle
 import tarfile
 import time
 import signal
+import numba
 
 from typing import TypedDict
 from dateutil import parser
@@ -425,6 +426,7 @@ SUBSTITUTIONS = {
     "\u00AD": "",
 }
 
+@numba.jit(nopython=True, nogil=True, cache=True)
 def typography_undo(string:str) -> str:
     """Break correct typographic Unicode entities into dummy computer characters (ASCII) to produce computer-standard vocabulary and help word tokenizers to properly detect word boundaries.
 
@@ -458,6 +460,7 @@ def clean_whitespaces(string:str) -> str:
     string = MULTIPLE_SPACES.sub(" ", string)
     string = MULTIPLE_NEWLINES.sub("\n\n", string)
     return string.strip()
+
 
 def guess_date(string: str | datetime) -> datetime:
     """Best effort to guess a date from a string using typical date/time formats"""

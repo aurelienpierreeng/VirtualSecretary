@@ -30,3 +30,4 @@ black
 griffe
 levenshtein
 scipy
+numba
