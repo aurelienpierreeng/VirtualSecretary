@@ -29,6 +29,8 @@ from . import utils
 from typing import TypedDict
 from collections import Counter
 
+from multiprocessing import Pool, current_process
+
 class web_page(TypedDict):
     """Typed dictionnary representing a web page and its metadata. It can also be used for any text document having an URL/URI"""
 
@@ -90,6 +92,67 @@ class Deduplicator():
 
         return False
 
+
+    def prepare_posts_parallel(self, elem):
+        url = patterns.URL_PATTERN.match(elem["url"], concurrent=True)
+        if url and not self.discard_post(elem["url"]):
+            # Canonify the URL: remove params and anchors
+            protocol = url.group(1)
+            domain = url.group(2)
+            page = url.group(3)
+            params = url.group(4) if url.group(4) else ""
+            anchor = url.group(5) if url.group(5) else ""
+
+            # Wikipedia mobile version: redirect to desktop version
+            domain = domain.replace(".m.wikipedia.org", ".wikipedia.org")
+            elem["domain"] = domain
+
+            # See if an https variant of the http page is available.
+            # This avoids http/https duplicates.
+            if protocol == "http":
+                test_url = "https://" + domain + page + params + anchor
+                try:
+                    response = requests.head(test_url, timeout=10, headers=get_header(), allow_redirects=True)
+                    if response.status_code == 200:
+                        # Found a valid page -> convert to https
+                        protocol = "https"
+                except:
+                    pass
+
+            if "/#/" in elem["url"]:
+                # Matrix chat links use # as a "page" and make anchor detection fail big time
+                new_url = elem["url"]
+            else:
+                new_url = protocol + "://" + domain + page
+
+            if params and (params.startswith("?lang=") or params.startswith("?v=") \
+                or not self.discard_params):
+                # Non SEO-friendly way of translating pages and Youtube videos
+                # Need to keep it
+                new_url += params
+
+            if anchor and anchor.startswith("#page="):
+                # Long PDF are indexed by page. Keep it.
+                new_url += anchor
+
+            # Replace URL by canonical stuff
+            elem["url"] = new_url
+
+            # Get cleaned-up content for distance detection
+            elem["content"] = utils.clean_whitespaces(str(elem["content"]))
+            if "parsed" not in elem:
+                elem["parsed"] = utils.typography_undo(elem["content"].lower())
+
+            if "length" not in elem:
+                elem["length"] = len(elem["parsed"])
+
+            # Get datetime for age comparison
+            if "datetime" not in elem:
+                elem["datetime"] = utils.guess_date(elem["date"])
+
+            return elem
+
+
     def prepare_urls(self, posts: list[web_page]) -> dict[str: list[web_page]]:
         """Find the canonical URL of each post and aggregate a list of matching pages in a
         `canonical_url: [candidates]` dict
@@ -98,67 +161,15 @@ class Deduplicator():
         """
         cleaned_set = {}
 
+        with Pool() as pool:
+            posts = pool.map(self.prepare_posts_parallel, posts)
+
         for elem in posts:
-            url = patterns.URL_PATTERN.match(elem["url"])
-            if url and not self.discard_post(elem["url"]):
-                # Canonify the URL: remove params and anchors
-                protocol = url.group(1)
-                domain = url.group(2)
-                page = url.group(3)
-                params = url.group(4) if url.group(4) else ""
-                anchor = url.group(5) if url.group(5) else ""
-
-                # Wikipedia mobile version: redirect to desktop version
-                domain = domain.replace(".m.wikipedia.org", ".wikipedia.org")
-                elem["domain"] = domain
-
-                # See if an https variant of the http page is available.
-                # This avoids http/https duplicates.
-                if protocol == "http":
-                    test_url = "https://" + domain + page + params + anchor
-                    try:
-                        response = requests.head(test_url, timeout=10, headers=get_header(), allow_redirects=True)
-                        if response.status_code == 200:
-                            # Found a valid page -> convert to https
-                            protocol = "https"
-                    except:
-                        pass
-
-                if "/#/" in elem["url"]:
-                    # Matrix chat links use # as a "page" and make anchor detection fail big time
-                    new_url = elem["url"]
-                else:
-                    new_url = protocol + "://" + domain + page
-
-                if params and (params.startswith("?lang=") or params.startswith("?v=") \
-                    or not self.discard_params):
-                    # Non SEO-friendly way of translating pages and Youtube videos
-                    # Need to keep it
-                    new_url += params
-
-                if anchor and anchor.startswith("#page="):
-                    # Long PDF are indexed by page. Keep it.
-                    new_url += anchor
-
-                # Replace URL by canonical stuff
-                elem["url"] = new_url
-
-                # Get cleaned-up content for distance detection
-                elem["content"] = utils.clean_whitespaces(str(elem["content"]))
-                if "parsed" not in elem:
-                    elem["parsed"] = utils.typography_undo(elem["content"].lower())
-
-                if "length" not in elem:
-                    elem["length"] = len(elem["parsed"])
-
-                # Get datetime for age comparison
-                if "datetime" not in elem:
-                    elem["datetime"] = utils.guess_date(elem["date"])
-
+            if elem:
                 # Create a dict where the key is the canonical URL
                 # and we aggregate the list of matching objects sharing the same URL.
-                cleaned_set.setdefault(new_url, [])
-                cleaned_set[new_url].append(elem)
+                cleaned_set.setdefault(elem["url"], [])
+                cleaned_set[elem["url"]].append(elem)
 
         return cleaned_set
 
@@ -312,6 +323,7 @@ class Deduplicator():
 
         return [elements[i] for i in replacements if i > -1]
 
+    @utils.timeit()
     def process(self, posts: list[web_page]):
         """Launch the actual duplicate finder"""
 
@@ -345,6 +357,13 @@ class Deduplicator():
                 f.write(f"{key}: {value}\n")
 
         return cleaned_set
+
+
+
+    def __call__(self, *args, **kwds):
+        """Alias for [][crawler.Deduplicator.process]"""
+        return self.process(*args, **kwds)
+
 
     def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True):
         """Instanciate a duplicator object.
