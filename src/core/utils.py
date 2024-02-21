@@ -283,150 +283,148 @@ def imap_decode(value: bytes) -> str:
     return ''.join(res)
 
 
-REPLACEMENT_MAP = {
-    # Apostrophes
-    "’": "'",
-    "`": "'",
-    "“": "\"",
-    "”": "\"",
-    "‘": "'",
-    "ʼ": "'",
-    "'": "'",
-    "´": "'",
-    # Accents
-    # The rationale here is some people use them improperly
-    # (meaning they don't at all or use the wrong ones),
-    # so level down for everyone for generalization.
-    # This also makes for better generalization between French and English
-    "é": "e",
-    "è": "e",
-    "ê": "e",
-    "â": "a",
-    "ô": "o",
-    "á": "a", # should not exist in French
-    "à": "a",
-    "ù": "u",
-    "î": "i",
-    "û": "u",
-    "ï": "i",
-    "ë": "e",
-    "ü": "u",
-    "ö": "o",
-    "ç": "c",
-    "": " ",
-    "": " ",
-    # Spaces
-    "\u2002": " ",  # En space
-    "\u2003": " ",  # Em space
-    "\u2004": " ",  # Three-Per-Em Space
-    "\u2005": " ",  # Four-Per-Em Space
-    "\u2006": " ",  # Six-Per-Em Space
-    "\u2007": " ",  # Figure Space
-    "\u2008": " ",  # Punctuation Space
-    "\u2009": " ",  # thin space
-    "\u200A": " ",  # hair space
-    "\u200B": " ",  # Zero Width Space
-    "\u200C": " ",  # Zero Width Non-Joiner
-    "\u00A0": " ",  # Unbreakable space
-    "\u202f": " ",  # Narrow No-Break Space
-    # Hyphens and dashes
-    "\u2010": "-",  # Hyphen
-    "\u2011": "-",  # Non-Breaking Hyphen
-    "\u2012": "-",  # Figure Dash
-    "\u2013": "-",  # En Dash
-    "\u2014": "-",  # Em Dash
-    "\u2015": "-",  # Horizontal Bar
-    "\uFF0D": "-",  # Fullwidth Hyphen-Minus
-    "\uFE63": "-",  # Small Hyphen-Minus
-    "↑": " ",
-    "↵": " ",
-    # Decorations and fucking emojis
-    "☙": " ",
-    "❧": " ",
-    "🔗": " ",
-    "•": " ",
-    "©": " ",
-    "®": " ",
-    "|": " ",
-    "¦": " ",
-    "™": " ",
-    "ᵉ": "e",
-    "👀": " ",
-    "ƒ": "f",
-    "·": " ",
-    "👍": " ",
-    "✔": " ",
-    "×": "x"
-}
-
-# For 1:1 character replacement, we can use a fast character map
-CHAR_TO_REPLACE = "".join(REPLACEMENT_MAP.keys())
-CHAR_REPLACING = "".join(REPLACEMENT_MAP.values())
-UNICODE_TO_ASCII = str.maketrans(CHAR_TO_REPLACE, CHAR_REPLACING, "")
-
-# For 1:many character replacment, we will have to use slow loops
-SUBSTITUTIONS = {
-    # Ligatures
-    "\u0132": "IJ", # Nederlands & Flanders
-    "\u0133": "ij", # Nederlands & Flanders
-    "\u0152": "OE", # French
-    "\u0153": "oe", # French
-    "\uA7F9": "oe", # French
-    "\uFB00": "ff",
-    "\uFB01": "fi",
-    "\uFB02": "fl",
-    "\uFB03": "ffi",
-    "\uFB04": "ffl",
-    "\uFB05": "st", # Medieval ligature
-    "\uFB06": "st", # Medieval ligature
-    # Punctuation
-    "\u2026": "...",
-    "« "    : "\"", # This needs spaces to have been decoded before
-    " »"    : "\"", # This needs spaces to have been decoded before
-    "«"     : "\"",
-    "»"     : "\"",
-    # Fractions
-    "\u00BD": "1/2",
-    "\u2153": "1/3",
-    "\u2154": "2/3",
-    "\u00BC": "1/4",
-    "\u00BE": "3/4",
-    "\u2155": "1/5",
-    "\u2156": "2/5",
-    "\u2157": "3/5",
-    "\u2158": "4/5",
-    "\u2159": "1/6",
-    "\u215A": "5/6",
-    "\u2150": "1/7",
-    "\u215B": "1/8",
-    "\u215C": "3/8",
-    "\u215D": "5/8",
-    "\u215E": "7/8",
-    "\u2151": "1/9",
-    "\u2152": "1/10",
-    "\u215F": "1/",
-    # Arrows
-    "\u2190": "<-",
-    "\u2192": "->",
-    "\u2194": "<->",
-    "\u21D0": "<-",
-    "\u21D2": "->",
-    "\u21D4": "<->",
-    # Newlines + space
-    "\n ": "\n",
-    " \n": "\n",
-    "\t ": "\t",
-    " \t": "\t",
-    # Quotes
-    "``": "\"",
-    "''": "\"",
-    "“": "\"",
-    "”": "\"",
-    # Conditional hyphen ???
-    "\u00AD": "",
-}
-
 @numba.jit(nopython=True, nogil=True, cache=True)
+def _unicode_to_ascii(string: str) -> str:
+    # For 1:many character replacment, we will have to use slow loops
+    SUBSTITUTIONS = {
+        # Apostrophes
+        "’": "'",
+        "`": "'",
+        "“": "\"",
+        "”": "\"",
+        "‘": "'",
+        "ʼ": "'",
+        "'": "'",
+        "´": "'",
+        # Accents
+        # The rationale here is some people use them improperly
+        # (meaning they don't at all or use the wrong ones),
+        # so level down for everyone for generalization.
+        # This also makes for better generalization between French and English
+        "é": "e",
+        "è": "e",
+        "ê": "e",
+        "â": "a",
+        "ô": "o",
+        "á": "a", # should not exist in French
+        "à": "a",
+        "ù": "u",
+        "î": "i",
+        "û": "u",
+        "ï": "i",
+        "ë": "e",
+        "ü": "u",
+        "ö": "o",
+        "ç": "c",
+        "": " ",
+        "": " ",
+        # Spaces
+        "\u2002": " ",  # En space
+        "\u2003": " ",  # Em space
+        "\u2004": " ",  # Three-Per-Em Space
+        "\u2005": " ",  # Four-Per-Em Space
+        "\u2006": " ",  # Six-Per-Em Space
+        "\u2007": " ",  # Figure Space
+        "\u2008": " ",  # Punctuation Space
+        "\u2009": " ",  # thin space
+        "\u200A": " ",  # hair space
+        "\u200B": " ",  # Zero Width Space
+        "\u200C": " ",  # Zero Width Non-Joiner
+        "\u00A0": " ",  # Unbreakable space
+        "\u202f": " ",  # Narrow No-Break Space
+        # Hyphens and dashes
+        "\u2010": "-",  # Hyphen
+        "\u2011": "-",  # Non-Breaking Hyphen
+        "\u2012": "-",  # Figure Dash
+        "\u2013": "-",  # En Dash
+        "\u2014": "-",  # Em Dash
+        "\u2015": "-",  # Horizontal Bar
+        "\uFF0D": "-",  # Fullwidth Hyphen-Minus
+        "\uFE63": "-",  # Small Hyphen-Minus
+        "↑": " ",
+        "↵": " ",
+        # Decorations and fucking emojis
+        "☙": " ",
+        "❧": " ",
+        "🔗": " ",
+        "•": " ",
+        "©": " ",
+        "®": " ",
+        "|": " ",
+        "¦": " ",
+        "™": " ",
+        "ᵉ": "e",
+        "ƒ": "f",
+        "·": " ",
+        "✔": " ",
+        "×": "x",
+        # Ligatures
+        "\u0132": "IJ", # Nederlands & Flanders
+        "\u0133": "ij", # Nederlands & Flanders
+        "\u0152": "OE", # French
+        "\u0153": "oe", # French
+        "\uA7F9": "oe", # French
+        "\uFB00": "ff",
+        "\uFB01": "fi",
+        "\uFB02": "fl",
+        "\uFB03": "ffi",
+        "\uFB04": "ffl",
+        "\uFB05": "st", # Medieval ligature
+        "\uFB06": "st", # Medieval ligature
+        # Punctuation
+        "\u2026": "...",
+        "« "    : "\"", # This needs spaces to have been decoded before
+        " »"    : "\"", # This needs spaces to have been decoded before
+        "«"     : "\"",
+        "»"     : "\"",
+        # Fractions
+        "\u00BD": "1/2",
+        "\u2153": "1/3",
+        "\u2154": "2/3",
+        "\u00BC": "1/4",
+        "\u00BE": "3/4",
+        "\u2155": "1/5",
+        "\u2156": "2/5",
+        "\u2157": "3/5",
+        "\u2158": "4/5",
+        "\u2159": "1/6",
+        "\u215A": "5/6",
+        "\u2150": "1/7",
+        "\u215B": "1/8",
+        "\u215C": "3/8",
+        "\u215D": "5/8",
+        "\u215E": "7/8",
+        "\u2151": "1/9",
+        "\u2152": "1/10",
+        "\u215F": "1/",
+        # Arrows
+        "\u2190": "<-",
+        "\u2192": "->",
+        "\u2194": "<->",
+        "\u21D0": "<-",
+        "\u21D2": "->",
+        "\u21D4": "<->",
+        # Newlines + space
+        "\n ": "\n",
+        " \n": "\n",
+        "\t ": "\t",
+        " \t": "\t",
+        # Quotes
+        "``": "\"",
+        "''": "\"",
+        "“": "\"",
+        "”": "\"",
+        # Conditional hyphen ???
+        "\u00AD": "",
+    }
+
+    # Perform educated Unicode character removal with closest ASCII symbol(s)
+    for key, value in SUBSTITUTIONS.items():
+        string = string.replace(key, value)
+
+    return string
+
+
 def typography_undo(string:str) -> str:
     """Break correct typographic Unicode entities into dummy computer characters (ASCII) to produce computer-standard vocabulary and help word tokenizers to properly detect word boundaries.
 
@@ -441,16 +439,10 @@ def typography_undo(string:str) -> str:
     [^2]: https://eng.aurelienpierre.com/wp-scholar/
     """
     if string and isinstance(string, str):
-        # Perform educated Unicode character removal with closest ASCII symbol(s)
-        string = string.translate(UNICODE_TO_ASCII)
-        for key, value in SUBSTITUTIONS.items():
-            string = string.replace(key, value)
-
+        string = _unicode_to_ascii(string)
         # Blindly remove all remaining non-ASCII characters:
         # emojis, bullets, non-latin characters including Chinese, Japanese, Greek, etc.
-        string = string.encode("ASCII", "ignore").decode()
-
-        return string.strip()
+        return string.encode("ASCII", "ignore").decode().strip()
     else:
         return ""
 
