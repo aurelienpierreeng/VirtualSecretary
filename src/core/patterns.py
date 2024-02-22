@@ -290,7 +290,7 @@ ORDINAL_FR = re.compile(r"n° ?([0-9]+)")
 FRANCAIS = re.compile(r"%s(j|t|s|l|d|qu|lorsqu|quelqu|jusqu|m|c|n)\'(?=[aeiouyéèàêâîôûïüäëöh][\w\s])" % regex_starter, flags=re.IGNORECASE)
 """French contractions of pronouns and determinants"""
 
-DASHES = re.compile(r"(?<=\w)(-)(?=\w)", re.IGNORECASE)
+DASHES = re.compile(r"(?<=\w)(-|_|=)(?=\w)", re.IGNORECASE)
 """Dashes in the middle of ASCII/Latin compounded words. Will not work if accented or Unicode characters are immediately surrounding the dash."""
 
 ALTERNATIVES = re.compile(r"(?<=[a-z])(\/)(?=[a-z])", re.IGNORECASE)
