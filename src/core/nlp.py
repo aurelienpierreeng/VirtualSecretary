@@ -99,6 +99,10 @@ class Tokenizer():
                 except TimeoutError:
                     print("Meta-token detection timed out on %s with:\n%s" % (key, string))
 
+        # WARNING: URLs and file pathes need to have been parsed before
+        string = string.replace(":", " ") # C++ members
+        string = string.replace("\\", "") # LaTeX commands
+
         return string
 
 
@@ -228,11 +232,6 @@ class Tokenizer():
         if string.upper() in self.meta_tokens:
             return string.upper()
 
-        # In case we caught variables names using underscores, merge with camelcase
-        # It's not technically natural language (though programming languages are...)
-        # but some technical stuff may help diagnosing issues in software matters.
-        string = string.replace("_", "")
-
         # Last chance of identifying meta-tokens in an atomic way
         if meta_tokens:
             for key, value in self.internal_meta_tokens.items():
@@ -240,6 +239,10 @@ class Tokenizer():
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
                 if key.match(string, timeout=10, concurrent=True):
                     return value
+
+        # Remove Markdown markers for _italics_ and __bold__
+        # Note: internal under_scores are already removed in metatokens regex loop.
+        string = string.strip("_")
 
         # Lemmatize / Stem
         string = self.lemmatize(string)
