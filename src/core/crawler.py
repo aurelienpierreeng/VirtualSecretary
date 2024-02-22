@@ -5,6 +5,7 @@
 
 import regex as re
 import time
+import os
 
 import requests
 import copy
@@ -103,10 +104,6 @@ class Deduplicator():
             params = url.group(4) if url.group(4) else ""
             anchor = url.group(5) if url.group(5) else ""
 
-            # Wikipedia mobile version: redirect to desktop version
-            domain = domain.replace(".m.wikipedia.org", ".wikipedia.org")
-            elem["domain"] = domain
-
             # See if an https variant of the http page is available.
             # This avoids http/https duplicates.
             if protocol == "http":
@@ -117,7 +114,24 @@ class Deduplicator():
                         # Found a valid page -> convert to https
                         protocol = "https"
                 except:
-                    pass
+                    pass # timeout
+
+            # Wikipedia mobile version: redirect to desktop version
+            domain = domain.replace(".m.wikipedia.org", ".wikipedia.org")
+
+            # See if a non-www. variant of the domain is available
+            # This avoids www.domain.ext/domain.ext duplicates
+            if domain.startswith("www."):
+                test_url = protocol + domain.lstrip("www.") + page + params + anchor
+                try:
+                    response = requests.head(test_url, timeout=10, headers=get_header(), allow_redirects=True)
+                    if response.status_code == 200:
+                        # Found a valid page -> remove www.
+                        domain = domain.lstrip("www.")
+                except:
+                    pass # timeout
+
+            elem["domain"] = domain
 
             if "/#/" in elem["url"]:
                 # Matrix chat links use # as a "page" and make anchor detection fail big time
@@ -161,7 +175,7 @@ class Deduplicator():
         """
         cleaned_set = {}
 
-        with Pool() as pool:
+        with Pool(processes=os.cpu_count()) as pool:
             posts = pool.map(self.prepare_posts_parallel, posts)
 
         for elem in posts:
@@ -352,12 +366,20 @@ class Deduplicator():
         # Sort domains by frequency
         counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
 
+        # Remove domains below page number threshold
+        discard_list = []
+        if self.n_min > 0:
+            discard_list = [domain for domain, counts in counts.items() if counts < self.n_min]
+            cleaned_set = [item for item in cleaned_set if item["domain"] not in discard_list]
+
+        print(len(cleaned_set))
+
         with open(utils.get_models_folder("domains"), 'w', encoding='utf8') as f:
             for key, value in counts.items():
-                f.write(f"{key}: {value}\n")
+                if key not in discard_list:
+                    f.write(f"{key}: {value}\n")
 
         return cleaned_set
-
 
 
     def __call__(self, *args, **kwds):
@@ -365,7 +387,7 @@ class Deduplicator():
         return self.process(*args, **kwds)
 
 
-    def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True):
+    def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True, n_min: int = 5):
         """Instanciate a duplicator object.
 
         The duplicates factorizing takes a list of [core.crawler.web_page][] and happens when calling [core.crawler.Deduplicator.process][].
@@ -396,12 +418,15 @@ class Deduplicator():
                 On Rest-API-driven websites, streaming websites and old CMS using "ugly URLS",
                 pages will be indexed by `domain?content=id` and the query parameters need to be kept by setting
                 this parameter to `False`
-
+            n_min: domains that have a number of indexed pages below this threshold will be discarded entirely.
+                This avoids indexing random dude's website, under the assumption that relevant and reliable domains
+                will have several pages indexed.
         """
 
         self.threshold = threshold
         self.distance = distance
         self.discard_params = discard_params
+        self.n_min = n_min
 
 
 def get_header():
