@@ -1119,14 +1119,17 @@ class Indexer():
         return [(url, similarity) for _, url, similarity in ranked]
 
 
-    def get_page(self, url:str) -> dict:
+    def get_page(self, url:str) -> dict | None:
         """Retrieve the requested page data object from the index by url.
 
         Warning:
             For performance's sake, it doesn't check if the url exists in the index.
             This is no issue if you feed it the output of `self.rank()` but mind that otherwise.
         """
-        return self.index[url]
+        if url in self.index:
+            return self.index[url]
+        else:
+            return None
 
 
     def get_related(self, post: tuple, n: int = 15) -> list:
