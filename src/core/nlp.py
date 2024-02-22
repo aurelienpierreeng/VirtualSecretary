@@ -837,7 +837,7 @@ class Indexer():
             in_vector = docs[i][4]
             if in_vector is not None and (in_vector != 0.).any():
                 in_norm = np.linalg.norm(in_vector)
-                similarity = np.nan_to_num(np.dot(self.vectors_all, in_vector)) / (in_norm * self.all_norms))
+                similarity = np.nan_to_num(np.dot(self.vectors_all, in_vector)) / (in_norm * self.all_norms)
                 five_best = sorted(zip(self.index.keys(), similarity), key=lambda x:x[1], reverse=True)[0:10]
                 self.index[key]["related"] = [item[0] for item in five_best]
 
