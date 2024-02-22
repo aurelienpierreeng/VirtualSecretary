@@ -481,7 +481,7 @@ class Word2Vec(gensim.models.Word2Vec):
         training: list[list[list[str]]] = []
 
         with Pool(processes=processes) as pool:
-            runner = pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=8)
+            runner = pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=1)
             run = True
             while run:
                 try:
