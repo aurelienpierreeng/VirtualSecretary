@@ -853,7 +853,7 @@ class Indexer():
 
     def save(self, name: str):
         # Save the model to a reusable object
-        joblib.dump(self, get_models_folder(name + ".joblib"), compress=1, protocol=pickle.HIGHEST_PROTOCOL)
+        joblib.dump(self, get_models_folder(name + ".joblib"), compress='lz4', protocol=pickle.HIGHEST_PROTOCOL)
 
 
     def create_index(self, post: dict):

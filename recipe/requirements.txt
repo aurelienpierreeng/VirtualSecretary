@@ -31,3 +31,4 @@ griffe
 levenshtein
 scipy
 numba
+lz4
