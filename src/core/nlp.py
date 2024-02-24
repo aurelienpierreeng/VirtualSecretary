@@ -321,15 +321,11 @@ class Tokenizer():
             tokens: a 2D list of sentences (1st axis), each containing a list of normalizel tokens and meta-tokens (2nd axis).
         """
         # TODO: prefilter n-grams ?
-        self.processed_items += 1
-        p = current_process()
-        if self.processed_items % 50 == 0 and p._identity:
-            print("P %i processed %i over %i" % (p._identity[0], self.processed_items, self.num_items))
-
         language = guess_language(document)
         clean_text = self.prefilter(document, meta_tokens=meta_tokens)
         return [self.tokenize_sentence(sentence, language, meta_tokens=meta_tokens)
                 for sentence in self.split_sentences(clean_text, language)]
+
 
     def __init__(self,
                  meta_tokens: dict[re.Pattern: str] = None,
@@ -481,20 +477,8 @@ class Word2Vec(gensim.models.Word2Vec):
         training: list[list[list[str]]] = []
 
         with Pool(processes=processes) as pool:
-            runner = pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=1)
-            run = True
-            while run:
-                try:
-                    # Allow 1 minute to complete tokenization.
-                    # On Intel Xeon, most documents complete in under a second.
-                    # Some documents lead to catastrophic backtracking with the
-                    # URL regex pattern and need to be stopped the hard way.
-                    doc = runner.next(timeout=60)
-                    training.append(doc)
-                except multiprocessing.TimeoutError:
-                    print("timeout")
-                except StopIteration:
-                    run = False
+            for item in pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=128):
+                training.append(item)
 
         print("tokenization done")
 
@@ -781,8 +765,9 @@ class Indexer():
         print(f"Init. Got {len(data_set)} items.")
 
         # The database of web pages with limited features.
-        for post in data_set:
-            self.create_index(post)
+        with Pool(processes=os.cpu_count()) as pool:
+            for i, item in enumerate(pool.imap(self.create_index, data_set, chunksize=512)):
+                data_set[i] = item
 
         self.index = {post["url"]: post for post in data_set}
         del data_set # gargage collection to spare RAM
@@ -790,22 +775,10 @@ class Indexer():
         print("index built")
 
         # List of tokens/meta-tokens and vector translation for each document
-        docs: list = []
+        docs = []
         with Pool(processes=processes) as pool:
-            runner = pool.imap(self.tokenize_parallel, list(self.index.values()), chunksize=20)
-            run = True
-            while run:
-                try:
-                    # Allow 1 minute to complete tokenization.
-                    # On Intel Xeon, most documents complete in under a second.
-                    # Some documents lead to catastrophic backtracking with the
-                    # URL regex pattern and need to be stopped the hard way.
-                    doc = next(runner)
-                    docs.append(doc)
-                except multiprocessing.TimeoutError:
-                    print("timeout")
-                except StopIteration:
-                    run = False
+            for item in pool.imap(self.tokenize_parallel, self.index.values(), chunksize=512):
+                docs.append(item)
 
         self.vectors_all = np.array([doc[1] for doc in docs], dtype=np.float32)
         """Store the list of document-wise vector embeddings, where the vector represents
@@ -825,30 +798,62 @@ class Indexer():
         Documents are on the first axis.
         """
 
+        # Write topics in index
+        for i, key in enumerate(self.index.keys()):
+            self.index[key]["topics"] = docs[i][3]
+
         print("vectorization done")
 
         # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
         self.ranker = BM25Okapi([doc[0] for doc in docs], k1=1.7, b=0.95)
 
-        # Write topics in index, then find 5 closest other pages
-        for i, key in enumerate(self.index.keys()):
-            self.index[key]["topics"] = docs[i][3]
+        # Input embedding vector and its norm for each page
+        # Note: self.vectors contains output embedding vectors
+        related = [[doc[4], doc[5]] for doc in docs]
 
-            in_vector = docs[i][4]
-            if in_vector is not None and (in_vector != 0.).any():
-                in_norm = np.linalg.norm(in_vector)
-                similarity = np.nan_to_num(np.dot(self.vectors_all, in_vector)) / (in_norm * self.all_norms)
-                five_best = sorted(zip(self.index.keys(), similarity), key=lambda x:x[1], reverse=True)[0:10]
-                self.index[key]["related"] = [item[0] for item in five_best]
+        # Garbage collection because the next parallel loop is RAM-hungry
+        del docs
 
-        # From there we only need the input embedding matrix, ditch the output one to spare RAM
+        # From there we only need the input embedding matrix
         del self.word2vec.syn1neg
 
         # Remove the parsed text variant for the same reason.
         for post in self.index.values():
             del post["parsed"]
 
+        # Get related pages based on document cosine distance
+        self.keys_as_list = np.array(list(self.index.keys()))
+        with Pool(processes=processes // 2) as pool:
+            for i, item in enumerate(pool.imap(self.find_related_pages, related, chunksize=128)):
+                related[i] = item
+
+        # Write n closest pages in index
+        for i, key in enumerate(self.index.keys()):
+            self.index[key]["related"] = related[i]
+
+        del related
+
         self.save(name)
+
+
+    def find_related_pages(self, elem: tuple[np.ndarray, np.float32]) -> list[str]:
+        vector = elem[0]
+        norm = elem[1]
+        if vector is not None and (vector != 0.).any():
+            similarity = np.nan_to_num(np.dot(self.vectors_all, vector)) / (norm * self.all_norms)
+
+            # Fetch the 10 best similarity scores
+            best_indices = np.argpartition(similarity, -10)[-10:]
+
+            # Fetch corresponding URLs
+            best_elems = self.keys_as_list[best_indices]
+            best_similarity = similarity[best_indices]
+
+            five_best = sorted(zip(best_elems, best_similarity), key=lambda x:x[1], reverse=True)
+
+            return [item[0] for item in five_best]
+        else:
+            return []
 
 
     def save(self, name: str):
@@ -893,13 +898,13 @@ class Indexer():
 
         # Extract the 5 most relevant topics of each doc.
         # We need to re-vectorize the doc with the IN embedding matrix.
-        vector, _, tokens = self.vectorize_query(tokens)
+        vector, norm, tokens = self.vectorize_query(tokens)
         if len(tokens) > 0:
             topics = self.get_related((vector, "", []), n=5)
         else:
             topics = []
 
-        return (tokens, features, indices, topics, vector)
+        return (tokens, features, indices, topics, vector, norm)
 
 
     @classmethod
@@ -1132,7 +1137,7 @@ class Indexer():
             return None
 
 
-    def get_related(self, post: tuple, n: int = 15) -> list:
+    def get_related(self, post: tuple[np.ndarray, float, list[str]], n: int = 15) -> list:
         """Get the n closest keywords from the query."""
 
         if not isinstance(post, tuple):
