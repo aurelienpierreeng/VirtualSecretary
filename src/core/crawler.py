@@ -71,8 +71,6 @@ class Deduplicator():
         "/categories/",
         "/author/",
         "/authors/",
-        "/archive/",
-        "/archives/",
         "/profil/",
         "/profiles/",
         "/user/",
@@ -109,7 +107,7 @@ class Deduplicator():
             if protocol == "http":
                 test_url = "https://" + domain + page + params + anchor
                 try:
-                    response = requests.head(test_url, timeout=10, headers=get_header(), allow_redirects=True)
+                    response = requests.head(test_url, timeout=2, headers=get_header(), allow_redirects=True)
                     if response.status_code == 200:
                         # Found a valid page -> convert to https
                         protocol = "https"
@@ -124,7 +122,7 @@ class Deduplicator():
             if domain.startswith("www."):
                 test_url = protocol + domain.lstrip("www.") + page + params + anchor
                 try:
-                    response = requests.head(test_url, timeout=10, headers=get_header(), allow_redirects=True)
+                    response = requests.head(test_url, timeout=2, headers=get_header(), allow_redirects=True)
                     if response.status_code == 200:
                         # Found a valid page -> remove www.
                         domain = domain.lstrip("www.")
@@ -174,9 +172,9 @@ class Deduplicator():
         Precompute datetime object and minified ASCII content variant for later processing.
         """
         cleaned_set = {}
-
         with Pool(processes=os.cpu_count()) as pool:
-            posts = pool.map(self.prepare_posts_parallel, posts)
+            for i, item in enumerate(pool.imap(self.prepare_posts_parallel, posts, chunksize=512)):
+                posts[i] = item
 
         for elem in posts:
             if elem:
@@ -188,47 +186,53 @@ class Deduplicator():
         return cleaned_set
 
 
-    def get_unique_urls(self, posts: dict[str: list[web_page]]) -> dict[str: list[web_page]]:
+    def get_unique_urls_parallel(self, candidates):
+        elected = candidates[0]
+        length = 0
+        date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
+
+        for candidate in candidates:
+            cand_date = candidate["datetime"]
+            cand_length = candidate["length"]
+            vote = False
+
+            if cand_length > length:
+                # Replace by longer content if any
+                length = cand_length
+                vote = True
+
+            if cand_date > date:
+                # Replace by more recent content if any
+                date = cand_date
+                vote = True
+            elif cand_date < date:
+                # Cancel replacement if candidate is older
+                vote = False
+            # else: same age or both undefined date, let length decide
+
+            if vote:
+                elected = candidate
+
+        # Replace the list of candidates by the elected one for this URL
+        return elected
+
+
+    def get_unique_urls(self, posts: dict[str: [web_page]]) -> dict[str: web_page]:
         """Pick the most recent, or otherwise the longer, candidate for each canonical URL.
 
         Return:
             `canonical_url: web_page` dictionnary
 
         """
-        for url, candidates in posts.items():
-            elected = None
-            length = 0
-            date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
-
-            for candidate in candidates:
-                cand_date = candidate["datetime"]
-                cand_length = candidate["length"]
-                vote = False
-
-                if cand_length > length:
-                    # Replace by longer content if any
-                    length = cand_length
-                    vote = True
-
-                if cand_date > date:
-                    # Replace by more recent content if any
-                    date = cand_date
-                    vote = True
-                elif cand_date < date:
-                    # Cancel replacement if candidate is older
-                    vote = False
-                # else: same age or both undefined date, let length decide
-
-                if vote:
-                    elected = candidate
-
-            # Replace the list of candidates by the elected one for this URL
-            candidates = elected
+        keys = list(posts.keys())
+        with Pool(processes=os.cpu_count()) as pool:
+            for i, item in enumerate(pool.imap(self.get_unique_urls_parallel, posts.values(), chunksize=2048)):
+                posts[keys[i]] = item
 
         return posts
 
 
-    def prepare_content(self, posts: dict[str: list[web_page]]) -> dict[str: list[web_page]]:
+    def prepare_content(self, posts: dict[str: web_page]) -> dict[str: web_page]:
         """Find the canonical content for each post and aggregate a list of matching pages"
 
         Returns:
@@ -236,39 +240,45 @@ class Deduplicator():
 
         """
         cleaned_set = {}
-        for url, elem in posts.items():
-            content = elem[0]["parsed"]
+        for elem in posts.values():
+            content = elem["parsed"]
             cleaned_set.setdefault(content, [])
-            cleaned_set[content].append(elem[0])
+            cleaned_set[content].append(elem)
 
         return cleaned_set
 
 
-    def get_unique_content(self, posts: dict[str: list[web_page]]) -> dict[str: list[web_page]]:
+    def get_unique_content_parallel(self, candidates):
+        elected = candidates[0]
+        length = 0
+        date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
+
+        for candidate in candidates:
+            if candidate["datetime"] > date:
+                # Replace by more recent content if any
+                date = candidate["datetime"]
+                elected = candidate
+
+        # Replace the list of candidates by the elected one for this URL
+        return elected
+
+
+    def get_unique_content(self, posts: dict[str: list[web_page]]) -> dict[str: web_page]:
         """Pick the most recent candidate for each canonical content.
 
         Return:
             `canonical content: web_page` dictionnary
 
         """
-        for content, candidates in posts.items():
-            elected = None
-            length = 0
-            date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
-
-            for candidate in candidates:
-                if candidate["datetime"] > date:
-                    # Replace by more recent content if any
-                    date = candidate["datetime"]
-                    elected = candidate
-
-            # Replace the list of candidates by the elected one for this URL
-            candidates = elected
+        keys = list(posts.keys())
+        with Pool(processes=os.cpu_count()) as pool:
+            for i, item in enumerate(pool.imap(self.get_unique_urls_parallel, posts.values(), chunksize=2048)):
+                posts[keys[i]] = item
 
         return posts
 
 
-    def get_close_content(self, posts: dict[str: list[web_page]], threshold: float = 0.90, distance: float = 500) -> dict[str: list[web_page]]:
+    def get_close_content(self, posts: dict[str: web_page], threshold: float = 0.90, distance: float = 500) -> dict[str: web_page]:
         """Find near-duplicate by computing the Levenshtein distance between pages contents.
 
         Params:
@@ -282,7 +292,7 @@ class Deduplicator():
 
         # Sort posts by URL since we have the most probability
         # to find duplicates at similar URLs
-        posts = {post[0]["url"]: post[0] for post in posts.values()}
+        posts = {post["url"]: post for post in posts.values()}
         posts = dict(sorted(posts.items()))
 
         elements = [value for value in posts.values()]
@@ -338,26 +348,26 @@ class Deduplicator():
         return [elements[i] for i in replacements if i > -1]
 
     @utils.timeit()
-    def process(self, posts: list[web_page]):
+    def process(self, posts: list[web_page]) -> list[web_page]:
         """Launch the actual duplicate finder"""
 
-        print(len(posts))
+        print("Initial number of posts: ", len(posts))
         cleaned_set = self.prepare_urls(posts)
         cleaned_set = self.get_unique_urls(cleaned_set)
 
-        print(len(cleaned_set))
+        print("After URL deduplication: ", len(cleaned_set))
 
         cleaned_set = self.prepare_content(cleaned_set)
         cleaned_set = self.get_unique_content(cleaned_set)
 
-        print(len(cleaned_set))
+        print("After content deduplication: ", len(cleaned_set))
 
         if self.threshold < 1.0:
             cleaned_set = self.get_close_content(cleaned_set, threshold=self.threshold, distance=self.distance)
         else:
-            cleaned_set = [value[0] for value in cleaned_set.values()]
+            cleaned_set = list(cleaned_set.values())
 
-        print(len(cleaned_set))
+        print("After content near-duplicates removal: ", len(cleaned_set))
 
         # List all unique domains with their frequency
         counts = Counter([post["domain"] for post in cleaned_set])
@@ -387,7 +397,7 @@ class Deduplicator():
         return self.process(*args, **kwds)
 
 
-    def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True, n_min: int = 5):
+    def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True, n_min: int = 0):
         """Instanciate a duplicator object.
 
         The duplicates factorizing takes a list of [core.crawler.web_page][] and happens when calling [core.crawler.Deduplicator.process][].
@@ -444,7 +454,7 @@ def get_header():
 
     #time.sleep(random.randint(0,5))
     return {
-        'User-Agent': random.choice(ua),
+        'User-Agent': "Virtual Secretary bot", #random.choice(ua),
         'Referer': "https://www.google.com",
     }
 
