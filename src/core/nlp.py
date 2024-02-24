@@ -1070,7 +1070,7 @@ class Indexer():
 
 
     def rank(self, query: str|tuple|re.Pattern, method: search_methods,
-             filter_callback: callable = None, pattern: str | re.Pattern = None, **kargs) -> list[tuple[str, float]]:
+             filter_callback: callable = None, pattern: str | re.Pattern = None, n_results: int = 500, **kargs) -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
@@ -1078,6 +1078,7 @@ class Indexer():
             method (str): `ai`, `fuzzy` or `grep`. `ai` use word embedding and meta-tokens with dual-embedding space, `fuzzy` uses meta-tokens with BM25Okapi stats model, `grep` uses direct string and regex search.
             filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker.
             pattern: optional pattern/text search to add on top of AI search
+            n_results: number of results to retain
             **kargs: arguments passed as-is to the `filter_callback`
 
         Returns:
@@ -1088,7 +1089,8 @@ class Indexer():
             case search_methods.AI:
                 # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
                 # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
-                aggregates = 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])
+                # This can yield negative results that are still "valid". Offset similarity score by one.
+                aggregates = 1. + 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])
             case search_methods.FUZZY:
                 aggregates = self.rank_fuzzy(query)
             case search_methods.GREP:
@@ -1096,32 +1098,40 @@ class Indexer():
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
 
-        # So far, we are dealing with the full index because operations are fairly CPU-friendly.
-        # Starting at the next step, we will remove elements, so we need to keep indices in memory.
-        results = zip(range(len(self.index)), self.index.keys(), aggregates)
+        ## Filters : there is a catch
+        ## We set the similarity coeff to 0 for documents that DON'T match the filter criteria.
+        ## We don't actually remove those elements.
+        ## Given that we take the 500 best docs below, it is equivalent to removing them if enough close results pop up.
+        ## If we don't have enough close results, it's just a desperate attempt to return something, bypassing filters.
 
         # Filter out documents based on URL filter if provided
         if filter_callback:
-            results = [(index, url, similarity)
-                       for index, url, similarity in results
-                       if filter_callback(url, **kargs)]
+            # Create a boolean vector
+            urls_match = np.array([filter_callback(url, **kargs) for url in self.index.keys()])
+            aggregates *= urls_match
 
-        # Filter out documents NOT matching the pattern
+        # Filter out documents content NOT matching the pattern
         if pattern:
-            results = [result
-                       for result in results
-                       if re.findall(pattern, self.index[result[1]]["content"], timeout=5)]
+            content_match = np.array([len(re.findall(pattern, item["content"], timeout=5)) > 0 for item in self.index.values()])
+            aggregates *= content_match
 
-        # Sort out whatever remains by similarity coeff and keep only the 300 first elements
-        ranked = sorted(results, key=lambda x:x[2], reverse=True)[0:400]
+        # Sort out whatever remains by similarity coeff and keep only the 500 first elements
+        best_indices = np.argpartition(aggregates, -n_results)[-n_results:]
+        best_elems = self.keys_as_list[best_indices]
+        best_similarity = aggregates[best_indices]
+
+        if method == search_methods.AI:
+            # Offset back the similarity coeff
+            best_similarity -= 1.
+
+        ranked = zip(best_indices, best_elems, best_similarity)
 
         # Now is time for the really heavy stuff: find tokens in sequential order
         if isinstance(query, tuple) and isinstance(query[2], list) and len(query[2]) > 2:
             indexed_query = self.word2vec.tokens_to_indices(query[2])
-            results = self.find_query_pattern(indexed_query, ranked)
-            ranked = sorted(results, key=lambda x:x[2], reverse=True)
+            ranked = self.find_query_pattern(indexed_query, ranked)
 
-        return [(url, similarity) for _, url, similarity in ranked]
+        return sorted([(url, similarity) for index, url, similarity in ranked if similarity > 0.], key=lambda x:x[1], reverse=True)
 
 
     def get_page(self, url:str) -> dict | None:
@@ -1178,7 +1188,8 @@ class Indexer():
 
         print(f"ending with {len(pack)} items")
         self.index = { page[0]["url"]: page[0] for page in pack }
-        self.vectors_all = np.array([ page[1] for page in pack], dtype=np.float32)
+        self.keys_as_list = np.array(list(self.index.keys()))
+        self.vectors_all = np.array([page[1] for page in pack], dtype=np.float32)
         self.all_norms = np.array([page[2] for page in pack], dtype=np.float32)
         self.collocations = [page[3] for page in pack]
         self.ranker =  BM25Okapi([[self.word2vec.wv.index_to_key[i] for i in page]
