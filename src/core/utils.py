@@ -449,9 +449,9 @@ def typography_undo(string:str) -> str:
 
 def clean_whitespaces(string:str) -> str:
     # Collapse multiple newlines and spaces
-    string = MULTIPLE_LINES.sub("\n\n", string, concurrent=True)
-    string = MULTIPLE_SPACES.sub(" ", string, concurrent=True)
-    string = MULTIPLE_NEWLINES.sub("\n\n", string, concurrent=True)
+    string = MULTIPLE_LINES.sub("\n\n", string, concurrent=True, timeout=60)
+    string = MULTIPLE_SPACES.sub(" ", string, concurrent=True, timeout=60)
+    string = MULTIPLE_NEWLINES.sub("\n\n", string, concurrent=True, timeout=60)
     return string.strip()
 
 
