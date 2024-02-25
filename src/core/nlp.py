@@ -1076,7 +1076,7 @@ class Indexer():
         Arguments:
             query (str | tuple | re.Pattern): the query to search. `re.Pattern` is available only with the `grep` method.
             method (str): `ai`, `fuzzy` or `grep`. `ai` use word embedding and meta-tokens with dual-embedding space, `fuzzy` uses meta-tokens with BM25Okapi stats model, `grep` uses direct string and regex search.
-            filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker.
+            filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker. Its first argument will be a [core.crawler.web_page][] object from the list [core.nlp.Indexer.index][], the next arguments will be passed through from `**kargs` directly.
             pattern: optional pattern/text search to add on top of AI search
             n_results: number of results to retain
             **kargs: arguments passed as-is to the `filter_callback`
@@ -1107,7 +1107,7 @@ class Indexer():
         # Filter out documents based on URL filter if provided
         if filter_callback:
             # Create a boolean vector
-            urls_match = np.array([filter_callback(url, **kargs) for url in self.index.keys()])
+            urls_match = np.array([filter_callback(page, **kargs) for page in self.index.values()])
             aggregates *= urls_match
 
         # Filter out documents content NOT matching the pattern
