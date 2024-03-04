@@ -32,6 +32,8 @@ from typing import TypedDict
 from collections import Counter
 
 from multiprocessing import Pool, current_process
+import concurrent.futures
+
 
 class web_page(TypedDict):
     """Typed dictionnary representing a web page and its metadata. It can also be used for any text document having an URL/URI"""
@@ -814,7 +816,7 @@ def get_pdf_content(url: str,
         return []
 
 
-@utils.exit_after(120)
+#@utils.exit_after(120)
 def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, str]:
     """Request an (x)HTML page through the network with HTTP GET and feed its response to a BeautifulSoup handler. This needs a functionnal network connection.
 
@@ -1130,6 +1132,8 @@ class Crawler:
         "getpocket.com/edit",
         "tumblr.com/share",
         "translate.google.com/translate", # Machine-translated pages
+        "flickr.com",
+        "instagram.com",
         "mailto:",
         "/profile/",
         "/login/",
@@ -1138,11 +1142,16 @@ class Crawler:
         "/signup?"
         "/user/",
         "/member/",
+        "/register?",
         ".css",
         ".js",
         ".json",
         ]
     """List of URLs sub-strings that will disable crawling if they are found in URLs. Mostly social networks sharing links."""
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+    internal_links = []
+    futures = []
 
     def __init__(self):
         """Crawl a website from its sitemap or by following internal links recusively from an index page."""
@@ -1159,7 +1168,7 @@ class Crawler:
         return False
 
 
-    def get_immediate_links(self, page, domain, currentURL, default_lang, langs, category, contains_str, internal_links: str = "any") -> list[web_page]:
+    def get_immediate_links(self, domain, default_lang, langs, category, contains_str, internal_links: str = "any") -> list[web_page]:
         """Follow internal and external links contained in a webpage only to one recursivity level,
         including PDF files and HTML pages. This is useful to index references docs linked from a page.
 
@@ -1174,8 +1183,7 @@ class Crawler:
         if internal_links == "ignore":
             return output
 
-        for url in page.links:
-            nextURL = relative_to_absolute(url, domain, currentURL)
+        for nextURL in self.internal_links:
             if nextURL in self.crawled_URL:
                 continue
 
@@ -1202,11 +1210,15 @@ class Crawler:
                 raise ValueError("Internal link following mode %s is unknown" % internal_links)
 
             if nextURL not in self.crawled_URL and include:
-                output += self.get_website_from_crawling(current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, _recursion_level=0)
+                if domain not in current_domain:
+                    # If the current URL doesn't belong to the same domain as the parent,
+                    # we don't pass on the category of the parent page
+                    # because we have no idea what the external URL is.
+                    category = "external"
+                time.sleep(0.25)
+                self.futures.append(self.executor.submit(self.get_website_from_crawling, current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, _recursion_level=0))
 
             self.crawled_URL.append(nextURL)
-
-        return output
 
 
     def get_website_from_crawling(self,
@@ -1372,7 +1384,8 @@ class Crawler:
                                  markup: str | tuple[str] = "body",
                                  category: str = None,
                                  contains_str: str | list[str] = "",
-                                 internal_links: str = "any") -> list[web_page]:
+                                 internal_links: str = "any",
+                                 _recursion_level: int = 0) -> list[web_page]:
         """Recursively crawl all pages of a website from links found in a sitemap. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain. Sitemaps of sitemaps are followed recursively.
 
         Arguments:
@@ -1409,46 +1422,75 @@ class Crawler:
         # Sitemaps of sitemaps enclose elements in `<sitemap> </sitemap>`
         # While sitemaps of pages enclose them in `<url> </url>`.
         # In both cases, we find URL in `<loc>` and dates in `<lastmod>`
-        # Blindly look for both and concatenate the lists
-        links = index_page.find_all('sitemap') + index_page.find_all('url')
+        print("%i sitemaps found in sitemap" % len(index_page.find_all('sitemap')))
+        print("%i URLs found in sitemap" % len(index_page.find_all('url')))
 
-        print("%i URLs found in sitemap" % len(links))
+        # We got a sitemap of sitemaps, recurse over the sub-sitemaps
+        for link in index_page.find_all('sitemap'):
+            url = link.find("loc").get_text()
+            print(url)
+            _sitemap = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", url)
+            output += self.get_website_from_sitemap(website, default_lang, sitemap=_sitemap, langs=langs, markup=markup, category=category, internal_links=internal_links, _recursion_level=_recursion_level+1)
 
-        for link in links:
-            url = link.find("loc")
-            date = link.find("lastmod")
+        # Submit pages to the pool of thread workers
+        for link in index_page.find_all('url'):
+            time.sleep(0.5)
+            self.futures.append(self.executor.submit(self._sitemap_process, domain, website, sitemap, link, default_lang, langs, markup, category, internal_links, contains_str, _recursion_level))
 
-            if not url:
-                print("No URL found in ", link)
-                # Nothing to process, ignore this item
-                continue
+        # Get pages content from the pool
+        for future in concurrent.futures.as_completed(self.futures):
+            output += future.result()
 
-            date = date.get_text() if date else None
+        # Process internal links found in pages
+        if _recursion_level == 0:
+            self.internal_links = list(set(self.internal_links))
+            random.shuffle(self.internal_links)
+            self.get_immediate_links(domain, default_lang, langs, category, contains_str, internal_links=internal_links)
 
-            currentURL = relative_to_absolute(url.get_text(), domain, website + sitemap)
-            print(currentURL, date)
+            # Get pages content from the pool
+            for future in concurrent.futures.as_completed(self.futures):
+                output += future.result()
 
-            if '.xml' not in currentURL:
-                self.crawled_URL.append(currentURL)
-                page, new_url = get_page_content(currentURL)
+        return output
 
-                # Account for HTTP redirections
-                if new_url != currentURL:
-                    self.crawled_URL.append(new_url)
-                    currentURL = new_url
 
-                if page:
-                    # We got a proper web page, parse it
-                    output += self._parse_original(page, currentURL, default_lang, markup, date, category)
-                    output += self._parse_translations(page, domain, currentURL, markup, date, langs, category)
+    def _sitemap_process(self, domain, website, sitemap, link, default_lang, langs, markup, category, internal_links, contains_str, _recursion_level):
+        starting = time.time()
+        output = []
+        url = link.find("loc")
+        date = link.find("lastmod")
 
-                    # Follow internal and external links on only one recursivity level
-                    output += self.get_immediate_links(page, domain, currentURL, default_lang, langs, category, contains_str, internal_links=internal_links)
-            else:
-                # We got a sitemap of sitemaps, recurse over the sub-sitemaps
-                _sitemap = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", currentURL)
-                output += self.get_website_from_sitemap(
-                    website, default_lang, sitemap=_sitemap, langs=langs, markup=markup, category=category, internal_links=internal_links)
+        if not url:
+            print("No URL found in ", link)
+            # Nothing to process, ignore this item
+            return output
+
+        date = date.get_text() if date else None
+
+        currentURL = relative_to_absolute(url.get_text(), domain, website + sitemap)
+        print(currentURL, date)
+
+        self.crawled_URL.append(currentURL)
+        page, new_url = get_page_content(currentURL)
+
+        # Account for HTTP redirections
+        if new_url != currentURL:
+            self.crawled_URL.append(new_url)
+            currentURL = new_url
+
+        if page:
+            # We got a proper web page, parse it
+            output += self._parse_original(page, currentURL, default_lang, markup, date, category)
+            output += self._parse_translations(page, domain, currentURL, markup, date, langs, category)
+
+            # Follow internal and external links found in body
+            for url in page.links:
+                self.internal_links.append(relative_to_absolute(url, domain, currentURL))
+
+        # Prevent server-side throttling
+        te = time.time() - starting
+        if te < 0.5:
+            time.sleep(0.5 - te)
 
         return output
 
