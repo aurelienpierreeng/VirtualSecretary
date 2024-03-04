@@ -956,7 +956,10 @@ def get_date(html: BeautifulSoup):
     Looks for HTML tags:
 
     - `<meta name="date" content="...">`
+    - `<meta name="publishDate" content="...">`
+    - `<meta property="article:published_time" content="...">`
     - `<meta property="article:modified_time" content="...">`
+    - `<meta name="dc.date" content="...">`
     - `<time datetime="...">`
     - `<relative-time datetime="...">`
     - `<div class="dateline">...</div>`
@@ -972,27 +975,35 @@ def get_date(html: BeautifulSoup):
         return test["content"] if test else None
 
     def method_1(html: BeautifulSoup):
-        test = html.find("meta", {"property": "article:modified_time", "content": True})
+        test = html.find("meta", {"name": "publishDate", "content": True})
         return test["content"] if test else None
 
     def method_2(html: BeautifulSoup):
-        test = html.find("meta", {"name": "dc.date", "content": True})
+        test = html.find("meta", {"property": "article:published_time", "content": True})
         return test["content"] if test else None
 
     def method_3(html: BeautifulSoup):
+        test = html.find("meta", {"property": "article:modified_time", "content": True})
+        return test["content"] if test else None
+
+    def method_4(html: BeautifulSoup):
+        test = html.find("meta", {"name": "dc.date", "content": True})
+        return test["content"] if test else None
+
+    def method_5(html: BeautifulSoup):
         test = html.find("time", {"datetime": True})
         return test["datetime"] if test else None
 
-    def method_4(html: BeautifulSoup):
+    def method_6(html: BeautifulSoup):
         test = html.find("relative-time", {"datetime": True})
         return test["datetime"] if test else None
 
-    def method_5(html):
+    def method_7(html):
         test = html.find("div", {"class": "dateline"})
         return test.get_text() if test else None
 
     date = None
-    bag_of_methods = (method_0, method_1, method_2, method_3, method_4, method_5)
+    bag_of_methods = (method_0, method_1, method_2, method_3, method_4, method_5, method_6, method_7)
 
     i = 0
     while not date and i < len(bag_of_methods):
