@@ -207,12 +207,14 @@ class Deduplicator():
 
     def get_unique_urls_parallel(self, candidates):
         elected = candidates[0]
+        category = candidates[0]["category"] if "category" in candidates[0] else ""
         length = 0
         date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
 
         for candidate in candidates:
             cand_date = candidate["datetime"]
             cand_length = candidate["length"]
+            cand_category = candidate["category"] if "category" in candidate else ""
             vote = False
 
             if cand_length > length:
@@ -229,8 +231,15 @@ class Deduplicator():
                 vote = False
             # else: same age or both undefined date, let length decide
 
+            # Cancel replacement if candidate is external (aka followed recursively from internal links)
+            # and we already have a variant indexed from within (from sitemap or Rest API) that
+            # might have less noise
+            if cand_category == "external" and category != "external":
+                vote = False
+
             if vote:
                 elected = candidate
+                category = cand_category
 
         # Replace the list of candidates by the elected one for this URL
         return elected
