@@ -7,6 +7,7 @@ Logging and filter finding utilities.
 
 from datetime import datetime, timezone, timedelta
 import os
+import sys
 import io
 import errno
 import pickle
@@ -14,6 +15,8 @@ import tarfile
 import time
 import signal
 import numba
+import psutil
+from collections.abc import Iterable
 
 from typing import TypedDict
 from dateutil import parser
@@ -597,3 +600,11 @@ def exit_after(s: int):
             return result
         return inner
     return outer
+
+
+def get_available_ram():
+    return psutil.virtual_memory().available
+
+
+def get_script_ram():
+    return psutil.Process(os.getpid()).memory_info().vms
