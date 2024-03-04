@@ -6,6 +6,7 @@
 import regex as re
 import time
 import os
+import sys
 
 import requests
 import copy
@@ -62,6 +63,19 @@ class web_page(TypedDict):
     category: str
     """Arbitrary category or label set by user"""
 
+
+def get_web_pages_ram(pages: list[web_page]):
+    memory = sys.getsizeof(pages)
+    for page in pages:
+        memory += sys.getsizeof(page)
+        for key, value in page.items():
+            memory += sys.getsizeof(key) + sys.getsizeof(value)
+        if "parsed" not in page:
+            # In case the parsed variant is not already stored in page,
+            # estimate it by upper value through the content length
+            memory += sys.getsizeof(page["content"])
+
+    return memory
 
 class Deduplicator():
     urls_to_ignore: list[str] = [
@@ -151,8 +165,8 @@ class Deduplicator():
             elem["url"] = new_url
 
             # Get cleaned-up content for distance detection
-            elem["content"] = utils.clean_whitespaces(str(elem["content"]))
             if "parsed" not in elem:
+                elem["content"] = utils.clean_whitespaces(str(elem["content"]))
                 elem["parsed"] = utils.typography_undo(elem["content"].lower())
 
             if "length" not in elem:
@@ -172,12 +186,17 @@ class Deduplicator():
         Precompute datetime object and minified ASCII content variant for later processing.
         """
         cleaned_set = {}
-        with Pool(processes=os.cpu_count()) as pool:
-            for i, item in enumerate(pool.imap(self.prepare_posts_parallel, posts, chunksize=512)):
+        used_ram = get_web_pages_ram(posts)
+        print("RAM footprint:", used_ram)
+        n_proc = min(utils.get_available_ram() // used_ram, os.cpu_count())
+        print("Processes used:", n_proc)
+
+        with Pool(processes=n_proc) as pool:
+            for i, item in enumerate(pool.imap(self.prepare_posts_parallel, posts, chunksize=32)):
                 posts[i] = item
 
         for elem in posts:
-            if elem:
+            if elem and "content" in elem and len(elem["content"]) > 0:
                 # Create a dict where the key is the canonical URL
                 # and we aggregate the list of matching objects sharing the same URL.
                 cleaned_set.setdefault(elem["url"], [])
@@ -226,7 +245,7 @@ class Deduplicator():
         """
         keys = list(posts.keys())
         with Pool(processes=os.cpu_count()) as pool:
-            for i, item in enumerate(pool.imap(self.get_unique_urls_parallel, posts.values(), chunksize=2048)):
+            for i, item in enumerate(pool.imap(self.get_unique_urls_parallel, posts.values(), chunksize=32)):
                 posts[keys[i]] = item
 
         return posts
@@ -272,7 +291,7 @@ class Deduplicator():
         """
         keys = list(posts.keys())
         with Pool(processes=os.cpu_count()) as pool:
-            for i, item in enumerate(pool.imap(self.get_unique_urls_parallel, posts.values(), chunksize=2048)):
+            for i, item in enumerate(pool.imap(self.get_unique_urls_parallel, posts.values(), chunksize=128)):
                 posts[keys[i]] = item
 
         return posts
