@@ -1001,8 +1001,8 @@ class Indexer():
 
                     # Find permutations of tokens, by packs of 3.
                     # Inspired by https://arxiv.org/pdf/1602.06359.pdf
-                    direct = convolve2d(interaction, kernel_direct, mode='same', boundary='fill', fillvalue=0)
-                    reverse = convolve2d(interaction, kernel_reverse, mode='same', boundary='fill', fillvalue=0)
+                    direct = convolve2d(interaction, kernel_direct, mode='same', boundary='circular', fillvalue=0)
+                    reverse = convolve2d(interaction, kernel_reverse, mode='same', boundary='circular', fillvalue=0)
 
                     # Sum both filters output and then average over the query direction
                     interaction = (direct + reverse).sum(axis=1) / (2. * indexed_query.size)
