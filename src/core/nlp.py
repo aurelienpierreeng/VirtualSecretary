@@ -30,7 +30,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from scipy.signal import convolve2d
 
-from rank_bm25 import BM25Okapi
+from rank_bm25 import BM25Plus
 
 from .patterns import *
 from .utils import get_models_folder, typography_undo, guess_date, clean_whitespaces, timeit
@@ -1198,5 +1198,5 @@ class Indexer():
         self.vectors_all = np.array([page[1] for page in pack], dtype=np.float32)
         self.all_norms = np.array([page[2] for page in pack], dtype=np.float32)
         self.collocations = [page[3] for page in pack]
-        self.ranker =  BM25Okapi([[self.word2vec.wv.index_to_key[i] for i in page]
-                                  for page in self.collocations], k1=1.7, b=0.95)
+        self.ranker =  BM25Plus([[self.word2vec.wv.index_to_key[i] for i in page]
+                                  for page in self.collocations], k1=1.7, b=0.3, delta=0.65)
