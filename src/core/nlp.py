@@ -1147,7 +1147,7 @@ class Indexer():
             return None
 
 
-    def get_related(self, post: tuple[np.ndarray, float, list[str]], n: int = 15) -> list:
+    def get_related(self, post: tuple[np.ndarray, float, list[str]], n: int = 15, k: int = 5) -> list:
         """Get the n closest keywords from the query."""
 
         if not isinstance(post, tuple):
@@ -1157,7 +1157,13 @@ class Indexer():
         tokens = post[2]
 
         # wv.similar_by_vector returns a list of (word, distance) tuples
-        return [elem[0] for elem in self.word2vec.wv.similar_by_vector(vector, topn=n) if elem[0] not in tokens]
+        from_query = [elem for elem in self.word2vec.wv.similar_by_vector(vector, topn=n)]
+        from_tokens = [elem for token in tokens for elem in self.word2vec.wv.most_similar(token, topn=k)]
+
+        # sort by relevance
+        related = sorted(from_query + from_tokens, key=lambda x:x[1], reverse=True)
+
+        return list(set([elem[0] for elem in related if elem[0] not in tokens]))
 
 
     def filter_items(self, callback:callable, *args, **kwargs):
