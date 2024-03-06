@@ -993,6 +993,7 @@ def get_date(html: BeautifulSoup):
     - `<time datetime="...">`
     - `<relative-time datetime="...">`
     - `<div class="dateline">...</div>`
+    - `<script type="application/ld+json">{"dateModified":"...", }</script>` (Wikipedia)
 
     Arguments:
         page: a [bs4.BeautifulSoup][] handler with pre-filtered DOM,
@@ -1009,11 +1010,11 @@ def get_date(html: BeautifulSoup):
         return test["content"] if test else None
 
     def method_2(html: BeautifulSoup):
-        test = html.find("meta", {"property": "article:published_time", "content": True})
+        test = html.find("meta", {"property": "article:modified_time", "content": True})
         return test["content"] if test else None
 
     def method_3(html: BeautifulSoup):
-        test = html.find("meta", {"property": "article:modified_time", "content": True})
+        test = html.find("meta", {"property": "article:published_time", "content": True})
         return test["content"] if test else None
 
     def method_4(html: BeautifulSoup):
@@ -1032,8 +1033,49 @@ def get_date(html: BeautifulSoup):
         test = html.find("div", {"class": "dateline"})
         return test.get_text() if test else None
 
+    def method_9(html):
+        # Rich snippets
+        test = html.find("span", {"class": "updated rich-snippet-hidden"})
+        return test.get_text() if test else None
+
+    def method_8(html):
+        """
+        Wikipedia example JSON:
+        ```
+        {
+            "@context":"https://schema.org",
+            "@type":"Article",
+            "name":"Purple fringing","url":"https://en.wikipedia.org/wiki/Purple_fringing",
+            "sameAs":"http://www.wikidata.org/entity/Q1154488",
+            "mainEntity":"http://www.wikidata.org/entity/Q1154488",
+            "author":{
+                "@type":"Organization",
+                "name":"Contributors to Wikimedia projects"
+            },
+            "publisher":{
+                "@type":"Organization",
+                "name":"Wikimedia Foundation, Inc.",
+                "logo":{
+                    "@type":"ImageObject",
+                    "url":"https://www.wikimedia.org/static/images/wmf-hor-googpub.png"
+                }
+            },
+            "datePublished":"2005-10-07T04:26:05Z",
+            "dateModified":"2023-11-30T04:38:53Z",
+            "image":"https://upload.wikimedia.org/wikipedia/commons/c/c1/Purple_fringing.jpg",
+            "headline":"type of chromatic aberration in photography"
+         }
+         ```
+         """
+        test = html.find("script", {"type": "application/ld+json"})
+        if test:
+            inner = json.loads(test.contents[0])
+            if "dateModified" in inner:
+                return inner["dateModified"]
+        return None
+
     date = None
-    bag_of_methods = (method_0, method_1, method_2, method_3, method_4, method_5, method_6, method_7)
+    bag_of_methods = (method_0, method_1, method_2, method_3, method_4, method_5, method_6, method_7, method_8, method_9)
 
     i = 0
     while not date and i < len(bag_of_methods):
