@@ -205,7 +205,7 @@ luminance_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(Cd\/m²|Cd\/m2|Cd\/m
 LUMINANCE = re.compile(r"%s%s%s" % (regex_starter, luminance_regex, end_of_word), flags=re.IGNORECASE)
 """Luminance/radiance in nits or Cd/m²"""
 
-diaphragm_regex = r"f\/([0-9]+\.?[0-9]?)"
+diaphragm_regex = r"(?<!\w)f\/?([0-9]+\.?[0-9]?)"
 # Don't look ahead for end of word here since lenses focal lengthes may be followed by reference letters
 DIAPHRAGM = re.compile(r"%s%s" % (regex_starter, diaphragm_regex), flags=re.IGNORECASE)
 """Photographic diaph aperture values like f/2.8 or f/11"""
@@ -332,7 +332,7 @@ SUBSTANTIVE_Y = re.compile(r"(?<=\w{3,})y%s" % end_of_word)
 VERB_IZ = re.compile(r"(?<=\w{4,})(i|y)z%s" % end_of_word)
 """Identify American verbs ending in -iz that French and Brits write in -is"""
 
-STUFF_ER = re.compile(r"(?<=\w{4,})er%s" % end_of_word)
+STUFF_ER = re.compile(r"(?<=\w{5,})er%s" % end_of_word)
 """Identify French 1st group verb (infinitive) and English substantives ending in -er"""
 
 BRITISH_OUR = re.compile(r"(?<=\w{3,})our%s" % end_of_word)
@@ -349,3 +349,6 @@ SUBSTANTIVE_IQU = re.compile(r"(?<=\w{3,})i(qu|c)%s" % end_of_word)
 
 SUBSTANTIVE_EUR = re.compile(r"(?<=\w{3,})eur%s" % end_of_word)
 """Identify French substantives -eur"""
+
+HYPHENIZED = re.compile(r"(?<=\w{3,})[-–—]+ *[\n\r]{1,2}(?=\w)")
+"""Detect hyphenized words at the end of a PDF text line."""
