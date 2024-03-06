@@ -228,10 +228,10 @@ REPLACEMENTS = {
     "demain": "_DATE_",
     "hier": "_DATE_",
 
-    "dollar": "_MONEY_",
-    "€": "_MONEY_",
-    "£": "_MONEY_",
-    "$": "_MONEY_",
+    "dollar": "_PRICE_",
+    "€": "_PRICE_",
+    "£": "_PRICE_",
+    "$": "_PRICE_",
 }
 
 # Normalize contractions and abbreviations
