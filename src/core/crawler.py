@@ -65,30 +65,29 @@ def relative_to_absolute(URL: str, domain: str, current_page: str) -> str:
         >>> relative_to_absolute("folder/page", "me.com")
         "://me.com/folder/page"
     """
+    # relative URL from current page
+    if current_page is None:
+        raise TypeError("`current_page` should be defined")
+
+    """
     if "://" in URL:
-        return URL
+        # already a fully-formed URL
+        test_url = URL
+    elif URL.startswith("#"):
+        # internal anchor. Nothing to do with that.
+        test_url = "://" + domain.strip("/") + "/"
+    elif URL.startswith("/"):
+        # relative path declared from root. Easy
+        test_url = "://" + domain.strip("/") + "/" + URL.lstrip("/")
+    elif current_page.endswith(URL):
+        # a wrong link is trying to recursively call itself.
+        test_url = "://" + domain.strip("/") + "/"
     else:
-        # relative URL from current page
-        if current_page is None:
-            raise TypeError("`current_page` should be defined")
+    """
+    # relative path declared from current page. Hard
+    test_url = urljoin(current_page, URL)
 
-        if "://" in URL:
-            # already a fully-formed URL
-            test_url = URL
-        elif URL.startswith("#"):
-            # internal anchor. Nothing to do with that.
-            test_url = "://" + domain.strip("/") + "/"
-        elif URL.startswith("/"):
-            # relative path declared from root. Easy
-            test_url = "://" + domain.strip("/") + "/" + URL.lstrip("/")
-        elif current_page.endswith(URL):
-            # a wrong link is trying to recursively call itself.
-            test_url = "://" + domain.strip("/") + "/"
-        else:
-            # relative path declared from current page. Hard
-            test_url = urljoin(current_page, URL)
-
-        return test_url
+    return test_url
 
 
 def radical_url(URL: str) -> str:
@@ -477,8 +476,6 @@ class Crawler:
         "/signup?"
         "/user/",
         "/member/",
-        "/search?",
-        "/s?",
         "/register?",
         ".css",
         ".js",
@@ -486,7 +483,7 @@ class Crawler:
         ]
     """List of URLs sub-strings that will disable crawling if they are found in URLs. Mostly social networks sharing links."""
 
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=8)
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     internal_links = []
     futures = []
 
@@ -520,7 +517,7 @@ class Crawler:
         if internal_links == "ignore":
             return output
 
-        for nextURL in self.internal_links:
+        for nextURL in set(self.internal_links):
             if nextURL in self.crawled_URL:
                 continue
 
@@ -554,8 +551,6 @@ class Crawler:
                     category = "external"
                 time.sleep(0.25)
                 self.futures.append(self.executor.submit(self.get_website_from_crawling, current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, _recursion_level=0))
-
-            self.crawled_URL.append(nextURL)
 
 
     def get_website_from_crawling(self,
@@ -629,6 +624,10 @@ class Crawler:
             self.crawled_URL.append(new_url)
             index_url = new_url
 
+        if self.discard_link(index_url):
+            #print("no follow")
+            return output
+
         # FIXME: we nest 7 levels of if here. It's ugly but I don't see how else
         # to cover so many cases.
         if status and "text" in content_type \
@@ -660,9 +659,9 @@ class Crawler:
 
             # Follow internal links whether or not this page was mined
             if index and _recursion_level + 1 != max_recurse_level:
-                for url in index.links:
+                for url in set(index.links):
                     currentURL = relative_to_absolute(url, domain, index_url)
-                    if currentURL in self.crawled_URL:
+                    if currentURL in self.crawled_URL or self.discard_link(currentURL):
                         continue
 
                     current_address = patterns.URL_PATTERN.search(currentURL)
@@ -821,7 +820,7 @@ class Crawler:
             output += self._parse_translations(page, domain, currentURL, markup, date, langs, category)
 
             # Follow internal and external links found in body
-            for url in page.links:
+            for url in set(page.links):
                 self.internal_links.append(relative_to_absolute(url, domain, currentURL))
 
         # Prevent server-side throttling
