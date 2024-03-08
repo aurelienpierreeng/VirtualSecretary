@@ -10,8 +10,10 @@ from enum import IntEnum
 import random
 import regex as re
 import os
+import sys
 from multiprocessing import Pool, current_process
-import multiprocessing
+from multiprocessing import Manager
+import concurrent
 
 from collections import Counter
 
@@ -33,8 +35,9 @@ from scipy.signal import convolve2d
 from rank_bm25 import BM25Plus
 
 from .patterns import *
-from .utils import get_models_folder, typography_undo, guess_date, clean_whitespaces, timeit
+from .utils import get_models_folder, typography_undo, guess_date, clean_whitespaces, timeit, get_available_ram, get_script_ram
 from .language import *
+from .crawler import web_page, get_web_pages_ram
 
 
 def guess_language(string: str) -> str:
@@ -232,6 +235,10 @@ class Tokenizer():
         if string.upper() in self.meta_tokens:
             return string.upper()
 
+        # Remove Markdown markers for _italics_ and __bold__
+        # Note: internal under_scores are already removed in metatokens regex loop.
+        string = string.strip("_")
+
         # Last chance of identifying meta-tokens in an atomic way
         if meta_tokens:
             for key, value in self.internal_meta_tokens.items():
@@ -239,10 +246,6 @@ class Tokenizer():
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
                 if key.match(string, timeout=10, concurrent=True):
                     return value
-
-        # Remove Markdown markers for _italics_ and __bold__
-        # Note: internal under_scores are already removed in metatokens regex loop.
-        string = string.strip("_")
 
         # Lemmatize / Stem
         string = self.lemmatize(string)
@@ -415,9 +418,6 @@ class Tokenizer():
 
         self.stopwords = stopwords
 
-        self.num_items = 1
-        self.processed_items = 0
-
 
 class Data():
     def __init__(self, text: str, label: str):
@@ -467,31 +467,29 @@ class Word2Vec(gensim.models.Word2Vec):
         self.vector_size = vector_size
         print(f"got {len(sentences)} pieces of text")
 
-        # training = [tokenize_sentences(sentence, language=language) for sentence in sentences]
         random.shuffle(sentences)
         sentences = set(sentences)
-        processes = os.cpu_count()
 
-        self.tokenizer.num_items = len(sentences) / processes
-        self.tokenizer.processed_items = 0
-        training: list[list[list[str]]] = []
+        #with Pool(processes=processes) as pool:
+        #    for item in pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=128):
+        #        training.append(item)
 
-        with Pool(processes=processes) as pool:
-            for item in pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=128):
-                training.append(item)
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            sentences = executor.map(self.tokenizer.tokenize_per_sentence, sentences, chunksize=32)
 
         print("tokenization done")
 
         # Flatten the first dimension of the list of list of list of strings :
-        training = [sentence for text in training for sentence in text]
-        print(f"got {len(training)} sentences")
+        sentences = [sentence for text in sentences for sentence in text]
+        print(f"got {len(sentences)} sentences")
 
         # Dump words to a file to detect stopwords
-        words = [word for sentence in training for word in sentence]
+        words = [word for sentence in sentences for word in sentence]
         print(f"got {len(words)} individual words")
 
         counts = Counter(words)
         print(f"got {len(counts)} unique words")
+        del words
 
         # Sort words by frequency
         counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
@@ -499,9 +497,10 @@ class Word2Vec(gensim.models.Word2Vec):
             for key, value in counts.items():
                 f.write(f"{key}: {value}\n")
         print("stopwords saved")
+        del counts
 
         loss_logger = LossLogger()
-        super().__init__(training, vector_size=vector_size, window=window, min_count=min_count, workers=processes, epochs=epochs, ns_exponent=0.75, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=0, max_final_vocab=100000)
+        super().__init__(sentences, vector_size=vector_size, window=window, min_count=min_count, epochs=epochs, ns_exponent=0.75, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=0, max_final_vocab=100000)
         print("training done")
 
         self.save(self.pathname)
@@ -736,7 +735,7 @@ class search_methods(IntEnum):
 class Indexer():
     @timeit()
     def __init__(self,
-                 data_set: list,
+                 data_set: list[web_page],
                  name: str,
                  word2vec: Word2Vec):
         """Search engine based on word similarity.
@@ -761,11 +760,14 @@ class Indexer():
         # Shuffle the dataset prior to multithreading to even the probability that
         # one process hangs significantly longer than the others
         random.shuffle(data_set)
-        processes = os.cpu_count()
+
+        used_ram = get_web_pages_ram(data_set)
+        n_proc = min(get_available_ram() // used_ram, os.cpu_count())
+
         print(f"Init. Got {len(data_set)} items.")
 
         # The database of web pages with limited features.
-        with Pool(processes=os.cpu_count()) as pool:
+        with Pool(processes=n_proc) as pool:
             for i, item in enumerate(pool.imap(self.create_index, data_set, chunksize=512)):
                 data_set[i] = item
 
@@ -775,10 +777,27 @@ class Indexer():
         print("index built")
 
         # List of tokens/meta-tokens and vector translation for each document
+        # Note: each core process will get its own copy of the data to crunch
+
+        # First step of processing relying on the current instance.
+        # We can't parallelize it because the memory penalty of duplicating current instance
+        # times cores used makes it too RAM-hungry.
+        tokenizer_content = [self.prepare_content(post) for post in self.index.values()]
+        used_ram = sys.getsizeof(tokenizer_content)
+        for item in tokenizer_content:
+            used_ram += sys.getsizeof(item)
+
+        # Second step of processing, more RAM-friendly. Parallelize then.
+        print("RAM footprint:", used_ram)
+        n_proc = min(get_available_ram() // used_ram, os.cpu_count())
+        print("Processes used:", n_proc)
+
         docs = []
-        with Pool(processes=processes) as pool:
-            for item in pool.imap(self.tokenize_parallel, self.index.values(), chunksize=512):
-                docs.append(item)
+        #with Pool(processes=n_proc) as pool:
+        #    docs = pool.starmap(self.tokenize_parallel, tokenizer_content, chunksize=512)
+
+        with concurrent.futures.ProcessPoolExecutor(n_proc) as executor:
+            docs = list(executor.map(self.tokenize_parallel, tokenizer_content, [self.word2vec for i in range(len(tokenizer_content))], chunksize=32))
 
         self.vectors_all = np.array([doc[1] for doc in docs], dtype=np.float32)
         """Store the list of document-wise vector embeddings, where the vector represents
@@ -798,62 +817,20 @@ class Indexer():
         Documents are on the first axis.
         """
 
-        # Write topics in index
-        for i, key in enumerate(self.index.keys()):
-            self.index[key]["topics"] = docs[i][3]
+        self.keys_as_list = np.array(list(self.index.keys()))
 
         print("vectorization done")
 
-        # Values from https://arxiv.org/pdf/1602.01137.pdf, p.6, section 3.3
-        self.ranker = BM25Okapi([doc[0] for doc in docs], k1=1.7, b=0.95)
+        # Values from https://www.cs.otago.ac.nz/homepages/andrew/papers/2014-2.pdf
+        self.ranker = BM25Plus([doc[0] for doc in docs], k1=1.7, b=0.3, delta=0.65)
 
-        # Input embedding vector and its norm for each page
-        # Note: self.vectors contains output embedding vectors
-        related = [[doc[4], doc[5]] for doc in docs]
-
-        # Garbage collection because the next parallel loop is RAM-hungry
+        # Garbage collection
         del docs
-
-        # From there we only need the input embedding matrix
-        del self.word2vec.syn1neg
-
-        # Remove the parsed text variant for the same reason.
+        del self.word2vec.syn1neg # From there we only need the input embedding matrix
         for post in self.index.values():
             del post["parsed"]
 
-        # Get related pages based on document cosine distance
-        self.keys_as_list = np.array(list(self.index.keys()))
-        with Pool(processes=processes // 2) as pool:
-            for i, item in enumerate(pool.imap(self.find_related_pages, related, chunksize=128)):
-                related[i] = item
-
-        # Write n closest pages in index
-        for i, key in enumerate(self.index.keys()):
-            self.index[key]["related"] = related[i]
-
-        del related
-
         self.save(name)
-
-
-    def find_related_pages(self, elem: tuple[np.ndarray, np.float32]) -> list[str]:
-        vector = elem[0]
-        norm = elem[1]
-        if vector is not None and (vector != 0.).any():
-            similarity = np.nan_to_num(np.dot(self.vectors_all, vector)) / (norm * self.all_norms)
-
-            # Fetch the 10 best similarity scores
-            best_indices = np.argpartition(similarity, -10)[-10:]
-
-            # Fetch corresponding URLs
-            best_elems = self.keys_as_list[best_indices]
-            best_similarity = similarity[best_indices]
-
-            five_best = sorted(zip(best_elems, best_similarity), key=lambda x:x[1], reverse=True)
-
-            return [item[0] for item in five_best]
-        else:
-            return []
 
 
     def save(self, name: str):
@@ -861,7 +838,8 @@ class Indexer():
         joblib.dump(self, get_models_folder(name + ".joblib"), compress='lz4', protocol=pickle.HIGHEST_PROTOCOL)
 
 
-    def create_index(self, post: dict):
+    @staticmethod
+    def create_index(post: dict):
         if not post["excerpt"] or len(post["excerpt"]) < 800:
             post["excerpt"] = str(post["content"])[0:min(len(post["content"]), 800)]
         else:
@@ -871,40 +849,32 @@ class Indexer():
             # Reuse data set by crawler.Deduplicator if available
             post["datetime"] = guess_date(str(post["date"])) if post["date"] else None
 
-        if "parsed" not in post:
-            # Reuse data set by crawler.Deduplicator if available
-            post["content"] = clean_whitespaces(str(post["content"]))
-            post["parsed"] = self.word2vec.tokenizer.normalize_text(post["content"])
-
         post["category"] = str(post["category"]) if "category" in post else None
         post["title"] = str(post["title"])
         return post
 
 
-    def tokenize_parallel(self, post: dict) -> list[str]:
+    def prepare_content(self, post: web_page) -> list[str]:
         content = self.word2vec.tokenizer.normalize_text(post["title"])
 
         if post["h1"]:
             content += "\n\n" + self.word2vec.tokenizer.normalize_text("\n\n".join(list(post["h1"])))
 
-        if post["h2"]:
-            content += "\n\n" + self.word2vec.tokenizer.normalize_text("\n\n".join(list(post["h2"])))
+        if "parsed" not in post:
+            # Reuse data set by crawler.Deduplicator if available
+            post["content"] = clean_whitespaces(str(post["content"]))
+            post["parsed"] = self.word2vec.tokenizer.normalize_text(post["content"])
 
         content += "\n\n" + post["parsed"]
 
-        tokens = self.word2vec.tokenizer.tokenize_document(content, meta_tokens=True)
-        features = self.word2vec.get_features(tokens, embed="OUT")
-        indices = self.word2vec.tokens_to_indices(tokens)
+        return content
 
-        # Extract the 5 most relevant topics of each doc.
-        # We need to re-vectorize the doc with the IN embedding matrix.
-        vector, norm, tokens = self.vectorize_query(tokens)
-        if len(tokens) > 0:
-            topics = self.get_related((vector, "", []), n=5)
-        else:
-            topics = []
-
-        return (tokens, features, indices, topics, vector, norm)
+    @staticmethod
+    def tokenize_parallel(content: str, word2vec: Word2Vec) -> list[str]:
+        tokens = word2vec.tokenizer.tokenize_document(content, meta_tokens=True)
+        features = word2vec.get_features(tokens, embed="OUT")
+        indices = word2vec.tokens_to_indices(tokens)
+        return (tokens, features, indices)
 
 
     @classmethod
@@ -1070,7 +1040,8 @@ class Indexer():
 
 
     def rank(self, query: str|tuple|re.Pattern, method: search_methods,
-             filter_callback: callable = None, pattern: str | re.Pattern = None, n_results: int = 500, **kargs) -> list[tuple[str, float]]:
+             filter_callback: callable = None, pattern: str | re.Pattern = None, n_results: int = 500, fine_search: bool = False,
+             **kargs) -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
@@ -1079,10 +1050,13 @@ class Indexer():
             filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker. Its first argument will be a [core.crawler.web_page][] object from the list [core.nlp.Indexer.index][], the next arguments will be passed through from `**kargs` directly.
             pattern: optional pattern/text search to add on top of AI search
             n_results: number of results to retain
+            fine_search: optionally refine the search using a 2D interaction matrix. See [1]
             **kargs: arguments passed as-is to the `filter_callback`
 
         Returns:
             list: the list of best-matching results as (url, similarity) tuples.
+
+        [1]: https://eng.aurelienpierre.com/2024/03/designing-an-ai-search-engine-from-scratch-in-the-2020s/#accounting-for-words-patterns
         """
         # Note : match needs at least Python 3.10
         match method:
@@ -1127,7 +1101,7 @@ class Indexer():
         ranked = zip(best_indices, best_elems, best_similarity)
 
         # Now is time for the really heavy stuff: find tokens in sequential order
-        if isinstance(query, tuple) and isinstance(query[2], list) and len(query[2]) > 2:
+        if isinstance(query, tuple) and isinstance(query[2], list) and len(query[2]) > 2 and fine_search:
             indexed_query = self.word2vec.tokens_to_indices(query[2])
             ranked = self.find_query_pattern(indexed_query, ranked)
 
