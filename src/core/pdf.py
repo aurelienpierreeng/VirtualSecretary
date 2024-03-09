@@ -15,7 +15,7 @@ import numpy as np
 import regex as re
 
 from .types import web_page
-from .network import get_header
+from .network import get_header, check_response
 from .patterns import HYPHENIZED
 
 def ocr_pdf(document: bytes, output_images: bool = False, path: str = None,
@@ -173,6 +173,8 @@ def get_pdf_content(url: str,
             print(f"{page.url}: {page.status_code}")
             url = page.url
 
+            check_response(url, page.status_code)
+
             if page.status_code != 200:
                 print("couldn't download %s" % url)
                 return []
@@ -193,6 +195,9 @@ def get_pdf_content(url: str,
         print(e)
         return []
 
+    if not reader or not reader.metadata:
+        return []
+
     # Beware: pypdf converts date from string assuming fixed format without catching exceptions.
     # need to catch them here to avoid plain crash.
     try:
@@ -206,7 +211,12 @@ def get_pdf_content(url: str,
     print(title)
 
     # Check if the PDF contains text
-    content = "\n".join([elem.extract_text() for elem in reader.pages]).strip("\n ")
+    # From PyPdf2 doc : "This works well for some PDF files, but poorly for others,
+    # depending on the generator used.". Hence catch exceptions.
+    try:
+        content = "\n".join([elem.extract_text() for elem in reader.pages]).strip("\n ")
+    except:
+        return []
 
     if (ocr == 1 and len(content) < 20) or ocr == 2:
         # No text, retry with OCR

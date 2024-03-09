@@ -15,3 +15,9 @@ def get_header():
         'User-Agent': "Virtual Secretary bot", #random.choice(ua),
         'Referer': "https://www.google.com",
     }
+
+def check_response(url, status_code):
+    if status_code == 429:
+        print(f"SERVER {url} has throttled us")
+    elif status_code == 503:
+        print(f"SERVER {url} did not respond. We may be throttled.")
