@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 from . import patterns
 from .pdf import get_pdf_content
 from .types import web_page, get_web_pages_ram
-from .network import get_header
+from .network import get_header, check_response
 
 def get_content_type(url: str) -> tuple[str, bool]:
     """Probe an URL for HTTP headers only to see what type of content it returns.
@@ -33,11 +33,14 @@ def get_content_type(url: str) -> tuple[str, bool]:
     """
     try:
         response = requests.head(url, timeout=30, headers=get_header(), allow_redirects=True)
+        check_response(url, response.status_code)
 
         if response.status_code != 200 and url.startswith("http://"):
             # Some websites referenced as http now use https but don't redirect properly
+            time.sleep(0.5) # Don't look like a DoS attack
             url = url.replace("http://", "https://")
             response = requests.head(url, timeout=30, headers=get_header(), allow_redirects=True)
+            check_response(url, response.status_code)
 
         content_type = response.headers['content-type']
         status = response.status_code == 200
@@ -130,6 +133,8 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, st
             print(f"{page.url}: {page.status_code}")
             url = page.url
 
+            check_response(url, page.status_code)
+
             if page.status_code != 200:
                 return None, url
 
@@ -160,7 +165,7 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, st
         handler = BeautifulSoup(unminified, "html5lib")
 
         # In case of recursive crawling, we need to milk the links out before we remove <nav> at the next step
-        handler.links = [url["href"] for url in handler.find_all('a', href=True) if url["href"]]
+        handler.links = list({url["href"] for url in handler.find_all('a', href=True) if url["href"]})
 
         # Same with h1 because we will remove <header> and that's where it might be
         # Doe h2 as well since we are at it.
@@ -483,15 +488,49 @@ class Crawler:
         ]
     """List of URLs sub-strings that will disable crawling if they are found in URLs. Mostly social networks sharing links."""
 
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    executor = None
     internal_links = []
     futures = []
 
-    def __init__(self):
-        """Crawl a website from its sitemap or by following internal links recusively from an index page."""
+    def __init__(self, delay: float = 0.5, no_follow: list[str] = []):
+        """Crawl a website from its sitemap or by following internal links recusively from an index page.
+        This creates a pool of threads to parallelize network I/O. The pool needs to be freed after use.
+        This class needs therefore to be used within a `with` statement that will take care of resources
+        allocations and releases in background.
 
+        Parameters:
+            delay: time in seconds to wait before 2 HTTP requests. Keep in mind that crawling is multi-threaded,
+            so as many concurrent requests can happen at the same time against a server as you have threads.
+            The right delay will prevent the crawler from being throttled by anti-DoS rules while making it as fast as possible.
+            Set to `0.0` if you are crawling your own servers and they have no DoS protection.
+            no_follow: list of URL parts to completely ignore, that is not index them but not even crawl them for internal links.
+            no_follow: list of URLs parts that will discard pages from crawling
+
+        Example:
+            ```
+            with crawler.Crawler() as cr:
+                output = cr.get_website_from_sitemap("https://domain.com")
+
+                # Can be called more than once.
+                # The list of already-crawled pages will be shared between calls
+                # so pages are not crawled more than once.
+                output += cr.get_website_from_crawling("https://forum.domain.com")
+            ```
+
+        """
         self.crawled_URL: list[str] = []
         """List of URLs already visited"""
+
+        self.no_follow += no_follow
+        self.delay = delay
+
+    def __enter__(self):
+        self.executor = concurrent.futures.ThreadPoolExecutor()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.executor.shutdown()
+
 
     def discard_link(self, url):
         """Returns True if the url is found in the `self.no_follow` list"""
@@ -518,7 +557,7 @@ class Crawler:
             return output
 
         for nextURL in set(self.internal_links):
-            if nextURL in self.crawled_URL:
+            if nextURL in self.crawled_URL or self.discard_link(nextURL):
                 continue
 
             current_address = patterns.URL_PATTERN.search(nextURL)
@@ -549,8 +588,9 @@ class Crawler:
                     # we don't pass on the category of the parent page
                     # because we have no idea what the external URL is.
                     category = "external"
-                time.sleep(0.25)
-                self.futures.append(self.executor.submit(self.get_website_from_crawling, current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, _recursion_level=0))
+
+                time.sleep(self.delay)
+                self.futures.append(self.executor.submit(self.get_website_from_crawling, current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, _recursion_level=0, _mainthread=False))
 
 
     def get_website_from_crawling(self,
@@ -563,7 +603,8 @@ class Crawler:
                                   max_recurse_level: int = -1,
                                   category: str = None,
                                   restrict_section: bool = False,
-                                  _recursion_level: int = 0) -> list[web_page]:
+                                  _recursion_level: int = 0,
+                                  _mainthread: bool = True) -> list[web_page]:
         """Recursively crawl all pages of a website from internal links found starting from the `child` page. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain.
 
         Arguments:
@@ -614,6 +655,7 @@ class Crawler:
         #print("processing", index_url, "include", include)
 
         # Fetch and parse current (top-most) page
+        time.sleep(self.delay)
         content_type, status, new_url = get_content_type(index_url)
         print("HEADERS:", index_url, content_type, status)
 
@@ -635,6 +677,7 @@ class Crawler:
             and "css" not in content_type \
             and "json" not in content_type:
 
+            time.sleep(self.delay)
             index, new_url = get_page_content(index_url)
 
             # Account for HTTP redirections
@@ -650,7 +693,7 @@ class Crawler:
                     output += self._parse_translations(index, domain, index_url, markup, None, langs, category)
                     #print("page object")
                 else:
-                    # Some wgebsites display PDF in web applets on pages
+                    # Some websites display PDF in web applets on pages
                     # advertising content-type=text/html but UTF8 codecs
                     # fail to decode because it's actually not HTML but PDF.
                     # If we end up here, it's most likely what we have.
@@ -659,7 +702,7 @@ class Crawler:
 
             # Follow internal links whether or not this page was mined
             if index and _recursion_level + 1 != max_recurse_level:
-                for url in set(index.links):
+                for url in index.links:
                     currentURL = relative_to_absolute(url, domain, index_url)
                     if currentURL in self.crawled_URL or self.discard_link(currentURL):
                         continue
@@ -674,35 +717,46 @@ class Crawler:
                     current_params = current_address.group(4) if current_address.group(4) else ""
 
                     #print(current_page, current_page, current_params)
-
+                    time.sleep(self.delay)
                     if not restrict_section and domain == current_domain:
                         # Recurse only through local pages, aka :
                         # 1. domains match
                         #print("recursing")
-                        output += self.get_website_from_crawling(
+                        self.futures.append(self.executor.submit(self.get_website_from_crawling,
                             website, default_lang, child=current_page + current_params, langs=langs, markup=markup, contains_str=contains_str,
-                            _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category)
+                            _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category,
+                            _mainthread=False))
                     elif restrict_section and domain == current_domain and child in current_page:
                         # Recurse only through local subsections, aka :
                         # 1. domains match
                         # 2. current page is in a subsection of current child
                         #print("recursing")
-                        output += self.get_website_from_crawling(
+                        self.futures.append(self.executor.submit(self.get_website_from_crawling,
                             website, default_lang, child=current_page + current_params, langs=langs, markup=markup, contains_str=contains_str,
-                            _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category)
+                            _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category,
+                            _mainthread=False))
                     elif include:
                         # Follow internal and external links on only one recursivity level.
                         # Aka HTML reference pages (Wikipedia) and attached PDF (docs, manuals, spec sheets)
                         #print("following")
-                        output += self.get_website_from_crawling(
-                            current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, contains_str="", max_recurse_level=1, restrict_section=restrict_section, category=category,
-                            _recursion_level=0)
+                        self.futures.append(self.executor.submit(self.get_website_from_crawling,
+                            current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, contains_str="", max_recurse_level=1,
+                            restrict_section=restrict_section, category=category, _recursion_level=0, _mainthread=False))
                     else:
                         #print("discarding")
                         pass
 
+            elif index:
+                # Scenario : we are on the terminating page. That's :
+                # case 1 : we are at the last stage of recursion.
+                # case 2 : we are on an external link, followed from sitemap page.
+                # Terminating page can be an index page for PDF files containing
+                # the actual content (ex: ArXiv). Do an exception : crawl one step further for PDFs only.
+                output += self._parse_internal_pdfs(index, domain, index_url, default_lang, category)
+
         elif "pdf" in content_type and status:
             #print("got pdf")
+            time.sleep(self.delay)
             output += self._parse_pdf_content(index_url, default_lang, category=category)
             # No link to follow from PDF docmuents
         else:
@@ -710,7 +764,20 @@ class Crawler:
             #print("nothing done")
             pass
 
+         # Process internal links found in pages
+        if _mainthread:
+            # Get pages content from the pool
+            # Can't use built-in methods because we don't know the size of self.futures ahead
+            # since we append dynamically.
+            while len(self.futures) and self.futures[0]:
+                output += self.futures[0].result()
+                del(self.futures[0])
+
+            print("OUTPUT", type(output))
+            print("FINAL NUMBER of POSTS:", len(output))
+
         return output
+
 
     def get_website_from_sitemap(self,
                                  website: str,
@@ -748,6 +815,7 @@ class Crawler:
         """
         output = []
 
+        time.sleep(self.delay)
         index_page, _ = get_page_content(website + sitemap)
         if not index_page:
             return output
@@ -770,7 +838,7 @@ class Crawler:
 
         # Submit pages to the pool of thread workers
         for link in index_page.find_all('url'):
-            time.sleep(0.5)
+            time.sleep(self.delay)
             self.futures.append(self.executor.submit(self._sitemap_process, domain, website, sitemap, link, default_lang, langs, markup, category, internal_links, contains_str, _recursion_level))
 
         # Get pages content from the pool
@@ -784,6 +852,7 @@ class Crawler:
             self.get_immediate_links(domain, default_lang, langs, category, contains_str, internal_links=internal_links)
 
             # Get pages content from the pool
+            concurrent.futures.wait(self.futures)
             for future in concurrent.futures.as_completed(self.futures):
                 output += future.result()
 
@@ -791,7 +860,6 @@ class Crawler:
 
 
     def _sitemap_process(self, domain, website, sitemap, link, default_lang, langs, markup, category, internal_links, contains_str, _recursion_level):
-        starting = time.time()
         output = []
         url = link.find("loc")
         date = link.find("lastmod")
@@ -807,6 +875,10 @@ class Crawler:
         print(currentURL, date)
 
         self.crawled_URL.append(currentURL)
+        if self.discard_link(currentURL):
+            return output
+
+        time.sleep(self.delay)
         page, new_url = get_page_content(currentURL)
 
         # Account for HTTP redirections
@@ -818,20 +890,17 @@ class Crawler:
             # We got a proper web page, parse it
             output += self._parse_original(page, currentURL, default_lang, markup, date, category)
             output += self._parse_translations(page, domain, currentURL, markup, date, langs, category)
+            output += self._parse_internal_pdfs(page, domain, currentURL, default_lang, category)
 
             # Follow internal and external links found in body
-            for url in set(page.links):
+            for url in page.links:
                 self.internal_links.append(relative_to_absolute(url, domain, currentURL))
-
-        # Prevent server-side throttling
-        te = time.time() - starting
-        if te < 0.5:
-            time.sleep(0.5 - te)
 
         return output
 
 
     def _parse_pdf_content(self, link, default_lang, category=""):
+        time.sleep(self.delay)
         return get_pdf_content(link, default_lang, category=category)
 
 
@@ -851,6 +920,7 @@ class Crawler:
 
             if link_tag and "href" in link_tag and link_tag["href"]:
                 translatedURL = relative_to_absolute(link_tag["href"], domain, current_url)
+                time.sleep(self.delay)
                 content_type, status, new_url = get_content_type(translatedURL)
 
                 self.crawled_URL.append(translatedURL)
@@ -860,6 +930,7 @@ class Crawler:
                     translatedURL = new_url
 
                 if "text" in content_type and status:
+                    time.sleep(self.delay)
                     translated_page, new_url = get_page_content(translatedURL)
 
                     # Account for HTTP redirections
@@ -870,5 +941,26 @@ class Crawler:
                     output += self._parse_original(translated_page, translatedURL, lang, markup, date, category)
 
                 self.crawled_URL.append(translatedURL)
+
+        return output
+
+
+    def _parse_internal_pdfs(self, page, domain, current_url, default_lang, category):
+        pdfs = []
+        output = []
+        for url in page.links:
+            currentURL = relative_to_absolute(url, domain, current_url)
+            if ".pdf" in currentURL \
+                and currentURL not in self.crawled_URL \
+                    and not self.discard_link(currentURL):
+                pdfs.append(currentURL)
+
+        pdfs = list(set(pdfs))
+        if len(pdfs) < 10:
+            # If more than 10 PDF (arbitrarily), that's a PDF repository.
+            # It's most likely not relevant. (Again: see ArXiv, only 2-3 PDFs top).
+            for currentURL in pdfs:
+                output += self._parse_pdf_content(currentURL, default_lang, category=category)
+                self.crawled_URL.append(currentURL)
 
         return output
