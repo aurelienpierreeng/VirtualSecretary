@@ -737,7 +737,8 @@ class Indexer():
     def __init__(self,
                  data_set: list[web_page],
                  name: str,
-                 word2vec: Word2Vec):
+                 word2vec: Word2Vec,
+                 strip_collocations: bool = False):
         """Search engine based on word similarity.
 
         Arguments:
@@ -745,12 +746,10 @@ class Indexer():
             path : path to save the trained model for reuse, as a Python joblib.
             name (str): name under which the model will be saved for la ter reuse.
             word2vec (Word2Vec): the instance of word embedding model.
-            validate (bool): if `True`, split the `feature_list` between a training set (95%) and a testing set (5%) and print in terminal the predictive performance of the model on the testing set. This is useful to choose a classifier.
-            variant (str):
-                - `svm`: use a Support Vector Machine with a radial-basis kernel. This is a well-rounded classifier, robust and stable, that performs well for all kinds of training samples sizes.
-                - `linear svm`: uses a linear Support Vector Machine. It runs faster than the previous and may generalize better for high numbers of features (high dimensionality).
-                - `forest`: Random Forest Classifier, which is a set of decision trees. It runs about 15-20% faster than linear SVM but tends to perform marginally better in some contexts, however it produces very large models (several GB to save on disk, where SVM needs a few dozens of MB).
-            features (int): the number of model features (dimensions) to retain. This sets the number of dimensions for word vectors found by word2vec, which will also be the dimensions in the last training layer.
+            strip_collocations: remove the matrix of collocations in documents, which is the list of word tokens represented by their index in the
+            word2vec dictionnary. It is used for [core.nlp.Indexer.find_query_patterns][], which is optional and significatively slower
+            (but not significatively better), so if you don't plan on using it, removing collocations saves some RAM and I/O.
+
         """
         if word2vec:
             self.word2vec = word2vec
@@ -809,7 +808,7 @@ class Indexer():
         self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
         """Store the list of L2 norms for each document vector representation."""
 
-        self.collocations = [doc[2] for doc in docs]
+        self.collocations = None if strip_collocations else [doc[2] for doc in docs]
         """Store the list of document tokens encoded by their index number in the
         Word2Vec vocabulary. Unknown tokens are discarded. This gives a symbolic
         and more compact representation of tokens collocations in documents (32 bits/token).
@@ -1101,7 +1100,7 @@ class Indexer():
         ranked = zip(best_indices, best_elems, best_similarity)
 
         # Now is time for the really heavy stuff: find tokens in sequential order
-        if isinstance(query, tuple) and isinstance(query[2], list) and len(query[2]) > 2 and fine_search:
+        if self.collocations and isinstance(query, tuple) and isinstance(query[2], list) and len(query[2]) > 2 and fine_search:
             indexed_query = self.word2vec.tokens_to_indices(query[2])
             ranked = self.find_query_pattern(indexed_query, ranked)
 
@@ -1161,6 +1160,7 @@ class Indexer():
         """
 
         print(f"starting with {len(self.index)} items")
+        # TODO: handle the case where collocations have been removed for RAM
         pack = [(page, vector, norm, collocations)
                 for page, vector, norm, collocations
                 in zip(self.index.values(), self.vectors_all, self.all_norms, self.collocations)
