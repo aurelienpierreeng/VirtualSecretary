@@ -52,9 +52,9 @@ class Deduplicator():
         return False
 
     @classmethod
-    def prepare_posts_parallel(cls, elem, discard_params, urls_to_ignore, fix_urls, drop_content):
+    def prepare_posts_parallel(cls, elem, discard_params, urls_to_ignore, fix_urls):
         url = patterns.URL_PATTERN.match(elem["url"].rstrip("/"), concurrent=True)
-        if url and not cls.discard_post(elem["url"], urls_to_ignore):
+        if url and not cls.discard_post(elem["url"], urls_to_ignore) and elem["content"]:
             # Canonify the URL: remove params and anchors
             protocol = url.group(1)
             domain = url.group(2)
@@ -110,19 +110,13 @@ class Deduplicator():
             # Replace URL by canonical stuff
             elem["url"] = new_url
 
-            # Get cleaned-up content for distance detection
-            if "parsed" not in elem and "content" in elem:
-                elem["content"] = clean_whitespaces(str(elem["content"]))
-                elem["parsed"] = typography_undo(elem["content"].lower())
+            # elem["parsed"] will need to have been prepared earlier
 
-            if "content" in elem and drop_content:
-                del elem["content"]
-
-            if "length" not in elem:
+            if "length" not in elem or elem["length"] == 0:
                 elem["length"] = len(elem["parsed"])
 
             # Get datetime for age comparison
-            if "datetime" not in elem:
+            if "datetime" not in elem or elem["datetime"] is None:
                 elem["datetime"] = guess_date(elem["date"])
 
             return elem
@@ -179,7 +173,6 @@ class Deduplicator():
                                         [self.discard_params for i in range(len(posts))],
                                         [self.urls_to_ignore for i in range(len(posts))],
                                         [self.fix_urls for i in range(len(posts))],
-                                        [self.drop_content for i in range(len(posts))],
                                         chunksize=32):
             if elem and "parsed" in elem and len(elem["parsed"]) > 0:
                 # Create a dict where the key is the canonical URL
@@ -346,7 +339,7 @@ class Deduplicator():
         return posts
 
 
-    def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True, n_min: int = 0, fix_urls: bool = True, drop_content: bool = False):
+    def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True, n_min: int = 0, fix_urls: bool = True):
         """Instanciate a depduplicator object.
 
         The duplicates factorizing takes a list of [core.types.web_page][]
@@ -383,12 +376,6 @@ class Deduplicator():
             fix_urls: attempt to convert `http` to `https` URLs and remove leading `www.`. This sends DNS requests
                 to assess if the `https` and `www.`-less variants can be reached, which takes a most 2 s per URL.
                 Set to `False` to speed things up.
-            drop_content: the normal processing adds a `parsed` key to the [core.types.web_page][] element, containing
-                the parsed content (non-ASCII characters and duplicate blank spaces removed). The parsed content
-                is reused as-is for duplicates detection, but also in [core.nlp.Wod2Vec][] and [core.nlp.Indexer][].
-                If this option is set to `True`, the original, non-parsed, content is deleted to spare RAM, which is safe
-                if it is not going to be used later (for example, in [core.nlp.Wod2Vec][]). Set to `False` if the content
-                is going to be reused, for example as snippets in [core.nlp.Indexer][].
         """
 
         self.threshold = threshold
@@ -396,4 +383,3 @@ class Deduplicator():
         self.discard_params = discard_params
         self.n_min = n_min
         self.fix_urls = fix_urls
-        self.drop_content = drop_content
