@@ -419,6 +419,28 @@ class Tokenizer():
         self.stopwords = stopwords
 
 
+def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 512) -> list[web_page]:
+    num_cpu = os.cpu_count()
+
+    # Hopefully divide the workload uniformingly across cores
+    # keeping in mind some docs are much longer/harder than others.
+    random.shuffle(documents)
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
+        # Cleanup redundant and superfluous whitespaces in content
+        parsable = [str(item["content"]) for item in documents]
+        content = executor.map(clean_whitespaces, parsable, chunksize=chunksize)
+        for i, item in enumerate(content):
+            documents[i]["content"] = item
+
+        # Normalize text
+        parsable = [item["title"] + "\n\n" + item["content"] for item in documents]
+        content = executor.map(tokenizer.normalize_text, parsable, chunksize=chunksize)
+        for i, item in enumerate(content):
+            documents[i]["parsed"] = item
+
+    return documents
+
 class Data():
     def __init__(self, text: str, label: str):
         """Represent an item of tagged training data.
