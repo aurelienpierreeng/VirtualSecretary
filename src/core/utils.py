@@ -20,7 +20,7 @@ from collections.abc import Iterable
 
 from typing import TypedDict
 from dateutil import parser
-from .patterns import MULTIPLE_SPACES, MULTIPLE_LINES, MULTIPLE_NEWLINES
+from .patterns import MULTIPLE_SPACES, MULTIPLE_LINES, MULTIPLE_NEWLINES, INTERNAL_NEWLINE
 
 import numpy as np
 import regex as re
@@ -455,6 +455,7 @@ def clean_whitespaces(string:str) -> str:
     string = MULTIPLE_LINES.sub("\n\n", string, concurrent=True, timeout=60)
     string = MULTIPLE_SPACES.sub(" ", string, concurrent=True, timeout=60)
     string = MULTIPLE_NEWLINES.sub("\n\n", string, concurrent=True, timeout=60)
+    string = INTERNAL_NEWLINE.sub(" ", string, concurrent=True, timeout=60)
     return string.strip()
 
 

@@ -188,6 +188,9 @@ MULTIPLE_NEWLINES = re.compile(r"(?: ?[\t\r\n]+ ?){2,}")
 
 MULTIPLE_SPACES = re.compile(r"( )+")
 
+INTERNAL_NEWLINE = re.compile(r"(?<=\w)[\n\t\r]{1}(?=\w)")
+"""Detect single newline characters nested inside text. Mostly useful for parsed PDF where line wrapping is quite literal (\n used instead of space)."""
+
 # Physical quantities (unit numbers)
 
 exposure_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(ev|il)s?" % regex_algebra
