@@ -15,6 +15,7 @@ from guppy import hpy
 h=hpy()
 
 from . import patterns
+from . import nlp
 from .network import get_header
 from .types import web_page, get_web_pages_ram
 from .utils import guess_date, typography_undo, clean_whitespaces, get_available_ram, get_models_folder, timeit
@@ -54,7 +55,7 @@ class Deduplicator():
     @classmethod
     def prepare_posts_parallel(cls, elem, discard_params, urls_to_ignore, fix_urls):
         url = patterns.URL_PATTERN.match(elem["url"].rstrip("/"), concurrent=True)
-        if url and not cls.discard_post(elem["url"], urls_to_ignore) and elem["content"]:
+        if url and not cls.discard_post(elem["url"], urls_to_ignore):
             # Canonify the URL: remove params and anchors
             protocol = url.group(1)
             domain = url.group(2)
@@ -121,6 +122,8 @@ class Deduplicator():
 
             return elem
 
+        return None
+
 
     @staticmethod
     def get_unique_urls_parallel(candidates):
@@ -169,21 +172,23 @@ class Deduplicator():
         # 1. Find canonical URL (and prepare content) for each post
         # 2. Create a dictionnary where keys are canonical URLs and values are a list of candidate pages
         cleaned_set = {}
-        for elem in self.executor.map(self.prepare_posts_parallel, posts,
-                                        [self.discard_params for i in range(len(posts))],
-                                        [self.urls_to_ignore for i in range(len(posts))],
-                                        [self.fix_urls for i in range(len(posts))],
-                                        chunksize=32):
+        for i, elem in enumerate(posts):
+            # Note: we can't process that in parallel because then the full list gets copied as many times
+            # as cores used, and the RAM has every opportunity to overflow
+            posts[i] = self.prepare_posts_parallel(elem, self.discard_params, self.urls_to_ignore, self.fix_urls)
+
+            # Trick to ensure elem is a reference to post[i] hoping this will avoid duplicating memory
+            # FIXME: is that really useful AND needed ?
+            elem = posts[i]
+
             if elem and "parsed" in elem and len(elem["parsed"]) > 0:
                 # Create a dict where the key is the canonical URL
                 # and we aggregate the list of matching objects sharing the same URL.
                 cleaned_set.setdefault(elem["url"], [])
                 cleaned_set[elem["url"]].append(elem)
 
-        del posts
-
         # 3. Extract the best candidate for each canonical URL, aka most recent, or longest, or most accurate
-        return list(self.executor.map(self.get_unique_urls_parallel, cleaned_set.values(), chunksize=32))
+        return [self.get_unique_urls_parallel(item) for item in cleaned_set.values()]
 
 
     @staticmethod
@@ -218,7 +223,7 @@ class Deduplicator():
         del posts
 
         # 2. Extract the most recent page for each canonical content
-        return list(self.executor.map(self.get_unique_urls_parallel, cleaned_set.values(), chunksize=32))
+        return [self.get_unique_urls_parallel(item) for item in  cleaned_set.values()]
 
 
     def get_close_content(self, posts: list[web_page], threshold: float = 0.90, distance: float = 500) -> list[web_page]:
@@ -293,21 +298,12 @@ class Deduplicator():
     @timeit()
     def __call__(self, posts: list[web_page]) -> list[web_page]:
         """Launch the actual duplicate finder. Note that `posts` will be destroyed in the process, to save RAM."""
-
-        used_ram = get_web_pages_ram(posts)
-        print("RAM footprint:", used_ram)
-        n_proc = max(min(get_available_ram() // used_ram, os.cpu_count()), 1)
-        print("Processes used:", n_proc)
-        self.executor = concurrent.futures.ProcessPoolExecutor(n_proc)
-
         print("Initial number of posts: ", len(posts))
         posts = self.get_unique_urls(posts)
 
         print("After URL deduplication: ", len(posts))
 
         posts = self.get_unique_content(posts)
-
-        self.executor.shutdown()
 
         print("After content deduplication: ", len(posts))
 
