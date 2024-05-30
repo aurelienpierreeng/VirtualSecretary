@@ -233,7 +233,7 @@ select alpha channel=1 in IDistort and you're done.
 
 always check the alpha channel of your outputs (press the "a" key in the viewer)
 
-dts.bumblebee.sunlight2048×1639 1.09 MB.
+dts.bumblebee.sunlight 2048×1639 1.09 MB.
 
 bumblebee.sunlight.cr2.xmp (12.8 KB)
 

@@ -211,3 +211,14 @@ f/1.8
 matches = find_pattern(PATH_PATTERN, samples)
 
 [print(m) for m in matches]
+
+
+samples = """
+stuf
+stuff
+stufff
+"""
+
+matches = find_pattern(INTERNAL_NEWLINE, samples)
+
+[print(m) for m in matches]
