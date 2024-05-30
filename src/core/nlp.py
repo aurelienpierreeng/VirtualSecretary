@@ -508,10 +508,11 @@ class LossLogger(CallbackAny2Vec):
 
 class Word2Vec(gensim.models.Word2Vec):
     @timeit()
-    def __init__(self, sentences: list[str], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5, min_count=5, sample=0.0005, tokenizer: Tokenizer = None):
+    def __init__(self, sentences: list[list[str]], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5, min_count=5, sample=0.0005, tokenizer: Tokenizer = None):
         """Train, re-train or retrieve an existing word2vec word embedding model
 
         Arguments:
+            sentences (list[list[str]]): the pre-tokenized training data. The outermost list is the sentences. Each sentence (innermost list) is a list of tokens.
             name (str): filename of the model to save and retrieve. If the model exists already, we automatically load it. Note that this will override the `vector_size` with the parameter defined in the saved model.
             vector_size (int): number of dimensions of the word vectors
             epochs (int): number of iterations of training for the machine learning. Small corpora need 2000 and more epochs. Increases the learning time.
@@ -525,18 +526,6 @@ class Word2Vec(gensim.models.Word2Vec):
         self.pathname = get_models_folder(name)
         self.vector_size = vector_size
         print(f"got {len(sentences)} pieces of text")
-
-        random.shuffle(sentences)
-        sentences = set(sentences)
-
-        #with Pool(processes=processes) as pool:
-        #    for item in pool.imap(self.tokenizer.tokenize_per_sentence, sentences, chunksize=128):
-        #        training.append(item)
-
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            sentences = executor.map(self.tokenizer.tokenize_per_sentence, sentences, chunksize=32)
-
-        print("tokenization done")
 
         # Flatten the first dimension of the list of list of list of strings :
         sentences = [sentence for text in sentences for sentence in text]
