@@ -158,7 +158,7 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, st
         unminified = re.sub(r"(\<\/(?:div|section|main|section|aside|header|footer|nav|time|article|h[1-6]|p|ol|ul|li|details|pre|dl|dt|dd|table|tr|th|td|blockquote|style|img|audio|video|iframe|embed|figure|canvas|fieldset|hr|caption|figcaption|address|form|noscript|select)\>)",
                             r"\1\n\n\n\n", content, timeout=30)
         # Same with inline-level tags, but only insert space, except for superscript and subscript
-        unminified = re.sub(r"(\<\/(?:a|span|time|abbr|b|i|em|strong|code|dfn|big|kbd|label|textarea|input|option|var|q|tt)\>)",
+        unminified = re.sub(r"(\<\/(?:a|span|time|sup|abbr|b|i|em|strong|code|dfn|big|kbd|label|textarea|input|option|var|q|tt)\>)",
                             r"\1 ", unminified, timeout=30)
 
         handler = BeautifulSoup(unminified, "html5lib")
@@ -178,7 +178,7 @@ def get_page_content(url: str, content: str = None) -> [BeautifulSoup | None, st
         # That will also make subsequent parsing slightly faster.
         # Remove blockquotes too because they can duplicate internal content of forum pages.
         # Basically, the goal is to get only the content body of the article/page.
-        for element in handler.select('pre, math, style, script, svg, img, picture, audio, video, iframe, embed, aside, nav, input, header, button, form, fieldset, footer, summary, dialog, textarea, select, option'):
+        for element in handler.select('pre, math, style, script, svg, img, picture, audio, video, iframe, embed, aside, nav, input, header, button, form, fieldset, footer, summary, dialog, textarea, select, option, sup'):
             element.decompose()
 
         # Remove inline style and useless attributes too
