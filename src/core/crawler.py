@@ -562,7 +562,7 @@ class Crawler:
         return False
 
 
-    def get_immediate_links(self, domain, default_lang, langs, category, contains_str, internal_links: str = "any") -> list[web_page]:
+    def get_immediate_links(self, domain, default_lang, langs, category, contains_str, internal_links: str = "any", mine_pdf = False) -> list[web_page]:
         """Follow internal and external links contained in a webpage only to one recursivity level,
         including PDF files and HTML pages. This is useful to index references docs linked from a page.
 
@@ -611,7 +611,7 @@ class Crawler:
                     category = "external"
 
                 time.sleep(self.delay)
-                self.futures.append(self.executor.submit(self.get_website_from_crawling, current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, _recursion_level=0, _mainthread=False))
+                self.futures.append(self.executor.submit(self.get_website_from_crawling, current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, mine_pdf=mine_pdf, _recursion_level=0, _mainthread=False))
 
 
     def get_website_from_crawling(self,
@@ -624,6 +624,7 @@ class Crawler:
                                   max_recurse_level: int = -1,
                                   category: str = None,
                                   restrict_section: bool = False,
+                                  mine_pdf: bool = False,
                                   _recursion_level: int = 0,
                                   _mainthread: bool = True) -> list[web_page]:
         """Recursively crawl all pages of a website from internal links found starting from the `child` page. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain.
@@ -638,6 +639,7 @@ class Crawler:
             max_recursion_level: this method will call itself recursively on each internal link found in the current page, starting from the `website/child` page. The `max_recursion_level` defines how many times it calls itself until it is stopped, if it is stopped. When set to `-1`, it stops when all the internal links have been crawled.
             category: arbitrary category or label set by user.
             restrict_section: set to `True` to limit crawling to the website section defined by `://website/child/*`. This is useful when indexing parts of very large websites when you are only interested in a small subset.
+            mine_pdf: set to `True` to aggressively try to crawl PDF linked on external HTML pages. This may increase RAM consumption dramatically.
             _recursion_level: __DON'T USE IT__. Everytime this method calls itself recursively, it increments this variable internally, and recursion stops when the level is equal to the `max_recurse_level`.
 
         Returns:
@@ -767,13 +769,14 @@ class Crawler:
                         #print("discarding")
                         pass
 
-            elif index:
+            elif index and mine_pdf:
                 # Scenario : we are on the terminating page. That's :
                 # case 1 : we are at the last stage of recursion.
                 # case 2 : we are on an external link, followed from sitemap page.
                 # Terminating page can be an index page for PDF files containing
                 # the actual content (ex: ArXiv). Do an exception : crawl one step further for PDFs only.
                 output += self._parse_internal_pdfs(index, domain, index_url, default_lang, category)
+                pass
 
         elif "pdf" in content_type and status:
             #print("got pdf")
@@ -809,6 +812,7 @@ class Crawler:
                                  category: str = None,
                                  contains_str: str | list[str] = "",
                                  internal_links: str = "any",
+                                 mine_pdf: bool = False,
                                  _recursion_level: int = 0) -> list[web_page]:
         """Recursively crawl all pages of a website from links found in a sitemap. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain. Sitemaps of sitemaps are followed recursively.
 
@@ -870,7 +874,7 @@ class Crawler:
         if _recursion_level == 0:
             self.internal_links = list(set(self.internal_links))
             random.shuffle(self.internal_links)
-            self.get_immediate_links(domain, default_lang, langs, category, contains_str, internal_links=internal_links)
+            self.get_immediate_links(domain, default_lang, langs, category, contains_str, internal_links=internal_links, mine_pdf=mine_pdf)
 
             # Get pages content from the pool
             concurrent.futures.wait(self.futures)
@@ -977,11 +981,18 @@ class Crawler:
                 pdfs.append(currentURL)
 
         pdfs = list(set(pdfs))
-        if len(pdfs) < 10:
-            # If more than 10 PDF (arbitrarily), that's a PDF repository.
+        if len(pdfs) < 3:
+            # If more than 2 PDF (arbitrarily), that's a PDF repository.
             # It's most likely not relevant. (Again: see ArXiv, only 2-3 PDFs top).
             for currentURL in pdfs:
-                output += self._parse_pdf_content(currentURL, default_lang, category=category)
+                content_type, status, new_url = get_content_type(currentURL)
                 self.crawled_URL.append(currentURL)
+
+                if new_url != currentURL:
+                    currentURL = new_url
+                    self.crawled_URL.append(new_url)
+
+                if status and "pdf" in content_type:
+                    output += self._parse_pdf_content(currentURL, default_lang, category=category)
 
         return output
