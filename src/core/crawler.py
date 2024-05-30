@@ -72,23 +72,22 @@ def relative_to_absolute(URL: str, domain: str, current_page: str) -> str:
     if current_page is None:
         raise TypeError("`current_page` should be defined")
 
-    """
-    if "://" in URL:
-        # already a fully-formed URL
-        test_url = URL
-    elif URL.startswith("#"):
-        # internal anchor. Nothing to do with that.
-        test_url = "://" + domain.strip("/") + "/"
-    elif URL.startswith("/"):
-        # relative path declared from root. Easy
-        test_url = "://" + domain.strip("/") + "/" + URL.lstrip("/")
-    elif current_page.endswith(URL):
-        # a wrong link is trying to recursively call itself.
-        test_url = "://" + domain.strip("/") + "/"
-    else:
-    """
     # relative path declared from current page. Hard
-    test_url = urljoin(current_page, URL)
+    try:
+        test_url = urljoin(current_page, URL)
+    except:
+        if "://" in URL:
+            # already a fully-formed URL
+            test_url = URL
+        elif URL.startswith("#"):
+            # internal anchor. Nothing to do with that.
+            test_url = "://" + domain.strip("/") + "/"
+        elif URL.startswith("/"):
+            # relative path declared from root. Easy
+            test_url = "://" + domain.strip("/") + "/" + URL.lstrip("/")
+        elif current_page.endswith(URL):
+            # a wrong link is trying to recursively call itself.
+            test_url = "://" + domain.strip("/") + "/"
 
     return test_url
 
