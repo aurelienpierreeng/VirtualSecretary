@@ -374,6 +374,27 @@ def get_date(html: BeautifulSoup):
     return date
 
 
+def get_lang(html: BeautifulSoup) -> str:
+    """Attempt to find the page language"""
+
+    def method_0(html):
+        return html.html["lang"] if "lang" in html.html and html.html["lang"] else None
+
+    def method_1(html):
+        test = html.find("meta", {"property": "og:locale", "content": True})
+        return test["content"] if test else None
+
+    lang = None
+    bag_of_methods = (method_0, method_1)
+
+    i = 0
+    while not lang and i < len(bag_of_methods):
+        lang = bag_of_methods[i](html)
+        i += 1
+
+    return lang
+
+
 def parse_page(page: BeautifulSoup, url: str,
                lang: str, markup: str | list[str],
                date: str = None,
@@ -413,6 +434,7 @@ def parse_page(page: BeautifulSoup, url: str,
         markup = ("div", {"id": "mw-content-text"})
 
     content = get_page_markup(page, markup=markup)
+    lang = get_lang(page)
 
     # Get title - easy : it's standard
     title = page.find("title")
