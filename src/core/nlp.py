@@ -14,6 +14,7 @@ import sys
 from multiprocessing import Pool, current_process
 from multiprocessing import Manager
 import concurrent
+import unicodedata as ud
 
 from collections import Counter
 
@@ -39,24 +40,60 @@ from .utils import get_models_folder, typography_undo, guess_date, clean_whitesp
 from .language import *
 from .crawler import web_page, get_web_pages_ram
 
+latin_letters = {}
 
-def guess_language(string: str) -> str:
+def _is_latin(uchr):
+    try:
+        return latin_letters[uchr]
+    except KeyError:
+        return latin_letters.setdefault(uchr, 'LATIN' in ud.name(uchr))
+
+
+def _roman_chars(unistr):
+    return [_is_latin(uchr) for uchr in unistr if uchr.isalpha()]
+
+
+def guess_language(string: str, threshold: float = 0.1) -> str | None:
     """Basic language guesser based on stopwords detection.
 
     Stopwords are the most common words of a language: for each language, we count how many stopwords we found and return the language having the most matches. It is accurate for paragraphs and long documents, not so much for short sentences.
 
+    Non-roman languages are explicitely unsupported: if more than 90% of the document characters are Greek, Cyrillic, Japanese, Chinese, etc., this returns `None`. Latin and Latin characters with accents and diacritics are supported. Strings with only numbers and punctuation return `None` too.
+
+    Params:
+        string: the string to analyze. Needs to be lowercased but to retain accents and diacritics. 
+        threshold: the minimum ratio of stopwords divided by total words in strings to be found to conclude on a language. For example, Japanese companies often have technical reports written in Japanese but still containing some English. If less than 10% of the words are known English stopwords, we could conclude it's not English.
+
     Returns:
-        2-letters ISO-something language code.
+        language name in English or `None`.
     """
 
+    # Number of roman characters
+    # Note : scientific papers written in English may contain some Greek in equations.
+    roman = sum(_roman_chars(string.lower()))
+    letters = [uchr for uchr in string if uchr.isalpha()]
+    if len(letters) == 0:
+        return None
+
+    if roman / len(letters) < 0.9:
+        return None
+
+    # else: we have mostly latin characters. Guess language
     tokenizer = RegexpTokenizer(r'\w+|[\d\.\,]+|\S+')
-    words = {token for token in tokenizer.tokenize(string)}
+    words = [token for token in tokenizer.tokenize(string.lower())]
     scores = []
     for lang in STOPWORDS_DICT:
-        scores.append(len(words.intersection(STOPWORDS_DICT[lang])))
+        scores.append(len(set(words).intersection(STOPWORDS_DICT[lang])))
 
     index_max = max(range(len(scores)), key=scores.__getitem__)
-    return list(STOPWORDS_DICT.keys())[index_max]
+    language = list(STOPWORDS_DICT.keys())[index_max]
+    value = scores[index_max]
+
+    if value > max(threshold * len(words), 1):
+        return language
+    else:
+        # The best language found still has a too-low ratio of use in string
+        return None
 
 class Tokenizer():
     characters_cleanup: dict[re.Pattern: str] = {
