@@ -33,19 +33,19 @@ class web_page(TypedDict):
     excerpt: str = ""
     """Shortened version of the content for search results previews. Typically provided as `description` meta tag by websites."""
 
-    h1: tuple[str] = {}
+    h1: list = []
     """Title of the post if any. There should be only one h1 per page, matching title, but some templates wrongly use h1 for section titles."""
 
-    h2: tuple[str] = {}
+    h2: list = []
     """Section titles if any"""
 
     lang: str = "en"
     """2-letters ISO code of the page language. Not used internally, it's important only if you need to use it in implementations."""
 
-    category: str | None = None
+    category: str = None
     """Arbitrary category, tag or label set by user, to be reused for example in AI document tagging."""
 
-    datetime: dt | None = None
+    datetime: dt = None
     """The page date as a `datetime.datetime` object directly usable"""
 
     length: int = 0
@@ -54,10 +54,10 @@ class web_page(TypedDict):
     parsed: str = ""
     """The normalized content of the page (lowercase, possibly converted to simple ASCII characters) for machine view over the content."""
 
-    tokenized: list[list[str]] = [[]]
+    tokenized: list = [[]]
     """List of parsed content text tokens, including metatokens, if needed, as a list of sentences, where sentences are themselves a list of string tokens."""
 
-    vectorized: np.ndarray[np.float32] = np.empty(0, dtype=np.float32)
+    vectorized: np.ndarray = np.empty(0, dtype=np.float32)
     """Precomputed vector representation of the tokenized content."""
 
 
@@ -69,8 +69,14 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
     """
     # Handle legacy code : h1 and h2 used to be sets, now they are lists
 
-    if "h1" in page and isinstance(page["h1"], str):
-        page["h1"] = {page["h1"]}
+    if "h1" in page:
+        if isinstance(page["h1"], str):
+            page["h1"] = [page["h1"]]
+        else:
+            page["h1"] = list(page["h1"])
+
+    if "h2" in page:
+        page["h2"] = list(page["h2"])
 
     # Handle legacy code : fields added recently
     if "vectorized" not in page:
@@ -103,6 +109,13 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
     page = {k: page[k] for k in web_page.__annotations__.keys()}
 
     return page
+
+
+def db_row_to_web_page(row: list[tuple[any]]) -> web_page:
+    """Turn an SQL extraction of a full row containing a `web_page`. Columns are matched to keys in the same order.
+    The database needs to be saved with columns in the right order, call [core.types.sanitize_web_page][] first"""
+    keys = web_page.__annotations__.keys()
+    return { k: row[i] for i, k in enumerate(keys) }
 
 
 # Can't add the following as methods of the web_page TypedDict
