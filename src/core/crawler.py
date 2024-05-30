@@ -3,6 +3,7 @@
 © 2023-2024 - Aurélien Pierre
 """
 
+import os
 import time
 import random
 import json
@@ -546,7 +547,7 @@ class Crawler:
         self.delay = delay
 
     def __enter__(self):
-        self.executor = concurrent.futures.ThreadPoolExecutor()
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count())
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
