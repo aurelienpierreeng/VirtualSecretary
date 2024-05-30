@@ -225,7 +225,58 @@ def get_pdf_content(url: str,
         except Exception as e:
             print(e)
 
-    if not (reader.outline and process_outline):
+    # Ugly code ahead.
+    # FIXME: make that mess more rigorous.
+    try:
+        # Need to protect reader.outline, which calls reader.get_outline()
+        # from exceptions. The web is full of shitty PDFs.
+        if reader.outline and process_outline:
+            # Save each outline section in a different document
+            results = []
+            chapters_titles, chapters_bounds = _get_pdf_outline(reader, title)
+
+            for i in range(0, len(chapters_bounds) - 1):
+                print(chapters_titles[i], chapters_bounds[i], chapters_bounds[i + 1])
+                n_start = chapters_bounds[i]
+                n_end = min(chapters_bounds[i + 1] + 1, len(reader.pages) - 1)
+                content = "\n".join([elem.extract_text() for elem in reader.pages[n_start:n_end]]).strip("\n ")
+                content = HYPHENIZED.sub("", content)
+
+                if content:
+                    # Make up a page anchor to make URLs to document sections unique
+                    # since that's what is used as key for dictionaries. Also, Chrome and Acrobat
+                    # will be able to open PDF files at the right page with this anchor.
+                    result = web_page(title=chapters_titles[i],
+                                        url=f"{url}#page={i + 1}",
+                                        date=date,
+                                        content=content,
+                                        excerpt=None,
+                                        h1=[],
+                                        h2=[],
+                                        lang=lang,
+                                        category=category)
+                    print(result)
+                    results.append(result)
+
+            return results
+
+        else:
+            # Whether or not text comes from OCR, if we save it in one chunk, do it now and exit.
+            content = HYPHENIZED.sub("", content)
+
+            if content:
+                result = web_page(title=title,
+                                    url=url,
+                                    date=date,
+                                    content=content,
+                                    excerpt=excerpt,
+                                    h1=[],
+                                    h2=[],
+                                    lang=lang,
+                                    category=category)
+                print(result)
+                return [result]
+    except:
         # Whether or not text comes from OCR, if we save it in one chunk, do it now and exit.
         content = HYPHENIZED.sub("", content)
 
@@ -242,34 +293,5 @@ def get_pdf_content(url: str,
             print(result)
             return [result]
 
-    else:
-        # Save each outline section in a different document
-        results = []
-        chapters_titles, chapters_bounds = _get_pdf_outline(reader, title)
-
-        for i in range(0, len(chapters_bounds) - 1):
-            print(chapters_titles[i], chapters_bounds[i], chapters_bounds[i + 1])
-            n_start = chapters_bounds[i]
-            n_end = min(chapters_bounds[i + 1] + 1, len(reader.pages) - 1)
-            content = "\n".join([elem.extract_text() for elem in reader.pages[n_start:n_end]]).strip("\n ")
-            content = HYPHENIZED.sub("", content)
-
-            if content:
-                # Make up a page anchor to make URLs to document sections unique
-                # since that's what is used as key for dictionaries. Also, Chrome and Acrobat
-                # will be able to open PDF files at the right page with this anchor.
-                result = web_page(title=chapters_titles[i],
-                                    url=f"{url}#page={i + 1}",
-                                    date=date,
-                                    content=content,
-                                    excerpt=None,
-                                    h1=[],
-                                    h2=[],
-                                    lang=lang,
-                                    category=category)
-                print(result)
-                results.append(result)
-
-        return results
 
     return []
