@@ -6,7 +6,6 @@ Supports automatic language detection, word tokenization and stemming for `'dani
 © 2023 - Aurélien Pierre
 """
 
-from enum import IntEnum
 import random
 import regex as re
 import os
@@ -23,17 +22,14 @@ from gensim.models.callbacks import CallbackAny2Vec
 
 import joblib
 import pickle
+import sqlite3
 
 import numpy as np
-
 
 import nltk
 from nltk.tokenize import RegexpTokenizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
-from scipy.signal import convolve2d
-
-from rank_bm25 import BM25Plus
 
 from .patterns import *
 from .utils import get_models_folder, typography_undo, guess_date, clean_whitespaces, timeit, get_available_ram, get_script_ram
@@ -455,28 +451,6 @@ class Tokenizer():
         self.stopwords = stopwords
 
 
-def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 512) -> list[web_page]:
-    num_cpu = os.cpu_count()
-
-    # Hopefully divide the workload uniformingly across cores
-    # keeping in mind some docs are much longer/harder than others.
-    random.shuffle(documents)
-
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
-        # Cleanup redundant and superfluous whitespaces in content
-        parsable = [str(item["content"]) for item in documents]
-        content = executor.map(clean_whitespaces, parsable, chunksize=chunksize)
-        for i, item in enumerate(content):
-            documents[i]["content"] = item
-
-        # Normalize text
-        parsable = [item["title"] + "\n\n" + item["content"] for item in documents]
-        content = executor.map(tokenizer.normalize_text, parsable, chunksize=chunksize)
-        for i, item in enumerate(content):
-            documents[i]["parsed"] = item
-
-    return documents
-
 class Data():
     def __init__(self, text: str, label: str):
         """Represent an item of tagged training data.
@@ -547,7 +521,7 @@ class Word2Vec(gensim.models.Word2Vec):
         del counts
 
         loss_logger = LossLogger()
-        super().__init__(sentences, vector_size=vector_size, window=window, min_count=min_count, epochs=epochs, ns_exponent=0.75, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=0, max_final_vocab=100000)
+        super().__init__(sentences, vector_size=vector_size, window=window, min_count=min_count, epochs=epochs, ns_exponent=0.75, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=0, max_final_vocab=100000, hs=1, negative=0, alpha=0.020)
         print("training done")
 
         self.save(self.pathname)
@@ -784,7 +758,7 @@ class Classifier(nltk.classify.SklearnClassifier):
         print("accuracy against train set:", nltk.classify.accuracy(self, train_set))
 
         # We don't need the heavy syn1neg dictionnary of Word2Vec
-        del self.word2vec.syn1neg
+        # del self.word2vec.syn1neg
 
         # Save the model to a reusable object
         joblib.dump(self, get_models_folder(name + ".joblib"))
@@ -828,451 +802,86 @@ class Classifier(nltk.classify.SklearnClassifier):
         # Finally, return label and probability only for the max proba of each element
         return (max(output, key=output.get), max(output.values()))
 
-class search_methods(IntEnum):
-    """Search methods available"""
-    AI = 1
-    FUZZY = 2
-    GREP = 3
-
-class Indexer():
-    @timeit()
-    def __init__(self,
-                 data_set: list[web_page],
-                 name: str,
-                 word2vec: Word2Vec,
-                 strip_collocations: bool = False):
-        """Search engine based on word similarity.
-
-        Arguments:
-            training_set (list): list of Data elements. If the list is empty, it will try to find a pre-trained model matching the `path` name.
-            path : path to save the trained model for reuse, as a Python joblib.
-            name (str): name under which the model will be saved for la ter reuse.
-            word2vec (Word2Vec): the instance of word embedding model.
-            strip_collocations: remove the matrix of collocations in documents, which is the list of word tokens represented by their index in the
-            word2vec dictionnary. It is used for [core.nlp.Indexer.find_query_patterns][], which is optional and significatively slower
-            (but not significatively better), so if you don't plan on using it, removing collocations saves some RAM and I/O.
-
-        """
-        if word2vec:
-            self.word2vec = word2vec
-        else:
-            raise ValueError("wv needs to be a dictionnary-like map")
-
-        # Shuffle the dataset prior to multithreading to even the probability that
-        # one process hangs significantly longer than the others
-        random.shuffle(data_set)
 
-        used_ram = get_web_pages_ram(data_set)
-        n_proc = min(get_available_ram() // used_ram, os.cpu_count())
-
-        print(f"Init. Got {len(data_set)} items.")
-
-        # The database of web pages with limited features.
-        with Pool(processes=n_proc) as pool:
-            for i, item in enumerate(pool.imap(self.create_index, data_set, chunksize=512)):
-                data_set[i] = item
-
-        self.index = {post["url"]: post for post in data_set}
-        del data_set # gargage collection to spare RAM
-
-        print("index built")
-
-        # List of tokens/meta-tokens and vector translation for each document
-        # Note: each core process will get its own copy of the data to crunch
-
-        # First step of processing relying on the current instance.
-        # We can't parallelize it because the memory penalty of duplicating current instance
-        # times cores used makes it too RAM-hungry.
-        tokenizer_content = [self.prepare_content(post) for post in self.index.values()]
-        used_ram = sys.getsizeof(tokenizer_content)
-        for item in tokenizer_content:
-            used_ram += sys.getsizeof(item)
-
-        # Second step of processing, more RAM-friendly. Parallelize then.
-        print("RAM footprint:", used_ram)
-        n_proc = min(get_available_ram() // used_ram, os.cpu_count())
-        print("Processes used:", n_proc)
-
-        docs = []
-        #with Pool(processes=n_proc) as pool:
-        #    docs = pool.starmap(self.tokenize_parallel, tokenizer_content, chunksize=512)
-
-        with concurrent.futures.ProcessPoolExecutor(n_proc) as executor:
-            docs = list(executor.map(self.tokenize_parallel, tokenizer_content, [self.word2vec for i in range(len(tokenizer_content))], chunksize=32))
-
-        self.vectors_all = np.array([doc[1] for doc in docs], dtype=np.float32)
-        """Store the list of document-wise vector embeddings, where the vector represents
-        the (un-normalized) centroid of tokens vectors contained the document.
-
-        Documents are on the first axis.
-        """
-
-        self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
-        """Store the list of L2 norms for each document vector representation."""
-
-        self.collocations = None if strip_collocations else [doc[2] for doc in docs]
-        """Store the list of document tokens encoded by their index number in the
-        Word2Vec vocabulary. Unknown tokens are discarded. This gives a symbolic
-        and more compact representation of tokens collocations in documents (32 bits/token).
-
-        Documents are on the first axis.
-        """
-
-        self.keys_as_list = np.array(list(self.index.keys()))
-
-        print("vectorization done")
-
-        # Values from https://www.cs.otago.ac.nz/homepages/andrew/papers/2014-2.pdf
-        self.ranker = BM25Plus([doc[0] for doc in docs], k1=1.7, b=0.3, delta=0.65)
-
-        # Garbage collection
-        del docs
-        del self.word2vec.syn1neg # From there we only need the input embedding matrix
-        for post in self.index.values():
-            del post["parsed"]
-
-        self.save(name)
-
-
-    def save(self, name: str):
-        # Save the model to a reusable object
-        joblib.dump(self, get_models_folder(name + ".joblib"), compress='lz4', protocol=pickle.HIGHEST_PROTOCOL)
-
-
-    @staticmethod
-    def create_index(post: dict):
-        if not post["excerpt"] or len(post["excerpt"]) < 800:
-            post["excerpt"] = str(post["content"])[0:min(len(post["content"]), 800)]
-        else:
-            post["excerpt"] = str(post["excerpt"])
-
-        if "datetime" not in post:
-            # Reuse data set by crawler.Deduplicator if available
-            post["datetime"] = guess_date(str(post["date"])) if post["date"] else None
-
-        post["category"] = str(post["category"]) if "category" in post else None
-        post["title"] = str(post["title"])
-        return post
-
-
-    def prepare_content(self, post: web_page) -> list[str]:
-        content = self.word2vec.tokenizer.normalize_text(post["title"])
-
-        if post["h1"]:
-            content += "\n\n" + self.word2vec.tokenizer.normalize_text("\n\n".join(list(post["h1"])))
-
-        if "parsed" not in post:
-            # Reuse data set by crawler.Deduplicator if available
-            post["content"] = clean_whitespaces(str(post["content"]))
-            post["parsed"] = self.word2vec.tokenizer.normalize_text(post["content"])
-
-        content += "\n\n" + post["parsed"]
-
-        return content
-
-    @staticmethod
-    def tokenize_parallel(content: str, word2vec: Word2Vec) -> list[str]:
-        tokens = word2vec.tokenizer.tokenize_document(content, meta_tokens=True)
-        features = word2vec.get_features(tokens, embed="OUT")
-        indices = word2vec.tokens_to_indices(tokens)
-        return (tokens, features, indices)
-
-
-    @classmethod
-    def load(cls, name: str):
-        """Load an existing trained model by its name from the `../models` folder."""
-        try:
-            model = joblib.load(get_models_folder(name) + ".joblib")
-            if isinstance(model, Indexer):
-                return model
-        except FileNotFoundError:
-            model = joblib.load(get_models_folder(name) + ".joblib.bz2")
-            if isinstance(model, Indexer):
-                return model
-            else:
-                raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
-
-
-    def tokenize_query(self, query:str, language: str = None, meta_tokens: bool = True) -> list[str]:
-        return self.word2vec.tokenizer.tokenize_document(query, language=language, meta_tokens=meta_tokens)
-
-
-    def vectorize_query(self, tokenized_query: list[str]) -> tuple[np.ndarray, float, list[str]]:
-        """Prepare a text search query: cleanup, tokenize and get the centroid vector.
-
-        Returns:
-            tuple[vector, norm, tokens]
-        """
-
-        if not tokenized_query:
-            return np.array([]), 0., []
-
-        # Get the the centroid of the word embedding vector
-        vector = self.word2vec.get_features(tokenized_query, embed="IN")
-        norm = np.linalg.norm(vector)
-        norm = 1.0 if norm == 0.0 else norm
-
-        return vector, norm, tokenized_query
-
-
-    @timeit()
-    def find_query_pattern(self,
-                           indexed_query: np.ndarray[np.int32],
-                           documents: list[tuple[int, str, float]],
-                           fast=False) -> np.ndarray[np.float32]:
-        """The rankers methods treat documents as continuous bag of words (CBOW).
-        As such, they are good for topic extraction (aboutness), but they do not care about words colocations
-        and ordering, therefore they loose syntactical meaning.
-
-        This method adds an additional layer of detection using convolution filters that
-        will detect word sequences, direct or reversed, and correct the similarity factor set by the
-        other ranking methods using that collocation factor.
-
-        Its major drawback is to be 100 to 500 times slower than the other rankers, due to 2D convolutions,
-        which means it needs to run an a subset of the search index, after previous methods were tried,
-        to refine a previous ranking.
-
-        Parameters:
-            indexed_query: the search query tokens translated into their integer indices in the Word2Vec vocabulary.
-            Use [core.nlp.Word2Vec.tokens_to_indices][] to convert the tokenized query.
-            documents: a symbolic list of documents, as a `(index, url, similarity)` tuple.
-            fast: if `True`, uses a simplified variant that is 6 times faster and only uses local averages.
-            Results from this method are rather inaccurate, for example, for a request like `token_1 token_2`,
-            sentences repeating `token_1` twice will score as much as sentences containing the desired sequence
-            `token_1 token_2`. If `False`, use the convolutional filter.
-
-        References:
-            Text Matching as Image Recognition, Liang Pang, Yanyan Lan, Jiafeng Guo, Jun Xu, Shengxian Wan, and Xueqi Cheng. (2016).
-            https://arxiv.org/pdf/1602.06359.pdf
-
-        """
-        if not fast:
-            kernel_direct = np.eye(indexed_query.size, dtype=np.float32) / indexed_query.size
-            kernel_reverse = np.rot90(np.eye(3, dtype=np.float32)) / 3.
-
-        kernel_query = np.ones(indexed_query.shape, dtype=np.float32) / indexed_query.size
-
-        results = []
-
-        for doc in documents:
-            index = doc[0]
-            url = doc[1]
-            similarity = doc[2]
-
-            collocations = self.collocations[index]
-            if collocations.size > indexed_query.size:
-                if fast:
-                    # Fast variant of the following method. (6 times faster)
-                    # Looses info about tokens order and yields disputable results regarding relevance.
-                    interaction = (collocations[:, np.newaxis] == indexed_query).any(axis=1) / indexed_query.size
-                else:
-                    # Build the interaction matrix: True where doc[i] == indexed_query[j]
-                    # Loosely inspired by https://arxiv.org/pdf/1610.08136.pdf
-                    interaction = np.equal(collocations[:, np.newaxis], indexed_query)
-
-                    # Find permutations of tokens, by packs of 3.
-                    # Inspired by https://arxiv.org/pdf/1602.06359.pdf
-                    direct = convolve2d(interaction, kernel_direct, mode='same', boundary='circular', fillvalue=0)
-                    reverse = convolve2d(interaction, kernel_reverse, mode='same', boundary='circular', fillvalue=0)
-
-                    # Sum both filters output and then average over the query direction
-                    interaction = (direct + reverse).sum(axis=1) / (2. * indexed_query.size)
-
-                # Moving average along the doc direction
-                scores = np.convolve(interaction, kernel_query, mode="same")
-                max_score = np.max(scores)
-
-                results.append((index, url, similarity + max_score))
-
-            else:
-                results.append(doc)
-
-        return results
-
-    @timeit()
-    def rank_grep(self, query: re.Pattern|str) -> np.ndarray:
-        if not (isinstance(query, str) or isinstance(query, re.Pattern)):
-            raise ValueError("Wrong query type (%s) for GREP ranking method. Should be string or regular expression pattern" % type(query))
-
-        results = np.array([len(re.findall(query, document["content"], timeout=60))
-                            for document in self.index.values()], dtype=np.float64)
-        max_rank = np.amax(results)
-        if max_rank > 0.: results /= max_rank
-        return results
-
-
-    @timeit()
-    def rank_fuzzy(self, tokens: list[str]) -> np.ndarray:
-        if not isinstance(tokens, list):
-            raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(tokens))
-
-        return self.ranker.get_scores(tokens)
-
-    @timeit()
-    def rank_ai(self, query: tuple, fast: bool = False) -> np.ndarray:
-        if not isinstance(query, tuple):
-            raise ValueError("Wrong query type (%s) for AI ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
-
-        vector = query[0]
-        norm = query[1]
-        tokens = query[2]
-
-        if fast:
-            # The following seems very close to the next in terms of results.
-            # Experimentally, I saw very little difference in rankings, at least not in the first results.
-            # The by-the-book is perhaps more immune to keywords stuffing and more sensitive to structure.
-            # Differences appear in the tail of the ranking, mostly.
-            return np.nan_to_num(np.dot(self.vectors_all, vector) / (norm * self.all_norms))
-        else:
-            # This is the by-the-book dual embedding space as defined in
-            # https://arxiv.org/pdf/1602.01137.pdf
-            aggregate = np.zeros(self.all_norms.shape, dtype=np.float32)
-            n = 0
-
-            for token in tokens:
-                # Compute the cosine similarity of centroids between query and documents,
-                vector = self.word2vec.get_wordvec(token, embed="IN", normalize=False)
-                if vector is not None:
-                    norm = np.linalg.norm(vector)
-                    aggregate += np.nan_to_num(np.dot(self.vectors_all, vector) / (norm * self.all_norms))
-                    n += 1
-
-            return aggregate / n
-
-
-    def rank(self, query: str|tuple|re.Pattern, method: search_methods,
-             filter_callback: callable = None, pattern: str | re.Pattern = None, n_results: int = 500, fine_search: bool = False,
-             **kargs) -> list[tuple[str, float]]:
-        """Apply a label on a post based on the trained model.
-
-        Arguments:
-            query (str | tuple | re.Pattern): the query to search. `re.Pattern` is available only with the `grep` method.
-            method (str): `ai`, `fuzzy` or `grep`. `ai` use word embedding and meta-tokens with dual-embedding space, `fuzzy` uses meta-tokens with BM25Okapi stats model, `grep` uses direct string and regex search.
-            filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker. Its first argument will be a [core.crawler.web_page][] object from the list [core.nlp.Indexer.index][], the next arguments will be passed through from `**kargs` directly.
-            pattern: optional pattern/text search to add on top of AI search
-            n_results: number of results to retain
-            fine_search: optionally refine the search using a 2D interaction matrix. See [1]
-            **kargs: arguments passed as-is to the `filter_callback`
-
-        Returns:
-            list: the list of best-matching results as (url, similarity) tuples.
-
-        [1]: https://eng.aurelienpierre.com/2024/03/designing-an-ai-search-engine-from-scratch-in-the-2020s/#accounting-for-words-patterns
-        """
-        # Note : match needs at least Python 3.10
-        match method:
-            case search_methods.AI:
-                # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
-                # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
-                # This can yield negative results that are still "valid". Offset similarity score by one.
-                aggregates = 1. + 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])
-            case search_methods.FUZZY:
-                aggregates = self.rank_fuzzy(query)
-            case search_methods.GREP:
-                aggregates = self.rank_grep(query)
-            case _:
-                raise ValueError("Unknown ranking method (%s)" % method)
-
-        ## Filters : there is a catch
-        ## We set the similarity coeff to 0 for documents that DON'T match the filter criteria.
-        ## We don't actually remove those elements.
-        ## Given that we take the 500 best docs below, it is equivalent to removing them if enough close results pop up.
-        ## If we don't have enough close results, it's just a desperate attempt to return something, bypassing filters.
-
-        # Filter out documents based on URL filter if provided
-        if filter_callback:
-            # Create a boolean vector
-            urls_match = np.array([filter_callback(page, **kargs) for page in self.index.values()])
-            aggregates *= urls_match
-
-        # Filter out documents content NOT matching the pattern
-        if pattern:
-            content_match = np.array([len(re.findall(pattern, item["content"], timeout=5)) > 0 for item in self.index.values()])
-            aggregates *= content_match
-
-        # Sort out whatever remains by similarity coeff and keep only the 500 first elements
-        best_indices = np.argpartition(aggregates, -n_results)[-n_results:]
-        best_elems = self.keys_as_list[best_indices]
-        best_similarity = aggregates[best_indices]
-
-        if method == search_methods.AI:
-            # Offset back the similarity coeff
-            best_similarity -= 1.
-
-        ranked = zip(best_indices, best_elems, best_similarity)
-
-        # Now is time for the really heavy stuff: find tokens in sequential order
-        if self.collocations and isinstance(query, tuple) and isinstance(query[2], list) and len(query[2]) > 2 and fine_search:
-            indexed_query = self.word2vec.tokens_to_indices(query[2])
-            ranked = self.find_query_pattern(indexed_query, ranked)
-
-        return sorted([(url, similarity) for index, url, similarity in ranked if similarity > 0.], key=lambda x:x[1], reverse=True)
-
-
-    def get_page(self, url:str) -> dict | None:
-        """Retrieve the requested page data object from the index by url.
-
-        Warning:
-            For performance's sake, it doesn't check if the url exists in the index.
-            This is no issue if you feed it the output of `self.rank()` but mind that otherwise.
-        """
-        if url in self.index:
-            return self.index[url]
-        else:
-            return None
-
-
-    def get_related(self, post: tuple[np.ndarray, float, list[str]], n: int = 15, k: int = 5) -> list:
-        """Get the n closest keywords from the query."""
-
-        if not isinstance(post, tuple):
-            raise TypeError("The argument should be either a (vector, norm) tuple or a string")
-
-        vector = post[0]
-        tokens = post[2]
-
-        # wv.similar_by_vector returns a list of (word, distance) tuples
-        from_query = [elem for elem in self.word2vec.wv.similar_by_vector(vector, topn=n)]
-        from_tokens = [elem for token in tokens for elem in self.word2vec.wv.most_similar(token, topn=k)]
-
-        # sort by relevance
-        related = sorted(from_query + from_tokens, key=lambda x:x[1], reverse=True)
-
-        return list(set([elem[0] for elem in related if elem[0] not in tokens]))
-
-
-    def filter_items(self, callback:callable, *args, **kwargs):
-        """Allow to filter out the items contains in the indexer, using the callback function.
-        This can be used to create a subset of the indexer.
-
-        `callback` will be called in loop on each page item of the indexer and will receive the following arguments:
-
-            - `self`, the current [core.nlp.Indexer][] object,
-            - `self.index` page item values (`dict` resembling [core.crawler.web_page][] but with additional fields),
-            - `self.vectors_all` vector (1D `numpy.ndarray`)
-            - `self.all_norms` norm of the previous vector (32 bits float scalar),
-            - `self.collocations` list of tokens represented by their integer index (list of 32 bits `int`)
-            - `*args`,
-            - `**kwargs`.
-
-        `callback` needs to return `True` if the page is to be included in the resulting index, `False` if it is to be discarded.
-
-        Once the `callback` loop exits, all members of the current instance are updated. You may want to call
-        [core.nlp.Indexer.save][] next, to save the result to disk.
-        """
-
-        print(f"starting with {len(self.index)} items")
-        # TODO: handle the case where collocations have been removed for RAM
-        pack = [(page, vector, norm, collocations)
-                for page, vector, norm, collocations
-                in zip(self.index.values(), self.vectors_all, self.all_norms, self.collocations)
-                if callback(self, page, vector, norm, collocations, *args, **kwargs)]
-
-        print(f"ending with {len(pack)} items")
-        self.index = { page[0]["url"]: page[0] for page in pack }
-        self.keys_as_list = np.array(list(self.index.keys()))
-        self.vectors_all = np.array([page[1] for page in pack], dtype=np.float32)
-        self.all_norms = np.array([page[2] for page in pack], dtype=np.float32)
-        self.collocations = [page[3] for page in pack]
-        self.ranker =  BM25Plus([[self.word2vec.wv.index_to_key[i] for i in page]
-                                  for page in self.collocations], k1=1.7, b=0.3, delta=0.65)
+@timeit()
+def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 256) -> list[web_page]:
+    num_cpu = os.cpu_count()
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
+        # Cleanup redundant and superfluous whitespaces in content
+        parsable = [str(item["content"]) for item in documents]
+        content = executor.map(clean_whitespaces, parsable, chunksize=chunksize)
+        for i, item in enumerate(content):
+            documents[i]["content"] = item
+
+        # Normalize text
+        parsable = [str(item["title"]) + "\n\n" + str(item["content"]) for item in documents]
+        content = executor.map(tokenizer.normalize_text, parsable, chunksize=chunksize)
+        for i, item in enumerate(content):
+            documents[i]["parsed"] = item
+
+        del content
+        del parsable
+
+    return documents
+
+
+@timeit()
+def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 256):
+    """Tokenize a list of `web_pages` in parallel, in a RAM-friendly way.
+
+    Populate the `tokens` key to `web_page` elements (taken from a list), containing the tokenized
+    parsed content as a list of lists (each sentence is a list of tokens, the document is a list of sentences).
+    Tokens are taken from the concatenated `web_page` `title` and `parsed` values, where `parsed` is the
+    parsed `content`, pre-normalized through the tokenizer method.
+
+    The list is processed in parallel, broken down in chunks, saved temporarily and individually to disk cache.
+    You need to ensure you have enough space on your disk. The function doesn't check for it.
+    """
+    num_cpu = os.cpu_count()
+    cursor = db.execute('SELECT rowid, parsed FROM pages')
+    batch_size = num_cpu * chunksize
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+
+            ids = [item[0] for item in batch]
+            parsable = [item[1] for item in batch]
+            tokens = executor.map(tokenizer.tokenize_per_sentence, parsable, chunksize=chunksize)
+            del parsable
+
+            db.executemany('UPDATE pages SET tokenized=? WHERE rowid=?', list(zip(tokens, ids)))
+            db.commit()
+
+            del ids
+            del tokens
+
+
+@timeit()
+def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int = 256):
+    num_cpu = os.cpu_count()
+    cursor = db.execute('SELECT rowid, tokenized FROM pages')
+    batch_size = num_cpu * chunksize
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+
+            ids = [item[0] for item in batch]
+            parsable = [[token for sentence in item[1] for token in sentence] for item in batch]
+            vectors = executor.map(word2vec.get_features, parsable, ["OUT" for i in ids], chunksize=chunksize)
+            del parsable
+
+            db.executemany('UPDATE pages SET vectorized=? WHERE rowid=?', list(zip(vectors, ids)))
+            db.commit()
+
+            del ids
+            del vectors
+
+            #TODO:
+            #indices = word2vec.tokens_to_indices(tokens)
