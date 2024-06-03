@@ -8,7 +8,6 @@ import sqlite3
 import io
 import numpy as np
 
-from itertools import batched
 import pickle
 import json
 from datetime import datetime
@@ -69,7 +68,7 @@ def create_db(name: str) -> sqlite3.Connection:
           columns.append(f"{key} LIST")
 
   cursor.execute("DROP TABLE IF EXISTS pages")
-  cursor.execute(f"CREATE TABLE pages({", ".join(columns)})")
+  cursor.execute(f"CREATE TABLE pages({', '.join(columns)})")
   print(cursor.execute("pragma table_info(pages)").fetchall())
   return connector
 
@@ -95,6 +94,11 @@ def populate_db(db: sqlite3.Connection, pages: list[web_page]):
   to be handled as `BLOB` by SQLite. Proper decoding care will be needed when fetching
   DB entries.
   """
+
+  # Batched is part of itertools from Python 3.12.
+  # Import it here so older Python versions that run online (and don't need to populate DB)
+  # can still import this module.
+  from itertools import batched
 
   # Process by batches of 512 records for good memory vs. speed trade-off
   pages_tuple = batched([tuple(sanitize_web_page(elem, to_db=True).values()) for elem in pages], 512)
