@@ -53,16 +53,15 @@ def _roman_chars(unistr):
     return [_is_latin(uchr) for uchr in unistr if uchr.isalpha()]
 
 
-def guess_language(string: str, threshold: float = 0.1) -> str | None:
+def guess_language(string: str, stopwords_threshold: float = 0.05, letters_threshold: float = 0.8) -> str | None:
     """Basic language guesser based on stopwords detection.
 
     Stopwords are the most common words of a language: for each language, we count how many stopwords we found and return the language having the most matches. It is accurate for paragraphs and long documents, not so much for short sentences.
 
-    Non-roman languages are explicitely unsupported: if more than 90% of the document characters are Greek, Cyrillic, Japanese, Chinese, etc., this returns `None`. Latin and Latin characters with accents and diacritics are supported. Strings with only numbers and punctuation return `None` too.
-
     Params:
-        string: the string to analyze. Needs to be lowercased but to retain accents and diacritics. 
-        threshold: the minimum ratio of stopwords divided by total words in strings to be found to conclude on a language. For example, Japanese companies often have technical reports written in Japanese but still containing some English. If less than 10% of the words are known English stopwords, we could conclude it's not English.
+        string: the string to analyze. Needs to be lowercased but to retain accents and diacritics.
+        stopwords_threshold: the minimum ratio of stopwords divided by total words in strings to be found to conclude on a language. For example, Japanese companies often have technical reports written in Japanese but still containing some English. If less than 5% of the words are known English stopwords, we could conclude it's not English.
+        letters_threshold: the minimum ratio of roman (latin) characters among all characters (including numbers, symbols and non-latin alphabets) to be found to conclude on a language.
 
     Returns:
         language name in English or `None`.
@@ -75,7 +74,7 @@ def guess_language(string: str, threshold: float = 0.1) -> str | None:
     if len(letters) == 0:
         return None
 
-    if roman / len(letters) < 0.9:
+    if roman / len(letters) < letters_threshold:
         return None
 
     # else: we have mostly latin characters. Guess language
@@ -89,7 +88,7 @@ def guess_language(string: str, threshold: float = 0.1) -> str | None:
     language = list(STOPWORDS_DICT.keys())[index_max]
     value = scores[index_max]
 
-    if value > max(threshold * len(words), 1):
+    if value > max(stopwords_threshold * len(words), 1):
         return language
     else:
         # The best language found still has a too-low ratio of use in string
