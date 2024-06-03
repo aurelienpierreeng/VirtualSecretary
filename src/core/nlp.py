@@ -658,6 +658,52 @@ class Word2Vec(gensim.models.Word2Vec):
                          if token in self.wv], dtype=np.int32)
 
 
+class Doc2Vec(gensim.models.doc2vec.Doc2Vec):
+    @timeit()
+    def __init__(self,
+                 training_set: list[web_page],
+                 tags_list: list[any],
+                 tokenizer: Tokenizer = None,
+                 name: str = "doc2vec",
+                 ):
+
+        if tokenizer is not None:
+            self.tokenizer = tokenizer
+        else:
+            self.tokenizer = Tokenizer()
+
+        sentences = [post["parsed"]
+                     if "parsed" in post else self.tokenizer.normalize_text(clean_whitespaces(post["content"]))
+                     for post in training_set]
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            sentences = executor.map(self.tokenizer.tokenize_document, sentences, chunksize=32)
+
+        train_corpus = [gensim.models.doc2vec.TaggedDocument(tokens, tags)
+                        for tokens, tags in zip(sentences, tags_list)]
+
+        super().__init__(vector_size=512, epochs=20, window=7, min_count=10, sample=0.00001, dm_concat=1)
+
+        self.build_vocab(train_corpus)
+        print("vocab built")
+
+        self.train(train_corpus, total_examples=self.corpus_count, epochs=self.epochs)
+        print("model trained")
+
+        self.save(get_models_folder(name))
+        print("model saved")
+
+        ranks = []
+        for doc_id in range(len(train_corpus)):
+            inferred_vector = self.infer_vector(train_corpus[doc_id].words, epochs=20)
+            sims = self.dv.most_similar([inferred_vector], topn=len(self.dv))
+            rank = [docid for docid, sim in sims].index(doc_id)
+            ranks.append(rank)
+
+        counter = Counter(ranks)
+        print(counter)
+
+
 class Classifier(nltk.classify.SklearnClassifier):
     def __init__(self,
                  training_set: list[Data],
