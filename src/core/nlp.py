@@ -601,7 +601,16 @@ class Word2Vec(gensim.models.Word2Vec):
         # The word or its correction are found in DB
         if x is not None:
             if embed == "OUT":
-                vec = self.syn1neg[self.wv.key_to_index[x]].astype(np.float32)
+                if hasattr(self, 'syn1'):
+                    # Model was trained with hierarchical softmax
+                    embedding = self.syn1
+                elif hasattr(self, 'syn1neg'):
+                    # Model was trained with negative sampling
+                    embedding = self.syn1neg
+                else:
+                    raise RuntimeError("No output embedding matrix found in the model")
+
+                vec = embedding[self.wv.key_to_index[x]].astype(np.float32)
             elif embed == "IN":
                 vec = self.wv[x].astype(np.float32)
             else:
