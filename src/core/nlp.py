@@ -302,7 +302,7 @@ class Tokenizer():
             tokens (list[str]): the list of normalized tokens.
         """
         tokens = [self.normalize_token(token, language, meta_tokens=meta_tokens)
-                  for token in nltk.word_tokenize(str(sentence), language=language)]
+                  for token in nltk.word_tokenize(str(sentence), language=language or "english")]
         tokens = [item for item in tokens if isinstance(item, str)]
 
         if len(tokens) == 0:
@@ -319,7 +319,7 @@ class Tokenizer():
             text (str): the paragraph to break into sentences.
             language (str): the language of the text, used to select what pre-trained model will be used.
         """
-        return nltk.sent_tokenize(str(document), language=language)
+        return nltk.sent_tokenize(str(document), language=language or "english")
 
 
     def tokenize_document(self, document:str, language:str = None, meta_tokens: bool = True) -> list[str]:
