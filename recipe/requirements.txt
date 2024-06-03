@@ -32,3 +32,4 @@ levenshtein
 scipy
 numba
 lz4
+psutil
