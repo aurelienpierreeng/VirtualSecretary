@@ -563,7 +563,7 @@ class Crawler:
         return False
 
 
-    def get_immediate_links(self, domain, default_lang, langs, category, contains_str, internal_links: str = "any", mine_pdf = False) -> list[web_page]:
+    def get_immediate_links(self, domain, default_lang, langs, category, contains_str, internal_links: str = "any", mine_pdf = False) -> None:
         """Follow internal and external links contained in a webpage only to one recursivity level,
         including PDF files and HTML pages. This is useful to index references docs linked from a page.
 
@@ -573,16 +573,21 @@ class Crawler:
                 - `internal`: follow and include links found in page only if they point to the same domain as the current page,
                 - `external`: follow and include links found in page only if they point to a different domain than the current page,
                 - `ignore`: don't follow internal links
+
+        Returns:
+            This method returns nothing but adds asynchronous crawling jobs on the [][crawler.Crawler.futures] stack.
         """
         output = []
         if internal_links == "ignore":
             return output
 
-        for nextURL in set(self.internal_links):
-            if nextURL in self.crawled_URL or self.discard_link(nextURL):
-                continue
+        url_set = [url for url in set(self.internal_links).difference(set(self.crawled_URL))
+                   if not self.discard_link(url)]
 
-            current_address = patterns.URL_PATTERN.search(nextURL)
+        random.shuffle(url_set)
+
+        for nextURL in url_set:
+            current_address = patterns.URL_PATTERN.search(nextURL, concurrent=True)
             if not current_address:
                 continue
 
@@ -604,7 +609,7 @@ class Crawler:
             else:
                 raise ValueError("Internal link following mode %s is unknown" % internal_links)
 
-            if nextURL not in self.crawled_URL and include:
+            if include:
                 if domain not in current_domain:
                     # If the current URL doesn't belong to the same domain as the parent,
                     # we don't pass on the category of the parent page
@@ -726,11 +731,12 @@ class Crawler:
 
             # Follow internal links whether or not this page was mined
             if index and _recursion_level + 1 != max_recurse_level:
-                for url in index.links:
-                    currentURL = relative_to_absolute(url, domain, index_url)
-                    if currentURL in self.crawled_URL or self.discard_link(currentURL):
-                        continue
+                links = [relative_to_absolute(url, domain, index_url) for url in index.links]
+                links = [url for url in set(links).difference(set(self.crawled_URL))
+                         if not self.discard_link(url)]
+                random.shuffle(links)
 
+                for currentURL in links:
                     current_address = patterns.URL_PATTERN.search(currentURL)
                     if not current_address:
                         continue
