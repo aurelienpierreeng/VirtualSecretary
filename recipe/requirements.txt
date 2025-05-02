@@ -6,9 +6,12 @@ py3DNS
 dnspython
 dkimpy
 pyspf
+numpy==1.26.4
+scipy==1.13.1
+numba==0.61.0
+gensim==4.3.3
 nltk
 scikit-learn
-gensim
 beautifulsoup4
 pandas
 rank-bm25
@@ -17,7 +20,7 @@ pyspellchecker
 PyPDF
 pycryptodome
 pdf2image
-Pillow
+pillow==10.4.0
 opencv-python
 pytesseract
 mkdocs
@@ -29,7 +32,11 @@ markdown-callouts
 black
 griffe
 levenshtein
-scipy
-numba
 lz4
 psutil
+guppy3
+html5lib
+jsonschema
+aiohttp
+selenium
+webdriver_manager
