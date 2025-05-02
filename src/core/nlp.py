@@ -804,18 +804,18 @@ class Classifier(nltk.classify.SklearnClassifier):
 
 
 @timeit()
-def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 256) -> list[web_page]:
-    num_cpu = os.cpu_count()
+def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 256, cores: int | bool = False) -> list[web_page]:
+    num_cpu = cores or os.cpu_count()
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
         # Cleanup redundant and superfluous whitespaces in content
-        parsable = [str(item["content"]) for item in documents]
+        parsable = [str(item["content"]).encode('utf-8', 'replace').decode('utf-8') for item in documents]
         content = executor.map(clean_whitespaces, parsable, chunksize=chunksize)
         for i, item in enumerate(content):
             documents[i]["content"] = item
 
         # Normalize text
-        parsable = [str(item["title"]) + "\n\n" + str(item["content"]) for item in documents]
+        parsable = [str(item["title"]).encode('utf-8', 'replace').decode('utf-8') + "\n\n" + item["content"] for item in documents]
         content = executor.map(tokenizer.normalize_text, parsable, chunksize=chunksize)
         for i, item in enumerate(content):
             documents[i]["parsed"] = item
