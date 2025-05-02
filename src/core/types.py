@@ -103,6 +103,10 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
     if "category" not in page:
         page["category"] = None
 
+    # Some fields here may be bytes when read from web crawling.
+    page["title"] = str(page["title"])
+    page["content"] = str(page["content"])
+
     # Dict are ordered starting with Python 3.7. Problem is, even for a typeddict,
     # the order is the one of key/value assignation. Re-order everything as in the
     # typeddict to ensure a predictable order here (and handle back/for-ward compatibility) :
