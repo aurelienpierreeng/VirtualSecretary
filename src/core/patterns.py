@@ -355,3 +355,11 @@ SUBSTANTIVE_EUR = re.compile(r"(?<=\w{3,})eur%s" % end_of_word)
 
 HYPHENIZED = re.compile(r"(?<=\w{3,})[-–—]+ *[\n\r]{1,2}(?=\w)")
 """Detect hyphenized words at the end of a PDF text line."""
+
+UNMATCHED_PARENTHESES = re.compile(r'(\([^()]*\))|[()]')
+
+def remove_unmatched_parentheses(input:str) -> str:
+  return UNMATCHED_PARENTHESES.sub(lambda x: x.group(1), input, concurrent=True)
+
+def remove_www(input: str) -> str:
+  return re.sub(r'^www\.', '', input, concurrent=True)
