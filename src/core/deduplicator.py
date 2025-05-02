@@ -16,7 +16,6 @@ h=hpy()
 
 from . import patterns
 from . import nlp
-from .network import get_header
 from .types import web_page, get_web_pages_ram
 from .utils import guess_date, typography_undo, clean_whitespaces, get_available_ram, get_models_folder, timeit
 
@@ -68,7 +67,7 @@ class Deduplicator():
             if fix_urls and protocol == "http":
                 test_url = "https://" + domain + page + params + anchor
                 try:
-                    response = requests.head(test_url, timeout=2, headers=get_header(), allow_redirects=True)
+                    response = requests.head(test_url, timeout=2, allow_redirects=True)
                     if response.status_code == 200:
                         # Found a valid page -> convert to https
                         protocol = "https"
@@ -83,7 +82,7 @@ class Deduplicator():
             if fix_urls and domain.startswith("www."):
                 test_url = protocol + domain.lstrip("www.") + page + params + anchor
                 try:
-                    response = requests.head(test_url, timeout=2, headers=get_header(), allow_redirects=True)
+                    response = requests.head(test_url, timeout=2, allow_redirects=True)
                     if response.status_code == 200:
                         # Found a valid page -> remove www.
                         domain = domain.lstrip("www.")

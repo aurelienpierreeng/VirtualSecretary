@@ -13,9 +13,10 @@ import requests
 from PIL import Image
 import numpy as np
 import regex as re
+from datetime import datetime
 
 from .types import web_page
-from .network import get_header, check_response
+from .network import check_response
 from .patterns import HYPHENIZED
 
 def ocr_pdf(document: bytes, output_images: bool = False, path: str = None,
@@ -144,6 +145,7 @@ def get_pdf_content(url: str,
                     process_outline: bool = True,
                     category: str = None,
                     ocr: int = 1,
+                    custom_header: dict = {},
                     **kwargs) -> list[web_page]:
     """Retrieve a PDF document through the network with HTTP GET or from the local filesystem, and parse its text content, using OCR if needed. This needs a functionnal network connection if `file_path` is not provided.
 
@@ -158,6 +160,7 @@ def get_pdf_content(url: str,
             - `1` enables OCR through Tesseract if no text was found in the PDF document
             - `2` forces OCR through Tesseract even when text was found in the PDF document.
         See [core.crawler.ocr_pdf][] for info regarding the Tesseract environment. You will need to manually disable
+        custom_header: option HTTP headers to form the request that will download the PDF
 
     Other parameters:
         **kwargs: directly passed-through to [core.crawler.ocr_pdf][]. See this function documentation for more info.
@@ -169,7 +172,7 @@ def get_pdf_content(url: str,
         # Open the document from local or remote storage
         document : BytesIO
         if not file_path:
-            page = requests.get(url, timeout=30, headers=get_header(), allow_redirects=True)
+            page = requests.get(url, timeout=30, headers=custom_header, allow_redirects=True)
             print(f"{page.url}: {page.status_code}")
             url = page.url
 
@@ -204,6 +207,10 @@ def get_pdf_content(url: str,
         date = reader.metadata.creation_date
     except:
         date = None
+
+    if isinstance(date, datetime):
+        # new versions of PyPDF return datetime objects
+        date = date.isoformat()
 
     title = reader.metadata.title if reader.metadata.title else url.split("/")[-1]
     excerpt = reader.metadata.subject
