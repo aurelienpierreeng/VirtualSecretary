@@ -519,6 +519,11 @@ def open_data(filename: str) -> list:
     return dataset
 
 
+def append_data(data: list, filename: str):
+    dataset = open_data(filename) + data
+    save_data(filename, dataset)
+
+
 def get_models_folder(filename: str) -> str:
     """Resolve the path of a machine-learning model saved under `filename`. These are stored in `../../models/`.
 
