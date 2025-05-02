@@ -17,7 +17,6 @@ class search_methods(IntEnum):
     """Search methods available"""
     AI = 1
     FUZZY = 2
-    GREP = 3
 
 class Indexer():
     @timeit()
@@ -38,6 +37,13 @@ class Indexer():
             (but not significatively better), so if you don't plan on using it, removing collocations saves some RAM and I/O.
 
         """
+
+        # Add regex support to SQLite3
+        def regexp(pattern, string):
+            return re.search(pattern, string) is not None
+
+        db.create_function("regexp", 2, regexp)
+
         if word2vec:
             self.word2vec = word2vec
         else:
@@ -65,33 +71,42 @@ class Indexer():
         Documents are on the first axis.
         """
 
-        #cursor = db.execute("pragma table_info(pages)")
-        #print(cursor.fetchall())
-        cursor = db.execute("SELECT tokenized FROM pages")
+        self.ranker = None
 
-        # Values from https://www.cs.otago.ac.nz/homepages/andrew/papers/2014-2.pdf
-        self.ranker = BM25Plus([[word for sentence in doc[0] for word in sentence] for doc in cursor.fetchall()], k1=1.7, b=0.3, delta=0.65)
-        self.pages = self.ranker.corpus_size
+        # Get stats
         self.words = len(word2vec.wv)
+        cursor = db.execute("SELECT url FROM pages")
+        self.pages = len(cursor.fetchall())
+
+        self.sql = None
+        """Cache the previous SQL filtering conditions"""
 
         self.save(name)
 
     @timeit()
-    def get_contents(self, db: sqlite3.Connection):
+    def get_contents(self, db: sqlite3.Connection, sql: str = ""):
         """Lazily load the list of `web_page` from a DB extraction"""
 
         # TODO: need to check that the current state of the DB is compatible with the DB used to train the ranker
         # aka web pages are at least in the same order, and perhaps have the same content.
         # Problem is how fast can this be made ?
 
-        if self.index is None:
-            cursor = db.execute("SELECT url, date, datetime, category, content, vectorized, title, excerpt FROM pages")
+        if sql != self.sql or not self.index or not self.ranker:
+            self.sql = sql
+
             self.index = []
             self.vectors_all = []
+            docs = []
+
+            cursor = db.execute("SELECT url, datetime, category, title, excerpt, vectorized, tokenized FROM pages " + sql)
 
             for item in cursor.fetchall():
-                self.index.append({"url": item[0], "date": item[1], "datetime": item[2], "category": item[3], "content": item[4], "title": item[6], "excerpt": item[7] })
+                self.index.append({"url": item[0], "datetime": item[1], "category": item[2], "title": item[3], "excerpt": item[4] })
                 self.vectors_all.append(item[5])
+                docs.append(item[6])
+
+            # Values from https://www.cs.otago.ac.nz/homepages/andrew/papers/2014-2.pdf
+            self.ranker = BM25Plus([[word for sentence in doc for word in sentence] for doc in docs], k1=1.7, b=0.3, delta=0.65)
 
             self.vectors_all = np.array(self.vectors_all, dtype=np.float32)
             self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
@@ -214,18 +229,6 @@ class Indexer():
         return results
 
     @timeit()
-    def rank_grep(self, query: re.Pattern|str) -> np.ndarray:
-        if not (isinstance(query, str) or isinstance(query, re.Pattern)):
-            raise ValueError("Wrong query type (%s) for GREP ranking method. Should be string or regular expression pattern" % type(query))
-
-        results = np.array([len(re.findall(query, item["content"], timeout=60))
-                            for item in self.index], dtype=np.float64)
-        max_rank = np.amax(results)
-        if max_rank > 0.: results /= max_rank
-        return results
-
-
-    @timeit()
     def rank_fuzzy(self, tokens: list[str]) -> np.ndarray:
         if not isinstance(tokens, list):
             raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(tokens))
@@ -266,8 +269,7 @@ class Indexer():
 
     @timeit()
     def rank(self, db: sqlite3.Connection, query: str|tuple|re.Pattern, method: search_methods,
-             filter_callback: callable = None, pattern: str | re.Pattern = None, n_results: int = 500, fine_search: bool = False,
-             **kargs) -> list[tuple[str, float]]:
+             n_results: int = 500, fine_search: bool = False, sql: str = "") -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
@@ -277,7 +279,7 @@ class Indexer():
             pattern: optional pattern/text search to add on top of AI search
             n_results: number of results to retain
             fine_search: optionally refine the search using a 2D interaction matrix. See [1]
-            **kargs: arguments passed as-is to the `filter_callback`
+            sql: SQL query to narrow-down the search, for example `WHERE field = value`. Supports PCRE regex with `WHERE field REGEXP 'pattern'`.
 
         Returns:
             list: the list of best-matching results as (url, similarity) tuples.
@@ -285,7 +287,7 @@ class Indexer():
         [1]: https://eng.aurelienpierre.com/2024/03/designing-an-ai-search-engine-from-scratch-in-the-2020s/#accounting-for-words-patterns
         """
 
-        self.get_contents(db)
+        self.get_contents(db, sql)
 
         # Note : match needs at least Python 3.10
         match method:
@@ -296,29 +298,11 @@ class Indexer():
                 aggregates = 1. + 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])
             case search_methods.FUZZY:
                 aggregates = self.rank_fuzzy(query)
-            case search_methods.GREP:
-                aggregates = self.rank_grep(query)
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
 
-        ## Filters : there is a catch
-        ## We set the similarity coeff to 0 for documents that DON'T match the filter criteria.
-        ## We don't actually remove those elements.
-        ## Given that we take the 500 best docs below, it is equivalent to removing them if enough close results pop up.
-        ## If we don't have enough close results, it's just a desperate attempt to return something, bypassing filters.
-
-        # Filter out documents based on URL filter if provided
-        if filter_callback:
-            # Create a boolean vector
-            urls_match = np.array([filter_callback(page, **kargs) for page in self.index])
-            aggregates *= urls_match
-
-        # Filter out documents content NOT matching the pattern
-        if pattern:
-            content_match = np.array([len(re.findall(pattern, item["content"], timeout=5)) > 0 for item in self.index])
-            aggregates *= content_match
-
         # Sort out whatever remains by similarity coeff and keep only the n first elements
+        n_results = min(n_results, aggregates.size)
         best_indices = np.argpartition(aggregates, -n_results)[-n_results:]
         best_elems = [self.index[i] for i in best_indices]
         best_similarity = aggregates[best_indices]

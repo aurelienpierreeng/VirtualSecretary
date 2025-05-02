@@ -110,10 +110,10 @@ When you run the `main.py` script, it will create a `sync.log` file into each em
 
 ## Installing
 
-1. Install Git and Python 3.10:
+1. Install Git and Python 3.10 (mandatory, 3.13 doesn't work with some critical dependencies here):
    1. On Debian, Ubuntu and their derivatives (Mint, etc.): `$ sudo apt install git python3.10 python3-pip`
    2. On Redhat and all its derivatives (Fedora, CentOS, etc.): `$ sudo dnf install git python3.10 python3-pip`
-   3. Otherwisepython3.12 -m ensurepip --upgrade `$python3.10 -m ensurepip --upgrade`
+   3. Otherwise `$python3.10 -m ensurepip --upgrade`
 2. Clone this repository: `$ git clone https://github.com/Aurelien-Pierre/VirtualSecretary.git`
 2. Install the required dependencies: `python3.10 -m pip install -r recipe/requirements.txt`
 3. Get into the directory: `$ cd VirtualSecretary`
