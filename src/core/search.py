@@ -38,12 +38,6 @@ class Indexer():
 
         """
 
-        # Add regex support to SQLite3
-        def regexp(pattern, string):
-            return re.search(pattern, string) is not None
-
-        db.create_function("regexp", 2, regexp)
-
         if word2vec:
             self.word2vec = word2vec
         else:
@@ -71,12 +65,13 @@ class Indexer():
         Documents are on the first axis.
         """
 
-        self.ranker = None
+        # Values from https://www.cs.otago.ac.nz/homepages/andrew/papers/2014-2.pdf
+        cursor = db.execute("SELECT tokenized FROM pages")
+        self.ranker = BM25Plus([[word for sentence in doc[0] for word in sentence] for doc in cursor.fetchall()], k1=1.7, b=0.3, delta=0.65)
 
         # Get stats
         self.words = len(word2vec.wv)
-        cursor = db.execute("SELECT url FROM pages")
-        self.pages = len(cursor.fetchall())
+        self.pages = self.ranker.corpus_size
 
         self.sql = None
         """Cache the previous SQL filtering conditions"""
@@ -91,24 +86,25 @@ class Indexer():
         # aka web pages are at least in the same order, and perhaps have the same content.
         # Problem is how fast can this be made ?
 
-        if sql != self.sql or not self.index or not self.ranker:
+        if sql != self.sql or not self.index:
+
+            # Add regex support to SQLite3
+            def regexp(pattern, string):
+                return re.search(pattern, string) is not None
+
+            db.create_function("regexp", 2, regexp)
+
             self.sql = sql
 
             self.index = []
-            self.vectors_all = []
-            docs = []
+            vectors_all = []
 
-            cursor = db.execute("SELECT url, datetime, category, title, excerpt, vectorized, tokenized FROM pages " + sql)
-
+            cursor = db.execute("SELECT rowid, url, datetime, category, title, excerpt, vectorized FROM pages " + sql)
             for item in cursor.fetchall():
-                self.index.append({"url": item[0], "datetime": item[1], "category": item[2], "title": item[3], "excerpt": item[4] })
-                self.vectors_all.append(item[5])
-                docs.append(item[6])
+                self.index.append({ "index": item[0], "url": item[1], "datetime": item[2], "category": item[3], "title": item[4], "excerpt": item[5] })
+                vectors_all.append(item[6])
 
-            # Values from https://www.cs.otago.ac.nz/homepages/andrew/papers/2014-2.pdf
-            self.ranker = BM25Plus([[word for sentence in doc for word in sentence] for doc in docs], k1=1.7, b=0.3, delta=0.65)
-
-            self.vectors_all = np.array(self.vectors_all, dtype=np.float32)
+            self.vectors_all = np.array(vectors_all, dtype=np.float32)
             self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
 
 
@@ -118,6 +114,7 @@ class Indexer():
 
 
     @classmethod
+    @timeit()
     def load(cls, name: str):
         """Load an existing trained model by its name from the `../models` folder."""
         try:
@@ -289,15 +286,18 @@ class Indexer():
 
         self.get_contents(db, sql)
 
+        # Note that SQLite rowid start at 1, so we need to offset indices
+        db_indices = [item["index"] - 1 for item in self.index]
+
         # Note : match needs at least Python 3.10
         match method:
             case search_methods.AI:
                 # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
                 # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
                 # This can yield negative results that are still "valid". Offset similarity score by one.
-                aggregates = 1. + 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])
+                aggregates = 1. + 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])[db_indices]
             case search_methods.FUZZY:
-                aggregates = self.rank_fuzzy(query)
+                aggregates = self.rank_fuzzy(query)[db_indices]
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
 
