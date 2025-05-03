@@ -1,3 +1,5 @@
+setuptools==58.2.0 # needed for pyspf to build wheel
+wheel # just in case
 python-dateutil
 vobject
 requests
@@ -6,10 +8,10 @@ py3DNS
 dnspython
 dkimpy
 pyspf
-numpy==1.26.4
-scipy==1.13.1
-numba==0.61.0
-gensim==4.3.3
+numpy==1.26.4 # OpenBLAS issues with Python > 3.11 or something
+scipy==1.13.1 # required by gensim
+numba==0.61.0 # required by numpy 1.24.4
+gensim==4.3.3 # explicitely fail to build wheels for Python > 3.12
 nltk
 scikit-learn
 beautifulsoup4
