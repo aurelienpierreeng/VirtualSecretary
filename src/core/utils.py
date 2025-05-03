@@ -286,15 +286,13 @@ def imap_decode(value: bytes) -> str:
     return ''.join(res)
 
 
-@numba.jit(nopython=True, nogil=True, cache=True)
+@numba.jit(nopython=True, nogil=True)
 def _unicode_to_ascii(string: str) -> str:
     # For 1:many character replacment, we will have to use slow loops
     SUBSTITUTIONS = {
         # Apostrophes
         "’": "'",
         "`": "'",
-        "“": "\"",
-        "”": "\"",
         "‘": "'",
         "ʼ": "'",
         "'": "'",
