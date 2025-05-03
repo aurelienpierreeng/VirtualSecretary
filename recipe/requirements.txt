@@ -1,5 +1,6 @@
 setuptools==58.2.0 # needed for pyspf to build wheel
 wheel # just in case
+cffi # not always auto-installed for PyPDF
 python-dateutil
 vobject
 requests
