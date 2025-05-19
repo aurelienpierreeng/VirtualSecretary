@@ -2,9 +2,7 @@
 
 © 2024 - Aurélien Pierre.
 """
-import os
 from collections import Counter
-import concurrent
 from datetime import datetime, timezone, timedelta
 
 import requests
