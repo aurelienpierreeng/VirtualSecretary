@@ -533,13 +533,11 @@ class Crawler(DelayedClass):
 
     def __init__(self, delay: float = 1., no_follow: list[str] = []):
         """Crawl a website from its sitemap or by following internal links recusively from an index page.
-        This creates a pool of threads to parallelize network I/O. The pool needs to be freed after use.
         This class needs therefore to be used within a `with` statement that will take care of resources
         allocations and releases in background.
 
         Parameters:
-            delay: time in seconds to wait before 2 HTTP requests. Keep in mind that crawling is multi-threaded,
-            so as many concurrent requests can happen at the same time against a server as you have threads.
+            delay: time in seconds to wait before 2 HTTP requests.
             The right delay will prevent the crawler from being throttled by anti-DoS rules while making it as fast as possible.
             Set to `0.0` if you are crawling your own servers and they have no DoS protection.
             no_follow: list of URL parts to completely ignore, that is not index them but not even crawl them for internal links.
@@ -623,7 +621,7 @@ class Crawler(DelayedClass):
                 - `ignore`: don't follow internal links
 
         Returns:
-            This method returns nothing but adds asynchronous crawling jobs on the [][crawler.Crawler.futures] stack.
+            list of links targets content
         """
         output = []
         if internal_links == "ignore":
@@ -657,10 +655,8 @@ class Crawler(DelayedClass):
                     # If the current URL doesn't belong to the same domain as the parent,
                     # we don't pass on the category of the parent page
                     # because we have no idea what the external URL is.
-                    # And we multi-thread
                     category = "external"
 
-                # No multithreading if we stay on the same domain to comply with rates thresholds
                 output += self.get_website_from_crawling(current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, mine_pdf=mine_pdf, _recursion_level=0, _mainthread=False)
 
         return output
@@ -802,9 +798,6 @@ class Crawler(DelayedClass):
                     current_params = current_address.group(4) if current_address.group(4) else ""
 
                     #print(current_page, current_page, current_params)
-                    # Note: we use multi-threading only for outer domains links, so we
-                    # can keep track of the throttling rate on the source domain,
-                    # and avoid being rejected by the server.
                     if not restrict_section and domain == current_domain:
                         # Recurse only through local pages, aka :
                         # 1. domains match
