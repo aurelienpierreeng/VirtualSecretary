@@ -90,7 +90,7 @@ class Indexer():
 
             # Add regex support to SQLite3
             def regexp(pattern, string):
-                return re.search(pattern, string) is not None
+                return re.search(pattern, string, re.IGNORECASE) is not None
 
             db.create_function("regexp", 2, regexp)
 
