@@ -519,7 +519,7 @@ def open_data(filename: str) -> list:
 
 def append_data(data: list, filename: str):
     dataset = open_data(filename) + data
-    save_data(filename, dataset)
+    save_data(dataset, filename)
 
 
 def get_models_folder(filename: str) -> str:
