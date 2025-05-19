@@ -16,7 +16,7 @@ import regex as re
 from datetime import datetime
 
 from .types import web_page
-from .network import check_response
+from .network import check_response, get_url, try_url, DelayedClass
 from .patterns import HYPHENIZED
 
 def ocr_pdf(document: bytes, output_images: bool = False, path: str = None,
@@ -103,7 +103,7 @@ def ocr_pdf(document: bytes, output_images: bool = False, path: str = None,
         # OCR
         page = pytesseract.image_to_string(gray, lang=tesseract_lang).strip("\n ")
         content += "\n" + page
-        print(page)
+        #print(page)
 
     return content.strip("\n ")
 
@@ -146,6 +146,7 @@ def get_pdf_content(url: str,
                     category: str = None,
                     ocr: int = 1,
                     custom_header: dict = {},
+                    delay: DelayedClass = None,
                     **kwargs) -> list[web_page]:
     """Retrieve a PDF document through the network with HTTP GET or from the local filesystem, and parse its text content, using OCR if needed. This needs a functionnal network connection if `file_path` is not provided.
 
@@ -172,22 +173,18 @@ def get_pdf_content(url: str,
         # Open the document from local or remote storage
         document : BytesIO
         if not file_path:
-            page = requests.get(url, timeout=30, headers=custom_header, allow_redirects=True)
-            print(f"{page.url}: {page.status_code}")
-            url = page.url
+            content, url, status, encoding, apparent_encoding = get_url(url, timeout=30, custom_header=custom_header, backend="requests", delay=delay)
 
-            check_response(url, page.status_code)
-
-            if page.status_code != 200:
+            if status != 200:
                 print("couldn't download %s" % url)
                 return []
 
-            document = BytesIO(page.content)
+            document = BytesIO(content)
         else:
             document = open(file_path, "rb")
 
     except Exception as e:
-        print(e)
+        print("PDF handling error:", e)
         return []
 
     blob = document.read() # need to backup PDF content here because PdfReader kills it next
@@ -215,7 +212,7 @@ def get_pdf_content(url: str,
     title = reader.metadata.title if reader.metadata.title else url.split("/")[-1]
     excerpt = reader.metadata.subject
 
-    print(title)
+    #print(title)
 
     # Check if the PDF contains text
     # From PyPdf2 doc : "This works well for some PDF files, but poorly for others,
@@ -243,7 +240,7 @@ def get_pdf_content(url: str,
             chapters_titles, chapters_bounds = _get_pdf_outline(reader, title)
 
             for i in range(0, len(chapters_bounds) - 1):
-                print(chapters_titles[i], chapters_bounds[i], chapters_bounds[i + 1])
+                #print(chapters_titles[i], chapters_bounds[i], chapters_bounds[i + 1])
                 n_start = chapters_bounds[i]
                 n_end = min(chapters_bounds[i + 1] + 1, len(reader.pages) - 1)
                 content = "\n".join([elem.extract_text() for elem in reader.pages[n_start:n_end]]).strip("\n ")
@@ -262,9 +259,10 @@ def get_pdf_content(url: str,
                                         h2=[],
                                         lang=lang,
                                         category=category)
-                    print(result)
+                    #print(result)
                     results.append(result)
 
+            print("found", i, "PDF chapters")
             return results
 
         else:
@@ -281,7 +279,8 @@ def get_pdf_content(url: str,
                                     h2=[],
                                     lang=lang,
                                     category=category)
-                print(result)
+                #print(result)
+                print("found 1 OCR-ed PDF")
                 return [result]
     except:
         # Whether or not text comes from OCR, if we save it in one chunk, do it now and exit.
@@ -297,7 +296,8 @@ def get_pdf_content(url: str,
                                 h2=[],
                                 lang=lang,
                                 category=category)
-            print(result)
+            #print(result)
+            print("found 1 PDF")
             return [result]
 
 

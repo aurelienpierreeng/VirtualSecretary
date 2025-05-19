@@ -15,18 +15,25 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from . import patterns
 
-def check_response(url, status_code):
-    if status_code == 429:
-        print(f"SERVER {url} has throttled us")
-    elif status_code == 503:
-        print(f"SERVER {url} did not respond. We may be throttled.")
-    elif status_code != 200:
-        print(f"SERVER {url} did not respond: error {status_code}")
+from abc import ABC, abstractmethod
+
+class DelayedClass(ABC):
+    """Abstract class for any implementation
+    having an internal timer that won't trigger a given action more often
+    than `delay` seconds
+    """
+
+    @abstractmethod
+    def get_sleep_delay(self):
+        pass
+
+
+def check_response(prefix: str, old_url: str, new_url: str, status_code):
+    print(f"{prefix}: {old_url} -> {new_url} : {status_code}")
 
 
 @utils.exit_after(120)
-def try_url(url, timeout=30, delay=1.) -> tuple[requests.request, dict, str]:
-    """Try URLs with some sanitization (protocol & path), until we found something. Probe only headers, not the actual page."""
+def _try_url(url, timeout=30, delay: DelayedClass = None) -> tuple[requests.request, dict, str]:
 
     UA = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
@@ -60,6 +67,7 @@ def try_url(url, timeout=30, delay=1.) -> tuple[requests.request, dict, str]:
         anchor = link.group(5) if link.group(5) else ""
     else:
         # Couldn't parse URL, still try it just in case
+        delay.get_sleep_delay()
         return requests.head(url, timeout=timeout, allow_redirects=True, verify=False), {}, url
 
     # 0: try to see if there is a robots.txt file preventing us from accessing
@@ -72,10 +80,13 @@ def try_url(url, timeout=30, delay=1.) -> tuple[requests.request, dict, str]:
         if "User-Agent" in HEADER and robot.can_fetch(HEADER["User-Agent"], url) \
             or robot.can_fetch("*", url):
             for test_url in [url, url + "/"]:
-                time.sleep(delay)
-                result = requests.head(url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False)
-                if result.status_code == 200:
-                    return result, HEADER, result.url
+                delay.get_sleep_delay()
+                try:
+                    result = requests.head(url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False)
+                    if result.status_code == 200:
+                        return result, HEADER, result.url
+                except:
+                    pass
 
     # 2. bruteforce all possible unique combinations in case we have a semi-wrong URL
     # Try : http/https, with/without www., trailing / or not, URL params/anchors or not.
@@ -89,22 +100,31 @@ def try_url(url, timeout=30, delay=1.) -> tuple[requests.request, dict, str]:
                         for ANCHOR in set([anchor, "", anchor.rstrip("()")]):
                             test_url = PROTOCOL + DOMAIN + PAGE + PARAMS + ANCHOR
                             if test_url != url and test_url != url + "/":
-                                time.sleep(delay)
-                                result = requests.head(test_url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False)
-                                if result.status_code == 200:
-                                    # valid result
-                                    return result, HEADER, result.url
-                                elif result.status_code != 404:
-                                    # invalid result but at least we know the page exists
-                                    # maybe we are just being thresholded or forbidden
-                                    final_url = test_url
+                                delay.get_sleep_delay()
+                                try:
+                                    result = requests.head(test_url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False)
+                                    if result.status_code == 200:
+                                        # valid result
+                                        return result, HEADER, result.url
+                                except:
+                                    pass
 
     # Try the Wayback machine in final resort: "https://web.archive.org/web/"
-    result = requests.head("https://web.archive.org/web/" + final_url, timeout=timeout, allow_redirects=True, verify=False)
+    result = requests.head("https://web.archive.org/web/" + url, timeout=timeout, allow_redirects=True, verify=False)
     return result, {}, result.url
 
 
-def get_url(url: str, timeout=30, custom_header={}, backend="selenium", driver=None, wait=None) -> tuple[bytes, str, int]:
+def try_url(url, timeout=30, delay: DelayedClass = None) -> tuple[requests.request, dict, str]:
+    """
+    Try URLs with some sanitization (protocol & path), until we found something.
+    Probe only headers, not the actual page.
+    """
+    result, headers, new_url = _try_url(url, timeout=timeout, delay=delay)
+    check_response("Headers", url, new_url, result.status_code)
+    return result, headers, new_url
+
+
+def get_url(url: str, timeout=30, delay: DelayedClass= None, custom_header={}, backend="selenium", driver=None, wait=None) -> tuple[bytes, str, int]:
     """
     Get the content of an URL using requests or selenium.
     `.pdf`, `.xml` and `.txt` URLs always use requests.
@@ -115,9 +135,11 @@ def get_url(url: str, timeout=30, custom_header={}, backend="selenium", driver=N
         status: the HTTP code (integer). Always 200 for the selenium backend, which has no way of retrieving it.
 
     """
+    delay.get_sleep_delay()
+
     if backend == "requests" or url.lower().endswith(".xml") or url.lower().endswith(".txt") or ".pdf" in url.lower():
         page = requests.get(url, timeout=30, headers=custom_header, allow_redirects=True, verify=False)
-        url = page.url
+        new_url = page.url
         status_code = page.status_code
         content = page.content
         encoding = page.encoding
@@ -132,7 +154,7 @@ def get_url(url: str, timeout=30, custom_header={}, backend="selenium", driver=N
         except Exception as e:
             pass
 
-        url = driver.current_url
+        new_url = driver.current_url
         content = driver.page_source
 
         # selenium doesn't handle these, so guess them:
@@ -141,6 +163,6 @@ def get_url(url: str, timeout=30, custom_header={}, backend="selenium", driver=N
     else:
         raise(Exception("wrong backend chosen or no driver configured"))
 
-    check_response(url, status_code)
+    check_response("Content", url, new_url, status_code)
 
-    return content, url, status_code, encoding, apparent_encoding
+    return content, new_url, status_code, encoding, apparent_encoding
