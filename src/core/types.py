@@ -1,4 +1,5 @@
 from typing import TypedDict
+from types import MappingProxyType
 from datetime import datetime as dt
 from .utils import guess_date
 import numpy as np
@@ -33,10 +34,10 @@ class web_page(TypedDict):
     excerpt: str = ""
     """Shortened version of the content for search results previews. Typically provided as `description` meta tag by websites."""
 
-    h1: list = []
+    h1: set = {}
     """Title of the post if any. There should be only one h1 per page, matching title, but some templates wrongly use h1 for section titles."""
 
-    h2: list = []
+    h2: set = {}
     """Section titles if any"""
 
     lang: str = "en"
@@ -68,15 +69,16 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
         to_db: set to `True` to convert arrays of strings into semicolon-separated strings.
     """
     # Handle legacy code : h1 and h2 used to be sets, now they are lists
+    page = dict(page)
 
     if "h1" in page:
         if isinstance(page["h1"], str):
-            page["h1"] = [page["h1"]]
-        else:
-            page["h1"] = list(page["h1"])
+            page["h1"] = {page["h1"]}
+        elif isinstance(page["h1"], list):
+            page["h1"] = set(page["h1"])
 
-    if "h2" in page:
-        page["h2"] = list(page["h2"])
+    if "h2" in page and isinstance(page["h2"], list):
+        page["h2"] = set(page["h2"])
 
     # Handle legacy code : fields added recently
     if "vectorized" not in page:
@@ -110,7 +112,7 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
     # Dict are ordered starting with Python 3.7. Problem is, even for a typeddict,
     # the order is the one of key/value assignation. Re-order everything as in the
     # typeddict to ensure a predictable order here (and handle back/for-ward compatibility) :
-    page = {k: page[k] for k in web_page.__annotations__.keys()}
+    page = MappingProxyType({k: page[k] for k in web_page.__annotations__.keys()})
 
     return page
 

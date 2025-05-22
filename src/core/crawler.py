@@ -8,19 +8,13 @@ import time
 import datetime
 import random
 import json
+import copy
 
 from urllib.parse import urljoin
 
 import requests
 import regex as re
 import numpy as np
-
-
-from selenium import webdriver
-from selenium.webdriver import ChromeOptions
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
 
 from bs4 import BeautifulSoup
 
@@ -151,16 +145,17 @@ def try_content(url, content, custom_header, backend, driver, wait, delay: calla
 
     # Same with h1 because we will remove <header> and that's where it might be
     # Doe h2 as well since we are at it.
-    handler.h1 = {tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h1")}
-    handler.h2 = {tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h2")}
+    handler.h1 = copy.deepcopy({tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h1")})
+    handler.h2 = copy.deepcopy({tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h2")})
 
     # Same with date: sometimes put in <header>
     handler.date = get_date(handler)
 
     # Mostly intended for YouTube that stores important video info into JSON stored into script
-    handler.scripts = []
+    scripts = []
     for element in handler.select('script'):
-        handler.scripts.append(element.decode_contents())
+        scripts.append(element.decode_contents())
+    handler.scripts = copy.deepcopy(scripts)
 
     # Remove any kind of machine code and symbols from the HTML doctree because we want natural language only
     # That will also make subsequent parsing slightly faster.
@@ -193,7 +188,6 @@ def get_page_content(url: str, content: str = None, custom_header={}, backend="r
         url: a valid URL that can be fetched with an HTTP GET request.
         content: a string buffer used as HTML source. If this argument is passed, we don't fetch `url` from network and directly use this input.
         backend: `"requests"` uses the Python package requests and is the fastest option for pure HTML websites but doesn't support Javascript.
-        `"selenium"` uses a Chrome browser driver, it is slower but handles AJAX-driven websites that require Javascript to work.
 
     Returns:
         a tuple with:
@@ -562,16 +556,6 @@ class Crawler(DelayedClass):
         self.delay = delay
         self.last_request = datetime.datetime.now().timestamp()
 
-        # Start an headless Chromium
-        options = ChromeOptions()
-        options.headless = True
-        options.add_argument("--headless=new")
-
-        self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-        self.driver.set_page_load_timeout(30)
-        self.driver.implicitly_wait(30)
-        self.wait = WebDriverWait(self.driver, 15)
-
         self.errors = []
         """URLs that couldn't be accessed due to blocking or throttling"""
 
@@ -767,7 +751,7 @@ class Crawler(DelayedClass):
             and "css" not in content_type \
             and "json" not in content_type:
 
-            index, new_url = get_page_content(index_url, backend="requests", custom_header=custom_header, driver=self.driver, wait=self.wait, delay=self)
+            index, new_url = get_page_content(index_url, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
             index_url = self.update_link(index_url, new_url, status, index is None)
 
             if include or _recursion_level == 0 or ".pdf" in index_url.lower():
@@ -912,7 +896,7 @@ class Crawler(DelayedClass):
         if not status:
             return output
 
-        index_page, new_url = get_page_content(index_url, custom_header=custom_header, backend="requests", driver=self.driver, wait=self.wait, delay=self)
+        index_page, new_url = get_page_content(index_url, custom_header=custom_header, backend="requests", driver=None, wait=None, delay=self)
         if index_page is None:
             self.errors += list({index_url, new_url})
             return output
@@ -974,7 +958,7 @@ class Crawler(DelayedClass):
         if not status:
             return output
 
-        page, new_url = get_page_content(currentURL, backend="requests", custom_header=custom_header, driver=self.driver, wait=self.wait, delay=self)
+        page, new_url = get_page_content(currentURL, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
         currentURL = self.update_link(currentURL, new_url, status, page is None)
 
         if page is not None:
@@ -1015,7 +999,7 @@ class Crawler(DelayedClass):
                 translatedURLURL = self.update_link(translatedURL, new_url, status, False)
 
                 if "text" in content_type and status:
-                    translated_page, new_url = get_page_content(translatedURL, backend="requests", custom_header=custom_header, driver=self.driver, wait=self.wait, delay=self)
+                    translated_page, new_url = get_page_content(translatedURL, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
                     translatedURLURL = self.update_link(translatedURL, new_url, status, translated_page is None)
 
                     if translated_page is not None:

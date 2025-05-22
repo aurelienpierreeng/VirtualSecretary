@@ -244,7 +244,7 @@ def get_pdf_content(url: str,
                 n_start = chapters_bounds[i]
                 n_end = min(chapters_bounds[i + 1] + 1, len(reader.pages) - 1)
                 content = "\n".join([elem.extract_text() for elem in reader.pages[n_start:n_end]]).strip("\n ")
-                content = HYPHENIZED.sub("", content)
+                content = HYPHENIZED.sub("", content, concurrent=True)
 
                 if content:
                     # Make up a page anchor to make URLs to document sections unique
@@ -255,8 +255,8 @@ def get_pdf_content(url: str,
                                         date=date,
                                         content=content,
                                         excerpt=None,
-                                        h1=[],
-                                        h2=[],
+                                        h1={},
+                                        h2={},
                                         lang=lang,
                                         category=category)
                     #print(result)
@@ -275,8 +275,8 @@ def get_pdf_content(url: str,
                                     date=date,
                                     content=content,
                                     excerpt=excerpt,
-                                    h1=[],
-                                    h2=[],
+                                    h1={},
+                                    h2={},
                                     lang=lang,
                                     category=category)
                 #print(result)
@@ -292,8 +292,8 @@ def get_pdf_content(url: str,
                                 date=date,
                                 content=content,
                                 excerpt=excerpt,
-                                h1=[],
-                                h2=[],
+                                h1={},
+                                h2={},
                                 lang=lang,
                                 category=category)
             #print(result)

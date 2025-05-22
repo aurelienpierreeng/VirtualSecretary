@@ -124,15 +124,15 @@ def try_url(url, timeout=30, delay: DelayedClass = None) -> tuple[requests.reque
     return result, headers, new_url
 
 
-def get_url(url: str, timeout=30, delay: DelayedClass= None, custom_header={}, backend="selenium", driver=None, wait=None) -> tuple[bytes, str, int]:
+def get_url(url: str, timeout=30, delay: DelayedClass= None, custom_header={}, backend="requests", driver=None, wait=None) -> tuple[bytes, str, int]:
     """
-    Get the content of an URL using requests or selenium.
+    Get the content of an URL using requests.
     `.pdf`, `.xml` and `.txt` URLs always use requests.
 
     Return:
         content: the raw DOM,
         url: the final URL after possible redirections
-        status: the HTTP code (integer). Always 200 for the selenium backend, which has no way of retrieving it.
+        status: the HTTP code (integer)
 
     """
     delay.get_sleep_delay()
@@ -144,22 +144,6 @@ def get_url(url: str, timeout=30, delay: DelayedClass= None, custom_header={}, b
         content = page.content
         encoding = page.encoding
         apparent_encoding = page.apparent_encoding
-
-    elif backend == "selenium" and driver is not None and wait is not None:
-        driver.get(url)
-
-        # Wait for AJAX calls to return
-        try:
-            wait.until(lambda driver: driver.execute_script('return document.readyState') == 'complete')
-        except Exception as e:
-            pass
-
-        new_url = driver.current_url
-        content = driver.page_source
-
-        # selenium doesn't handle these, so guess them:
-        status_code = 200
-        encoding = apparent_encoding = "utf-8"
     else:
         raise(Exception("wrong backend chosen or no driver configured"))
 

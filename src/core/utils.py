@@ -19,6 +19,7 @@ import psutil
 from collections.abc import Iterable
 
 from typing import TypedDict
+import copy
 from dateutil import parser
 from .patterns import MULTIPLE_SPACES, MULTIPLE_LINES, MULTIPLE_NEWLINES, INTERNAL_NEWLINE
 
@@ -495,7 +496,9 @@ def get_data_folder(filename: str) -> str:
 def save_data(data: list, filename: str):
     """Save scraped data to a pickle file inside a tar.gz archive in data folder. Folder and file extension are handled automatically."""
     with tarfile.open(get_data_folder(filename), "w:gz") as tar:
-        content = io.BytesIO(pickle.dumps(data, pickle.HIGHEST_PROTOCOL))
+        # Pickle data first to get the exact size
+        pickled_data = pickle.dumps(data, pickle.HIGHEST_PROTOCOL)
+        content = io.BytesIO(pickled_data)
         info = tarfile.TarInfo(filename + ".pickle")
 
         # Need to pass on the buffer size explicitly, tarfile sucks
