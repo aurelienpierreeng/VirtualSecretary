@@ -1,9 +1,9 @@
 from typing import TypedDict
-from types import MappingProxyType
 from datetime import datetime as dt
 from .utils import guess_date
 import numpy as np
 import sys
+import copy
 
 class web_page(TypedDict):
     """Typed dictionnary representing a web page and its metadata. It can also be used for any text document having an URL/URI.
@@ -75,10 +75,10 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
         if isinstance(page["h1"], str):
             page["h1"] = {page["h1"]}
         elif isinstance(page["h1"], list):
-            page["h1"] = set(page["h1"])
+            page["h1"] = set(copy.deepcopy(page["h1"]))
 
     if "h2" in page and isinstance(page["h2"], list):
-        page["h2"] = set(page["h2"])
+        page["h2"] = set(copy.deepcopy(page["h2"]))
 
     # Handle legacy code : fields added recently
     if "vectorized" not in page:
@@ -112,9 +112,7 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
     # Dict are ordered starting with Python 3.7. Problem is, even for a typeddict,
     # the order is the one of key/value assignation. Re-order everything as in the
     # typeddict to ensure a predictable order here (and handle back/for-ward compatibility) :
-    page = MappingProxyType({k: page[k] for k in web_page.__annotations__.keys()})
-
-    return page
+    return {k: page[k] for k in web_page.__annotations__.keys()}
 
 
 def db_row_to_web_page(row: list[tuple[any]]) -> web_page:

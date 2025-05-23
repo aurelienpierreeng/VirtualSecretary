@@ -494,7 +494,10 @@ def get_data_folder(filename: str) -> str:
 
 
 def save_data(data: list, filename: str):
-    """Save scraped data to a pickle file inside a tar.gz archive in data folder. Folder and file extension are handled automatically."""
+    """
+    Save scraped data to a pickle file inside a tar.gz archive in data folder.
+    Folder and file extension are handled automatically.
+    """
     with tarfile.open(get_data_folder(filename), "w:gz") as tar:
         # Pickle data first to get the exact size
         pickled_data = pickle.dumps(data, pickle.HIGHEST_PROTOCOL)

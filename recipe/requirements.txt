@@ -41,5 +41,3 @@ guppy3
 html5lib
 jsonschema
 aiohttp
-selenium
-webdriver_manager

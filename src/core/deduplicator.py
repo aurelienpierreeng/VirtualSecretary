@@ -14,7 +14,7 @@ h=hpy()
 
 from . import patterns
 from . import nlp
-from .types import web_page, get_web_pages_ram
+from .types import web_page, get_web_pages_ram, sanitize_web_page
 from .utils import guess_date, typography_undo, clean_whitespaces, get_available_ram, get_models_folder, timeit
 
 class Deduplicator():
@@ -329,7 +329,7 @@ class Deduplicator():
                 if key not in discard_list:
                     f.write(f"{key}: {value}\n")
 
-        return posts
+        return [sanitize_web_page(post, to_db=False) for post in posts]
 
 
     def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True, n_min: int = 0, fix_urls: bool = True):
