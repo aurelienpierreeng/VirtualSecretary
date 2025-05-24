@@ -67,7 +67,14 @@ class Indexer():
 
         # Values from https://www.cs.otago.ac.nz/homepages/andrew/papers/2014-2.pdf
         cursor = db.execute("SELECT tokenized FROM pages")
-        self.ranker = BM25Plus([[word for sentence in doc[0] for word in sentence] for doc in cursor.fetchall()], k1=1.7, b=0.3, delta=0.65)
+
+        # To spare some memory, we don't build the BM25 ranker with actual word tokens (strings)
+        # but with their index in the word2vec vocabulary. This is a symbolic representation.
+        self.ranker = BM25Plus([[self.word2vec.wv.key_to_index[word]
+                                 for sentence in doc[0]
+                                 for word in sentence
+                                 if word in self.word2vec.wv.key_to_index]
+                                for doc in cursor.fetchall()], k1=1.7, b=0.3, delta=0.65)
 
         # Get stats
         self.words = len(word2vec.wv)
@@ -95,7 +102,6 @@ class Indexer():
             db.create_function("regexp", 2, regexp)
 
             self.sql = sql
-
             self.index = []
             vectors_all = []
 
@@ -230,7 +236,11 @@ class Indexer():
         if not isinstance(tokens, list):
             raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(tokens))
 
-        return self.ranker.get_scores(tokens)
+        symbolic_tokens = [self.word2vec.wv.key_to_index[word]
+                           for word in tokens
+                           if word in self.word2vec.wv.key_to_index]
+
+        return self.ranker.get_scores(symbolic_tokens)
 
     @timeit()
     def rank_ai(self, query: tuple, fast: bool = False) -> np.ndarray:
