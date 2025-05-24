@@ -223,3 +223,13 @@ stufff
 matches = find_pattern(INTERNAL_NEWLINE, samples)
 
 [print(m) for m in matches]
+
+samples = """
+1/800s
+1/250 sec
+1/1000th
+"""
+
+matches = find_pattern(PHOTOSPEED, samples)
+
+[print(m) for m in matches]

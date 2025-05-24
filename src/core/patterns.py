@@ -197,6 +197,10 @@ exposure_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(ev|il)s?" % regex_alg
 EXPOSURE = re.compile(r"%s%s%s" % (regex_starter, exposure_regex, end_of_word), flags=re.IGNORECASE)
 """Exposure values in EV or IL"""
 
+photospeed_regex = r"(1/[0-9]+) ?(th|s|sec)"
+PHOTOSPEED = re.compile(r"%s%s%s" % (regex_starter, photospeed_regex, end_of_word), flags=re.IGNORECASE)
+"""Exposure values in EV or IL"""
+
 pixels_regex = r"(%s)? ?([0-9]+) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?(p|px|pixels|pix)s?" % regex_algebra
 PIXELS = re.compile(r"%s%s%s" % (regex_starter, pixels_regex, end_of_word), flags=re.IGNORECASE)
 
@@ -281,7 +285,7 @@ UNFINISHED_SENTENCES = re.compile(r"(?<![?!.;:])\n\n|\r\n")
 MULTIPLE_DOTS = re.compile(r"\.{2,}")
 """Identifies dots repeated more than twice"""
 
-MULTIPLE_DASHES = re.compile(r"-{1,}")
+MULTIPLE_DASHES = re.compile(r"[-~]{1,}")
 """Identifies dashes repeated more than once"""
 
 MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")

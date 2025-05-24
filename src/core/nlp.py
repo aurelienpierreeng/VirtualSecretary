@@ -403,6 +403,7 @@ class Tokenizer():
                 NUMBER_SEQUENCE_PATTERN: "123456789",
                 # Unit numbers/quantities
                 EXPOSURE: " _EXPOSURE_ ",
+                PHOTOSPEED: " _SHUTTERSPEED_ ",
                 SENSIBILITY: " _SENSIBILITY_ ",
                 LUMINANCE: " _LUMINANCE_ ",
                 FILE_SIZE: " _FILESIZE_ ",
@@ -804,7 +805,7 @@ class Classifier(nltk.classify.SklearnClassifier):
 
 
 @timeit()
-def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 256, cores: int | bool = False) -> list[web_page]:
+def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 128, cores: int | bool = False) -> list[web_page]:
     num_cpu = cores or os.cpu_count()
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
