@@ -31,17 +31,16 @@ def convert_array(text: str):
     out.seek(0)
     return np.load(out)
 
-def load_pickle(text):
+def load_list_pickle(text: str):
     return json.loads(text)
 
-def dump_pickle(blob):
+def dump_list_pickle(blob: list[str]):
     return json.dumps(blob)
-
 
 sqlite3.register_adapter(np.ndarray, adapt_array)
 sqlite3.register_converter("array", convert_array)
-sqlite3.register_adapter(list, dump_pickle)
-sqlite3.register_converter("list", load_pickle)
+sqlite3.register_adapter(list, dump_list_pickle)
+sqlite3.register_converter("list", load_list_pickle)
 
 
 def create_db(name: str) -> sqlite3.Connection:
@@ -56,16 +55,16 @@ def create_db(name: str) -> sqlite3.Connection:
   columns = []
 
   for key, value in web_page.__annotations__.items():
-      if value == str:
-          columns.append(f"{key} TEXT")
-      elif value == int:
-          columns.append(f"{key} INTEGER")
-      elif value == datetime:
-          columns.append(f"{key} DATETIME")
-      elif value == np.ndarray:
-          columns.append(f"{key} ARRAY")
-      elif value == list:
-          columns.append(f"{key} LIST")
+    if value == str:
+        columns.append(f"{key} TEXT")
+    elif value == int:
+        columns.append(f"{key} INTEGER")
+    elif value == datetime:
+        columns.append(f"{key} DATETIME")
+    elif value == np.ndarray:
+        columns.append(f"{key} ARRAY")
+    elif value == list :
+        columns.append(f"{key} LIST")
 
   cursor.execute("DROP TABLE IF EXISTS pages")
   cursor.execute(f"CREATE TABLE pages({', '.join(columns)})")
@@ -100,8 +99,8 @@ def populate_db(db: sqlite3.Connection, pages: list[web_page]):
   # can still import this module.
   from itertools import batched
 
-  # Process by batches of 512 records for good memory vs. speed trade-off
-  pages_tuple = batched([tuple(sanitize_web_page(elem, to_db=True).values()) for elem in pages], 512)
+  # Process by batches of 128 records for good memory vs. speed trade-off
+  pages_tuple = batched([tuple(sanitize_web_page(elem, to_db=True).values()) for elem in pages], 128)
   cursor = db.cursor()
   columns = ", ".join(["?" for key in web_page.__annotations__.keys()])
   for batch in pages_tuple:

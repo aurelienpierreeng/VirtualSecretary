@@ -34,10 +34,10 @@ class web_page(TypedDict):
     excerpt: str = ""
     """Shortened version of the content for search results previews. Typically provided as `description` meta tag by websites."""
 
-    h1: set = {}
+    h1: list = []
     """Title of the post if any. There should be only one h1 per page, matching title, but some templates wrongly use h1 for section titles."""
 
-    h2: set = {}
+    h2: list = []
     """Section titles if any"""
 
     lang: str = "en"
@@ -73,12 +73,25 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
 
     if "h1" in page:
         if isinstance(page["h1"], str):
-            page["h1"] = {page["h1"]}
+            page["h1"] = [page["h1"]]
         elif isinstance(page["h1"], list):
-            page["h1"] = set(copy.deepcopy(page["h1"]))
+            page["h1"] = copy.deepcopy(page["h1"])
+        elif isinstance(page["h1"], set):
+            page["h1"] = copy.deepcopy(list(page["h1"]))
+        elif isinstance(page["h1"], dict):
+            page["h1"] = []
+        else:
+            raise TypeError(f"Invalid type for h1: {type(page['h1'])}, {page['h1']}")
 
-    if "h2" in page and isinstance(page["h2"], list):
-        page["h2"] = set(copy.deepcopy(page["h2"]))
+    if "h2" in page:
+        if isinstance(page["h2"], list):
+            page["h2"] = copy.deepcopy(page["h2"])
+        elif isinstance(page["h2"], set):
+            page["h2"] = copy.deepcopy(list(page["h2"]))
+        elif isinstance(page["h2"], dict):
+            page["h2"] = []
+        else:
+            raise TypeError(f"Invalid type for h2: {type(page['h2'])}")
 
     # Handle legacy code : fields added recently
     if "vectorized" not in page:
