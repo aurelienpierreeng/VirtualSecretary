@@ -83,7 +83,7 @@ def open_db(name: str) -> sqlite3.Connection:
 
     # Add regex support to SQLite3
     def regexp(pattern, string):
-        return re.search(pattern, string, re.IGNORECASE) is not None
+        return re.search(pattern, string, re.IGNORECASE, concurrent=True) is not None
 
     db.create_function("regexp", 2, regexp)
 
