@@ -7,6 +7,7 @@ Create an SQLite database of `web_pages` to be used by a search engine.
 import sqlite3
 import io
 import numpy as np
+import regex as re
 
 import pickle
 import json
@@ -73,12 +74,20 @@ def create_db(name: str) -> sqlite3.Connection:
 
 
 def open_db(name: str) -> sqlite3.Connection:
-  """Create or recreate (overwrite) a new table of `web_page` items.
+    """Create or recreate (overwrite) a new table of `web_page` items.
 
-  Warning: The columns are initialized straight from the keys of `web_page`.
-  """
-  # Note: detect_types is mandatory for custom types support
-  return sqlite3.connect(get_models_folder(name), detect_types=sqlite3.PARSE_DECLTYPES, isolation_level=None)
+    Warning: The columns are initialized straight from the keys of `web_page`.
+    """
+    # Note: detect_types is mandatory for custom types support
+    db = sqlite3.connect(get_models_folder(name), detect_types=sqlite3.PARSE_DECLTYPES, isolation_level=None)
+
+    # Add regex support to SQLite3
+    def regexp(pattern, string):
+        return re.search(pattern, string, re.IGNORECASE) is not None
+
+    db.create_function("regexp", 2, regexp)
+
+    return db
 
 
 def close_db(db: sqlite3.Connection):
@@ -99,8 +108,8 @@ def populate_db(db: sqlite3.Connection, pages: list[web_page]):
   # can still import this module.
   from itertools import batched
 
-  # Process by batches of 128 records for good memory vs. speed trade-off
-  pages_tuple = batched([tuple(sanitize_web_page(elem, to_db=True).values()) for elem in pages], 128)
+  # Process by batches of 512 records for good memory vs. speed trade-off
+  pages_tuple = batched([tuple(sanitize_web_page(elem, to_db=True).values()) for elem in pages], 512)
   cursor = db.cursor()
   columns = ", ".join(["?" for key in web_page.__annotations__.keys()])
   for batch in pages_tuple:

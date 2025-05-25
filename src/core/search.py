@@ -80,38 +80,27 @@ class Indexer():
         self.words = len(word2vec.wv)
         self.pages = self.ranker.corpus_size
 
+        self.index = []
+        vectors_all = []
+
+        cursor = db.execute("SELECT rowid, url, datetime, category, title, excerpt, vectorized FROM pages")
+        for item in cursor.fetchall():
+            self.index.append({ "index": item[0], "url": item[1], "datetime": item[2], "category": item[3], "title": item[4], "excerpt": item[5] })
+            vectors_all.append(item[6])
+
+        self.vectors_all = np.array(vectors_all, dtype=np.float32)
+        self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
+
         self.sql = None
         """Cache the previous SQL filtering conditions"""
 
         self.save(name)
 
     @timeit()
-    def get_contents(self, db: sqlite3.Connection, sql: str = ""):
+    def get_contents(self, db: sqlite3.Connection, sql: str = "") -> list[int]:
         """Lazily load the list of `web_page` from a DB extraction"""
-
-        # TODO: need to check that the current state of the DB is compatible with the DB used to train the ranker
-        # aka web pages are at least in the same order, and perhaps have the same content.
-        # Problem is how fast can this be made ?
-
-        if sql != self.sql or not self.index:
-
-            # Add regex support to SQLite3
-            def regexp(pattern, string):
-                return re.search(pattern, string, re.IGNORECASE) is not None
-
-            db.create_function("regexp", 2, regexp)
-
-            self.sql = sql
-            self.index = []
-            vectors_all = []
-
-            cursor = db.execute("SELECT rowid, url, datetime, category, title, excerpt, vectorized FROM pages " + sql)
-            for item in cursor.fetchall():
-                self.index.append({ "index": item[0], "url": item[1], "datetime": item[2], "category": item[3], "title": item[4], "excerpt": item[5] })
-                vectors_all.append(item[6])
-
-            self.vectors_all = np.array(vectors_all, dtype=np.float32)
-            self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
+        cursor = db.execute("SELECT rowid FROM pages " + sql)
+        return [item[0] - 1 for item in cursor.fetchall()]
 
 
     def save(self, name: str):
@@ -276,7 +265,7 @@ class Indexer():
 
     @timeit()
     def rank(self, db: sqlite3.Connection, query: str|tuple|re.Pattern, method: search_methods,
-             n_results: int = 500, fine_search: bool = False, sql: str = "") -> list[tuple[str, float]]:
+             n_results: int = 500, fine_search: bool = False, sql: str = "", filter_callback: callable = None, callback_data: dict = None) -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
@@ -287,6 +276,23 @@ class Indexer():
             n_results: number of results to retain
             fine_search: optionally refine the search using a 2D interaction matrix. See [1]
             sql: SQL query to narrow-down the search, for example `WHERE field = value`. Supports PCRE regex with `WHERE field REGEXP 'pattern'`.
+            filter_callback: an user-defined callback filtering index items, having the signature
+            `filter_callback(page: dict[str], callback_data: dict) -> bool`. It will return `True`
+            to include a page or `False` to exclude it. The page is a `dict` of `self.index` objects,
+            having the keys:
+                - `index`: int, rowid of the `web_page` in the database,
+                - `url`: str
+                - `title`: str
+                - `category`: str
+                - `excerpt`: str
+                - `datetime`: datetime.datetime
+            callback_data: arbitrary user data passed on as the second argument to `filter_callback()` if given
+
+        Note:
+            Both SQL search into the database and Python filtering into the index are supported,
+            and can be combined. The local index is a partial copy of the database and is already
+            a Python object, so it will be faster to filter if you only need to parse the copied data
+            to filter in/out.
 
         Returns:
             list: the list of best-matching results as (url, similarity) tuples.
@@ -294,26 +300,36 @@ class Indexer():
         [1]: https://eng.aurelienpierre.com/2024/03/designing-an-ai-search-engine-from-scratch-in-the-2020s/#accounting-for-words-patterns
         """
 
-        self.get_contents(db, sql)
-
-        # Note that SQLite rowid start at 1, so we need to offset indices
-        db_indices = [item["index"] - 1 for item in self.index]
-
         # Note : match needs at least Python 3.10
         match method:
             case search_methods.AI:
                 # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
                 # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
                 # This can yield negative results that are still "valid". Offset similarity score by one.
-                aggregates = 1. + 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])[db_indices]
+                aggregates = 1. + 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])
             case search_methods.FUZZY:
-                aggregates = self.rank_fuzzy(query)[db_indices]
+                aggregates = self.rank_fuzzy(query[2])
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
 
-        # Sort out whatever remains by similarity coeff and keep only the n first elements
-        n_results = min(n_results, aggregates.size)
-        best_indices = np.argpartition(aggregates, -n_results)[-n_results:]
+
+        # Virtual array sorting, that is sort the aggregates relevance coeffs by order of relevance,
+        # but only do it on row indices, so we don't actually sort the table iself
+        n_results = min(n_results, aggregates.size - 1)
+        best_indices = np.argpartition(aggregates, -n_results)
+
+        if sql != "":
+            # Get the intersection of the indices above with the indices from SQL query
+            # but keep the ordering from the ranking above
+            mask = np.isin(best_indices, self.get_contents(db, sql))
+            best_indices = best_indices[mask]
+
+        if filter_callback:
+            # Use Python filtering on self.index items
+            best_indices = [index for index in best_indices
+                            if filter_callback(self.index[index], callback_data)]
+
+        best_indices = best_indices[-n_results:]
         best_elems = [self.index[i] for i in best_indices]
         best_similarity = aggregates[best_indices]
 
@@ -328,7 +344,9 @@ class Indexer():
             indexed_query = self.word2vec.tokens_to_indices(query[2])
             ranked = self.find_query_pattern(indexed_query, ranked)
 
-        return sorted([(index, page, similarity) for index, page, similarity in ranked if similarity > 0.], key=lambda x:x[2], reverse=True)
+        return sorted([(index, page, similarity)
+                       for index, page, similarity in ranked
+                       if similarity > 0.], key=lambda x:x[2], reverse=True)
 
 
     def get_related(self, post: tuple[np.ndarray, float, list[str]], n: int = 15, k: int = 5) -> list:
