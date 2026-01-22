@@ -1,0 +1,6 @@
+numpy==1.26.4 # OpenBLAS issues with Python > 3.11 or something
+scipy==1.13.1 # required by gensim
+gensim==4.3.3 # explicitely fail to build wheels for Python > 3.12
+nltk
+scikit-learn
+rank-bm25

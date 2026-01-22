@@ -1,0 +1,12 @@
+beautifulsoup4
+html5lib
+jsonschema
+
+PyPDF
+pycryptodome
+pdf2image
+pillow==10.4.0
+opencv-python-headless
+pytesseract
+
+levenshtein

@@ -138,7 +138,6 @@ models/*
 data/*
 src/web/*
 *.ini
-*.txt
 
 # Heady stuff that has no business in codebase
 *.tar.gz
