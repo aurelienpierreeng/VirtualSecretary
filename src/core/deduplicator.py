@@ -14,8 +14,8 @@ h=hpy()
 
 from . import patterns
 from . import nlp
-from .types import web_page, get_web_pages_ram, sanitize_web_page
-from .utils import guess_date, typography_undo, clean_whitespaces, get_available_ram, get_models_folder, timeit
+from .types import web_page, sanitize_web_page
+from .utils import guess_date, get_models_folder, timeit
 
 class Deduplicator():
     urls_to_ignore: list[str] = [
@@ -223,7 +223,7 @@ class Deduplicator():
         return [self.get_unique_urls_parallel(item) for item in  cleaned_set.values()]
 
 
-    def get_close_content(self, posts: list[web_page], threshold: float = 0.90, distance: float = 500) -> list[web_page]:
+    def get_close_content(self, posts: list[web_page], threshold: float = 0.90, distance: float = 50) -> list[web_page]:
         """Find near-duplicate by computing the Levenshtein distance between pages contents.
 
         Params:
@@ -332,7 +332,7 @@ class Deduplicator():
         return [sanitize_web_page(post, to_db=False) for post in posts]
 
 
-    def __init__(self, threshold: float = 0.9, distance: int = 500, discard_params: bool = True, n_min: int = 0, fix_urls: bool = True):
+    def __init__(self, threshold: float = 0.9, distance: int = 50, discard_params: bool = True, n_min: int = 0, fix_urls: bool = True):
         """Instanciate a depduplicator object.
 
         The duplicates factorizing takes a list of [core.types.web_page][]
