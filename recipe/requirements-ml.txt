@@ -1,5 +1,0 @@
-scipy
-gensim==4.4
-nltk
-scikit-learn
-rank-bm25

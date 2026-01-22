@@ -1,11 +1,37 @@
 setuptools==58.2.0 # needed for pyspf to build wheel
 wheel # just in case
-numba==0.61.0
-numpy>=2.0,<=2.1 # needed for numba
-python-dateutil
-requests
-requests-oauthlib
+
+# Common utils
 regex
 psutil
 guppy3
 lz4
+python-dateutil
+
+# Network
+requests
+requests-oauthlib
+
+# High-perf linear algebra and machine learning
+numba==0.61.0
+numpy>=2.0,<=2.1 # needed for numba 0.61
+scipy
+gensim==4.4
+nltk
+scikit-learn
+rank-bm25
+levenshtein
+
+# PDF I/O and OCR
+opencv-python-headless
+PyPDF
+cffi # not always auto-installed for PyPDF
+pycryptodome
+pdf2image
+pillow==10.4.0
+pytesseract
+
+# Text parsing (HTML, XML, JSON)
+beautifulsoup4
+html5lib
+jsonschema
