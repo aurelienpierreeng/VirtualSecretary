@@ -1,12 +1,14 @@
+opencv-python-headless
+
 beautifulsoup4
 html5lib
 jsonschema
 
 PyPDF
+cffi # not always auto-installed for PyPDF
 pycryptodome
 pdf2image
 pillow==10.4.0
-opencv-python-headless
 pytesseract
 
 levenshtein
