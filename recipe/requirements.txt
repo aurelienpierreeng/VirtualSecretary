@@ -35,3 +35,4 @@ pytesseract
 beautifulsoup4
 html5lib
 jsonschema
+markdown
