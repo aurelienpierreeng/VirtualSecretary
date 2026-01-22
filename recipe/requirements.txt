@@ -24,7 +24,7 @@ PyPDF
 pycryptodome
 pdf2image
 pillow==10.4.0
-opencv-python
+opencv-python-headless
 pytesseract
 mkdocs
 mkdocs-material
