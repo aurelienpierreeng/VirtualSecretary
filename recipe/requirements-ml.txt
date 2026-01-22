@@ -1,5 +1,5 @@
 scipy
-gensim
+gensim==4.4
 nltk
 scikit-learn
 rank-bm25
