@@ -133,6 +133,7 @@ config*/*
 workspace.code-workspace
 src/user_scripts/*.py
 src/user_scripts/*.sh
+src/user_scripts/.git
 models/*
 data/*
 src/web/*
