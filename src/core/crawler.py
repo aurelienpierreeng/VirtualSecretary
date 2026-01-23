@@ -20,8 +20,8 @@ from bs4 import BeautifulSoup
 
 from . import patterns, utils
 from .pdf import get_pdf_content
-from .types import web_page, get_web_pages_ram
-from .network import check_response, try_url, get_url, DelayedClass
+from .types import web_page
+from .network import try_url, get_url, DelayedClass
 
 
 def get_content_type(url: str, delay: callable) -> tuple[str, bool, str, dict]:
@@ -73,6 +73,8 @@ def relative_to_absolute(URL: str, domain: str, current_page: str) -> str:
         raise TypeError("`current_page` should be defined")
 
     # relative path declared from current page. Hard
+    test_url = ""
+    
     try:
         test_url = urljoin(current_page, URL)
     except:

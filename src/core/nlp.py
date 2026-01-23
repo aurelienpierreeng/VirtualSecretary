@@ -34,7 +34,7 @@ from sklearn.svm import SVC
 from .patterns import *
 from .utils import get_models_folder, typography_undo, guess_date, clean_whitespaces, timeit, get_available_ram, get_script_ram
 from .language import *
-from .crawler import web_page, get_web_pages_ram
+from .crawler import web_page
 
 latin_letters = {}
 
