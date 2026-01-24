@@ -71,40 +71,20 @@ def _try_url(url, timeout=30, delay: DelayedClass = None) -> tuple[requests.requ
         delay.get_sleep_delay()
         return requests.head(url, timeout=timeout, allow_redirects=True, verify=False), {}, url
 
-    # 0: try to see if there is a robots.txt file preventing us from accessing
-    robots_txt = protocol + "://" + domain.rstrip("/") + "/robots.txt"
-    robot = robotparser.RobotFileParser(robots_txt)
-    robot.read()
-
     # 1: try the given URL with varying headers
     for HEADER in agents:
-        if ("User-Agent" in HEADER and robot.can_fetch(HEADER["User-Agent"], url)) \
-            or robot.can_fetch("*", url) \
-            or url.endswith("sitemap.xml"): # yes, some stupid robots.txt end up blocking sitemaps
-            for test_url in [url, url + "/"]:
-                delay.get_sleep_delay()
-                try:
-                    result = requests.head(url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False)
-                    if result.status_code == 200:
-                        return result, HEADER, result.url
-                except:
-                    pass       
+        for test_url in [url, url + "/"]:
+            delay.get_sleep_delay()
+            try:
+                result = requests.head(url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False)
+                if result.status_code == 200:
+                    return result, HEADER, result.url
+            except:
+                pass       
                     
-    # 1.5: check if we are not disallowed at all from this page.
-    # Don't crawl there as there are honeypot catchers that might block us later
-    if not robot.can_fetch("*", url) and not robot.can_fetch(ua0["User-Agent"], url): 
-        print("Not allowed to crawl", url)
-        # Forge a fake 403 (not nauthorized) HTML response
-        result = requests.Response()
-        result.status_code = 403
-        result.url = url
-        result.headers["content-type"] = "text/raw"
-        return result, ua1, url
-
     # 2. bruteforce all possible unique combinations in case we have a semi-wrong URL
     # Try : http/https, with/without www., trailing / or not, URL params/anchors or not.
     # Also try to remove trailing () because that might be Markdown link syntax caught in URL detection.
-    final_url = url
     for HEADER in agents:
         for PROTOCOL in set([protocol + "://", "http://", "https://"]):
             for DOMAIN in set([domain, patterns.remove_www(domain), domain.rstrip("/")]):
