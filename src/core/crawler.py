@@ -9,6 +9,7 @@ import datetime
 import random
 import json
 import copy
+import hashlib
 
 from urllib.parse import urljoin
 
@@ -553,6 +554,9 @@ class Crawler(DelayedClass):
         """
         self.crawled_URL: list[str] = []
         """List of URLs already visited"""
+        
+        self.crawled_content: list[str] = []
+        """List of hashes of content already known"""
 
         self.no_follow += no_follow
         self.delay = delay
@@ -755,6 +759,17 @@ class Crawler(DelayedClass):
 
             index, new_url = get_page_content(index_url, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
             index_url = self.update_link(index_url, new_url, status, index is None)
+            
+            # Detecting already-known pages based solely on URL is not always reliable,
+            # since some URL params may change while still pointing to the same content,
+            # though some URL params may query a different content.
+            # Can't get any more clever with URLs, so we check content hash here.
+            if index and index.body:
+                content_hash = hashlib.sha256(index.body.encode()).hexdigest()
+                if content_hash in self.crawled_content:
+                    return output
+                else:
+                    self.crawled_content.append(content_hash)
 
             if include or _recursion_level == 0 or ".pdf" in index_url.lower():
                 # For the first recursion level, ignore "url contains" rule to allow parsing index pages
