@@ -1,4 +1,5 @@
-import requests
+#import requests
+from curl_cffi import requests
 import time
 import random
 
@@ -46,13 +47,10 @@ def _try_url(url, timeout=30, delay: DelayedClass = None) -> tuple[requests.requ
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 OPR/112.0.0.0",
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
     ]
-    ua0 = requests.utils.default_headers()
-    ua1 = {"User-Agent": random.choice(UA), 'Connection': 'keep-alive'}
-    ua2 = {"User-Agent": "Virtual Secretary", 'Connection': 'keep-alive'}
-    ua3 = {"User-Agent": "Twitterbot", 'Connection': 'keep-alive'}
-    ua4 = {"User-Agent": "Googlebot", 'Connection': 'keep-alive' }
-    ua5 = {'Connection': 'keep-alive'}
-    agents = [ua1, ua2, ua3, ua4, ua5, ua0]
+    ua1 = {"User-Agent": random.choice(UA), 'Connection': 'keep-alive', "Accept": "text/xml,application/xml;q=0.9,*/*;q=0.8",}
+    ua2 = {"User-Agent": "Virtual Secretary", 'Connection': 'keep-alive', "Accept": "text/xml,application/xml;q=0.9,*/*;q=0.8",}
+    ua3 = {'Connection': 'keep-alive', "Accept": "text/xml,application/xml;q=0.9,*/*;q=0.8",}
+    agents = [ua1, ua2, ua3]
 
     # URL inside non-processed Markdown syntax can have an orphan/unmatched trailing )
     # But beware of Wikipedia links that can have non-orphan final ) for disambiguation
@@ -69,14 +67,14 @@ def _try_url(url, timeout=30, delay: DelayedClass = None) -> tuple[requests.requ
     else:
         # Couldn't parse URL, still try it just in case
         delay.get_sleep_delay()
-        return requests.head(url, timeout=timeout, allow_redirects=True, verify=False), {}, url
+        return requests.head(url, timeout=timeout, allow_redirects=True, verify=False, impersonate="chrome120"), {}, url
 
     # 1: try the given URL with varying headers
     for HEADER in agents:
         for test_url in [url, url + "/"]:
             delay.get_sleep_delay()
             try:
-                result = requests.head(url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False)
+                result = requests.head(url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False, impersonate="chrome120")
                 if result.status_code == 200:
                     return result, HEADER, result.url
             except:
@@ -95,7 +93,7 @@ def _try_url(url, timeout=30, delay: DelayedClass = None) -> tuple[requests.requ
                             if test_url != url and test_url != url + "/":
                                 delay.get_sleep_delay()
                                 try:
-                                    result = requests.head(test_url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False)
+                                    result = requests.head(test_url, timeout=timeout, headers=HEADER, allow_redirects=True, verify=False, impersonate="chrome120")
                                     if result.status_code == 200:
                                         # valid result
                                         return result, HEADER, result.url
@@ -103,7 +101,7 @@ def _try_url(url, timeout=30, delay: DelayedClass = None) -> tuple[requests.requ
                                     pass
 
     # Try the Wayback machine in final resort: "https://web.archive.org/web/"
-    result = requests.head("https://web.archive.org/web/" + url, timeout=timeout, allow_redirects=True, verify=False)
+    result = requests.head("https://web.archive.org/web/" + url, timeout=timeout, allow_redirects=True, verify=False, impersonate="chrome120")
     return result, {}, result.url
 
 
@@ -131,15 +129,15 @@ def get_url(url: str, timeout=30, delay: DelayedClass= None, custom_header={}, b
     delay.get_sleep_delay()
 
     if backend == "requests" or url.lower().endswith(".xml") or url.lower().endswith(".txt") or ".pdf" in url.lower():
-        page = requests.get(url, timeout=30, headers=custom_header, allow_redirects=True, verify=False)
+        page = requests.get(url, timeout=30, headers=custom_header, allow_redirects=True, verify=False, impersonate="chrome120")
         new_url = page.url
         status_code = page.status_code
         content = page.content
         encoding = page.encoding
-        apparent_encoding = page.apparent_encoding
+        #apparent_encoding = page.apparent_encoding # requests package only
     else:
         raise(Exception("wrong backend chosen or no driver configured"))
 
     check_response("Content", url, new_url, status_code)
 
-    return content, new_url, status_code, encoding, apparent_encoding
+    return content, new_url, status_code, encoding, encoding

@@ -11,6 +11,7 @@ python-dateutil
 # Network
 requests
 requests-oauthlib
+curl_cffi
 
 # High-perf linear algebra and machine learning
 numba==0.61.0

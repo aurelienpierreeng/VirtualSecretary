@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 import Levenshtein
 
+from curl_cffi import requests
 import numpy as np
 from guppy import hpy
 h=hpy()
@@ -65,7 +66,7 @@ class Deduplicator():
             if fix_urls and protocol == "http":
                 test_url = "https://" + domain + page + params + anchor
                 try:
-                    response = requests.head(test_url, timeout=2, allow_redirects=True)
+                    response = requests.head(test_url, timeout=2, allow_redirects=True, impersonate="chrome120")
                     if response.status_code == 200:
                         # Found a valid page -> convert to https
                         protocol = "https"
@@ -80,7 +81,7 @@ class Deduplicator():
             if fix_urls and domain.startswith("www."):
                 test_url = protocol + domain.lstrip("www.") + page + params + anchor
                 try:
-                    response = requests.head(test_url, timeout=2, allow_redirects=True)
+                    response = requests.head(test_url, timeout=2, allow_redirects=True, impersonate="chrome120")
                     if response.status_code == 200:
                         # Found a valid page -> remove www.
                         domain = domain.lstrip("www.")
