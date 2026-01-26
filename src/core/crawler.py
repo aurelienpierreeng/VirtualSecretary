@@ -752,7 +752,7 @@ class Crawler(DelayedClass):
 
         # FIXME: we nest 7 levels of if here. It's ugly but I don't see how else
         # to cover so many cases.
-        if "pdf" in content_type or ".pdf" in index_url.lower():
+        if "pdf" in content_type:
             #print("got pdf")
             output += self._parse_pdf_content(index_url, default_lang, category=category, delay=self)
             # No link to follow from PDF docmuents
@@ -781,11 +781,13 @@ class Crawler(DelayedClass):
                 if include or _recursion_level == 0:
                     output += self._parse_original(index, index_url, default_lang, markup, None, category)
                     output += self._parse_translations(index, domain, index_url, markup, None, langs, category)
-                    print("page object")
+                    #print("page object")
                     
                 # Follow internal links whether or not this page was mined, if we didn't reach the final recursion level
                 if _recursion_level + 1 != max_recurse_level:
-                    for currentURL in self.get_unique_internal_url(index, domain, index_url):
+                    internal_urls = self.get_unique_internal_url(index, domain, index_url)
+                    #print(internal_urls)
+                    for currentURL in internal_urls:
                         current_address = patterns.URL_PATTERN.search(currentURL)
                         if not current_address or currentURL in self.crawled_URL:
                             continue
@@ -795,11 +797,11 @@ class Crawler(DelayedClass):
                         current_page = current_address.group(3)
                         current_params = current_address.group(4) if current_address.group(4) else ""
 
-                        #print(current_page, current_page, current_params)or ".pdf" in index_url.lower()
+                        #print(current_page, current_page, current_params)
                         if not restrict_section and domain == current_domain:
                             # Recurse only through local pages, aka :
                             # 1. domains match
-                            #print("recursing")
+                            #print("recursing", currentURL)
                             output += self.get_website_from_crawling(
                                 website, default_lang, child=current_page + current_params, langs=langs, markup=markup, contains_str=contains_str, mine_pdf=mine_pdf,
                                 _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category,
@@ -808,7 +810,7 @@ class Crawler(DelayedClass):
                             # Recurse only through local subsections, aka :
                             # 1. domains match
                             # 2. current page is in a subsection of current child
-                            #print("recursing")
+                            #print("recursing bis", currentURL)
                             output += self.get_website_from_crawling(
                                 website, default_lang, child=current_page + current_params, langs=langs, markup=markup, contains_str=contains_str, mine_pdf=mine_pdf,
                                 _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category,
@@ -816,14 +818,14 @@ class Crawler(DelayedClass):
                         elif include and domain == current_domain:
                             # Follow internal links on only one recursivity level
                             # Aka HTML reference pages (Wikipedia) and attached PDF (docs, manuals, spec sheets)
-                            #print("following")
+                            #print("following local", currentURL)
                             output += self.get_website_from_crawling(
                                 current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, contains_str="", max_recurse_level=1,
                                 mine_pdf=mine_pdf, restrict_section=restrict_section, category=category, _recursion_level=0, _mainthread=False)
                         elif include and domain != current_domain:
                             # Follow external links on only one recursivity level.
                             # Aka HTML reference pages (Wikipedia) and attached PDF (docs, manuals, spec sheets)
-                            #print("following")
+                            #print("following distant", currentURL)
                             output += self.get_website_from_crawling(
                                 current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, contains_str="", max_recurse_level=1,
                                 mine_pdf=mine_pdf, restrict_section=restrict_section, category="external", _recursion_level=0, _mainthread=False)
