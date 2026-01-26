@@ -496,6 +496,7 @@ class Crawler(DelayedClass):
         "facebook.com/sharer",
         "twitter.com/intent/tweet",
         "twitter.com/share",
+        "x.com/share",
         "reddit.com/submit",
         "t.me/share", # Telegram share
         "linkedin.com/share",
@@ -515,6 +516,7 @@ class Crawler(DelayedClass):
         "/user/",
         "/member/",
         "/register?",
+        "?share=",
         ".css",
         ".js",
         ".json",
