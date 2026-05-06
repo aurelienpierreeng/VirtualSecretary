@@ -160,7 +160,7 @@ class Indexer():
         other ranking methods using that collocation factor.
 
         Its major drawback is to be 100 to 500 times slower than the other rankers, due to 2D convolutions,
-        which means it needs to run an a subset of the search index, after previous methods were tried,
+        which means it needs to run on a subset of the search index, after previous methods were tried,
         to refine a previous ranking.
 
         Parameters:
