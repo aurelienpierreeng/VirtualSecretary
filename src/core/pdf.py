@@ -16,7 +16,7 @@ import regex as re
 from datetime import datetime
 
 from .types import web_page
-from .network import check_response, get_url, try_url, DelayedClass
+from .network import get_url, DelayedClass
 from .patterns import HYPHENIZED
 
 def ocr_pdf(document: bytes, output_images: bool = False, path: str = None,

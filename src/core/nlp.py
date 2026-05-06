@@ -9,9 +9,6 @@ Supports automatic language detection, word tokenization and stemming for `'dani
 import random
 import regex as re
 import os
-import sys
-from multiprocessing import Pool, current_process
-from multiprocessing import Manager
 import concurrent
 import unicodedata as ud
 
@@ -21,7 +18,6 @@ import gensim
 from gensim.models.callbacks import CallbackAny2Vec
 
 import joblib
-import pickle
 import sqlite3
 
 import numpy as np
@@ -32,7 +28,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
 from .patterns import *
-from .utils import get_models_folder, typography_undo, guess_date, clean_whitespaces, timeit, get_available_ram, get_script_ram
+from .utils import get_models_folder, typography_undo, clean_whitespaces, timeit
 from .language import *
 from .crawler import web_page
 

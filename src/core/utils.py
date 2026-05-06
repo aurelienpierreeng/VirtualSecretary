@@ -7,7 +7,6 @@ Logging and filter finding utilities.
 
 from datetime import datetime, timezone, timedelta
 import os
-import sys
 import io
 import errno
 import pickle
@@ -19,7 +18,6 @@ import psutil
 from collections.abc import Iterable
 
 from typing import TypedDict
-import copy
 from dateutil import parser
 from .patterns import MULTIPLE_SPACES, MULTIPLE_LINES, MULTIPLE_NEWLINES, INTERNAL_NEWLINE
 

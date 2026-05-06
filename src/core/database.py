@@ -9,7 +9,6 @@ import io
 import numpy as np
 import regex as re
 
-import pickle
 import json
 from datetime import datetime
 
