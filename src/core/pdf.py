@@ -19,9 +19,16 @@ from .types import web_page
 from .network import get_url, DelayedClass
 from .patterns import HYPHENIZED
 
-def ocr_pdf(document: bytes, output_images: bool = False, path: str = None,
-            repair: int = 1, upscale: int = 3, contrast: float = 1.5, sharpening: float = 1.2, threshold: float = 0.4,
-            tesseract_lang: str = "eng+fra+equ", tesseract_bin: str = None) -> str:
+def ocr_pdf(document: bytes, 
+            output_images: bool = False, 
+            path: str = None,
+            repair: int = 1, 
+            upscale: int = 3, 
+            contrast: float = 1.5, 
+            sharpening: float = 1.2, 
+            threshold: float = 0.4,
+            tesseract_lang: str = "eng+fra+equ", 
+            tesseract_bin: str = None) -> str:
     """Extract text from PDF using OCR through [Tesseract](https://github.com/tesseract-ocr/tesseract). Both the binding [Python package PyTesseract](https://pypi.org/project/pytesseract/#installation) __and__ the [Tesseract binaries](https://tesseract-ocr.github.io/tessdoc/Installation.html) need to be installed.
 
     To run on a server where you don't have `sudo` access to install package, you will need to download the [AppImage package](https://tesseract-ocr.github.io/tessdoc/Installation.html#appimage) and pass its path to the `tesseract_bin` argument.
@@ -145,6 +152,8 @@ def get_pdf_content(url: str,
                     process_outline: bool = True,
                     category: str = None,
                     ocr: int = 1,
+                    max_size: int = 20,
+                    max_pages: int = 20,
                     custom_header: dict = {},
                     delay: DelayedClass = None,
                     **kwargs) -> list[web_page]:
@@ -161,6 +170,8 @@ def get_pdf_content(url: str,
             - `1` enables OCR through Tesseract if no text was found in the PDF document
             - `2` forces OCR through Tesseract even when text was found in the PDF document.
         See [core.crawler.ocr_pdf][] for info regarding the Tesseract environment. You will need to manually disable
+        max_size: when attempting OCR on PDF files, files larger than this value (in MiB) will be ignored.
+        max_pages: when attempting OCR on PDF files, files having more pages than this value will be ignored.
         custom_header: option HTTP headers to form the request that will download the PDF
 
     Other parameters:
@@ -186,6 +197,14 @@ def get_pdf_content(url: str,
     except Exception as e:
         print("PDF handling error:", e)
         return []
+
+    max_pdf_size = max_size * 1024 * 1024
+
+    # Get the size of the blob
+    pos = document.tell()
+    document.seek(0, 2)
+    pdf_size = document.tell()
+    document.seek(pos)
 
     blob = document.read() # need to backup PDF content here because PdfReader kills it next
 
@@ -218,16 +237,19 @@ def get_pdf_content(url: str,
     # From PyPdf2 doc : "This works well for some PDF files, but poorly for others,
     # depending on the generator used.". Hence catch exceptions.
     try:
-        content = "\n".join([elem.extract_text() for elem in reader.pages]).strip("\n ")
+        content = "\n".join([elem.extract_text(extraction_mode="layout") for elem in reader.pages]).strip("\n ")
     except:
         return []
 
-    if (ocr == 1 and len(content) < 20) or ocr == 2:
+    if ((ocr == 1 and len(content) < 20) or ocr == 2) and pdf_size < max_pdf_size and len(reader.pages) < max_pages:
         # No text, retry with OCR
         try:
             content = ocr_pdf(blob, path=file_path, **kwargs)
         except Exception as e:
             print(e)
+    else:
+        filename = file_path if file_path else url
+        print("PDF file ", filename, "is too big to be OCR-ed. Change your settings if you need it.")
 
     # Ugly code ahead.
     # FIXME: make that mess more rigorous.
