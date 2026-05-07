@@ -25,8 +25,7 @@ levenshtein
 
 # PDF I/O and OCR
 opencv-python-headless
-PyPDF
-cffi # not always auto-installed for PyPDF
+PyMuPDF
 pycryptodome
 pdf2image
 pillow==10.4.0

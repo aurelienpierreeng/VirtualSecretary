@@ -4,7 +4,7 @@
 """
 
 from io import BytesIO
-from pypdf import PdfReader
+import fitz
 import pytesseract
 import cv2
 import pdf2image
@@ -115,35 +115,60 @@ def ocr_pdf(document: bytes,
     return content.strip("\n ")
 
 
-def _recurse_pdf_outline(reader: PdfReader, outline_elem, document_title: str):
-    chapters_titles = []
-    chapters_bounds = []
+def _get_pdf_outline(doc: fitz.Document, document_title: str) -> tuple[list[str], list[int]]:
+    """Return a list of chapter titles and 0-based page bounds using PyMuPDF's TOC.
 
-    if isinstance(outline_elem, dict):
-        chapters_bounds += [reader._get_page_number_by_indirect(outline_elem.page)]
-        chapters_titles += [document_title + " | " + outline_elem.title]
+    The TOC returned by `doc.get_toc()` is a list of [level, title, page] entries
+    where `page` is 1-based. We convert pages to 0-based indices and prefix each
+    title with the document title for uniqueness (matching previous behaviour).
+    """
+    toc = doc.get_toc()
+    chapters_titles: list[str] = []
+    chapters_bounds: list[int] = []
 
-    elif isinstance(outline_elem, list):
-        for elem in outline_elem:
-            chapters_t, chapters_b = _recurse_pdf_outline(reader, elem, document_title)
-            chapters_titles += chapters_t
-            chapters_bounds += chapters_b
+    for level, title, page in toc:
+        chapters_titles.append(f"{document_title} | {title}")
+        # convert 1-based page number to 0-based index
+        chapters_bounds.append(max(0, page - 1))
 
-    return chapters_titles, chapters_bounds
-
-
-def _get_pdf_outline(reader: PdfReader, document_title:str) -> tuple[list[str], list[int]]:
-    chapters_titles = []
-    chapters_bounds = []
-
-    for out in reader.outline:
-        chapters_t, chapters_b = _recurse_pdf_outline(reader, out, document_title)
-        chapters_titles += chapters_t
-        chapters_bounds += chapters_b
-
-    # The list of titles and page bounds start at the first section title,
-    # we need to handle the content between that and the very beginning of the document.
     return [document_title] + chapters_titles, [0] + chapters_bounds
+
+
+def _extract_text_from_page(page: fitz.Page, min_chars: int = 20) -> str:
+    """Robustly extract text from a PyMuPDF `page`.
+
+    Strategy:
+    - Try `page.get_text("text")` (fast)
+    - If too short, try `page.get_text("dict")` and collect spans
+    - Then try `page.get_text("words")` and join words in reading order
+    """
+    text = page.get_text("text") or ""
+    text = text.strip()
+
+    if len(text) >= min_chars:
+        return text
+
+    # Try dict/blocks -> spans
+    d = page.get_text("dict")
+    parts: list[str] = []
+    for b in d.get("blocks", []):
+        if b.get("type") == 0:
+            for line in b.get("lines", []):
+                span_text = "".join([s.get("text", "") for s in line.get("spans", [])])
+                if span_text.strip():
+                    parts.append(span_text)
+    text2 = "\n".join(parts).strip()
+    if len(text2) >= min_chars:
+        return text2
+
+    # Try words order
+    words = page.get_text("words")
+    if words:
+        words_sorted = sorted(words, key=lambda w: (round(w[1], 1), w[0]))
+        text3 = " ".join(w[4] for w in words_sorted).strip()
+        if len(text3) >= min_chars:
+            return text3
+
 
 
 def get_pdf_content(url: str,
@@ -206,85 +231,106 @@ def get_pdf_content(url: str,
     pdf_size = document.tell()
     document.seek(pos)
 
-    blob = document.read() # need to backup PDF content here because PdfReader kills it next
+    blob = document.read() # need to backup PDF content here because reader will consume it
 
     try:
-        reader = PdfReader(document)
+        doc = fitz.open(stream=blob, filetype="pdf")
     except Exception as e:
         print(e)
         return []
 
-    if not reader or not reader.metadata:
+    if not doc:
         return []
 
-    # Beware: pypdf converts date from string assuming fixed format without catching exceptions.
-    # need to catch them here to avoid plain crash.
+    # Metadata access
     try:
-        date = reader.metadata.creation_date
+        meta = doc.metadata or {}
+    except:
+        meta = {}
+
+    try:
+        date = meta.get("creationDate") or meta.get("CreationDate")
     except:
         date = None
 
     if isinstance(date, datetime):
-        # new versions of PyPDF return datetime objects
         date = date.isoformat()
 
-    title = reader.metadata.title if reader.metadata.title else url.split("/")[-1]
-    excerpt = reader.metadata.subject
+    title = meta.get("title") if meta.get("title") else url.split("/")[-1]
+    excerpt = meta.get("subject")
 
-    #print(title)
-
-    # Check if the PDF contains text
-    # From PyPdf2 doc : "This works well for some PDF files, but poorly for others,
-    # depending on the generator used.". Hence catch exceptions.
+    # Check if the PDF contains text. Use a robust per-page extractor that
+    # falls back to blocks/words then per-page OCR when necessary.
     try:
-        content = "\n".join([elem.extract_text(extraction_mode="layout") for elem in reader.pages]).strip("\n ")
+        content = "\n".join([_extract_text_from_page(page) for page in doc]).strip("\n ")
     except:
+        try:
+            doc.close()
+        except:
+            pass
         return []
 
-    if ((ocr == 1 and len(content) < 20) or ocr == 2) and pdf_size < max_pdf_size and len(reader.pages) < max_pages:
-        # No text, retry with OCR
-        try:
-            content = ocr_pdf(blob, path=file_path, **kwargs)
-        except Exception as e:
-            print(e)
-    else:
-        filename = file_path if file_path else url
-        print("PDF file ", filename, "is too big to be OCR-ed. Change your settings if you need it.")
+    if ((ocr == 1 and len(content) < 20) or ocr == 2):
+        if pdf_size <= max_pdf_size and doc.page_count <= max_pages:
+            # No text, retry with OCR
+            try:
+                content = ocr_pdf(blob, path=file_path, **kwargs)
+            except Exception as e:
+                print(e)
+        else:
+            filename = file_path if file_path else url
+            print(f"PDF file {filename} is too big to be OCR-ed ({doc.page_count} pages, "
+                f"{pdf_size / (1024 * 1024)} MiB, {len(content)} characters found). Change your settings if you need it.")
 
     # Ugly code ahead.
     # FIXME: make that mess more rigorous.
     try:
-        # Need to protect reader.outline, which calls reader.get_outline()
-        # from exceptions. The web is full of shitty PDFs.
-        if reader.outline and process_outline:
+        # Need to protect TOC retrieval: the web is full of shitty PDFs.
+        if doc.get_toc() and process_outline:
             # Save each outline section in a different document
             results = []
-            chapters_titles, chapters_bounds = _get_pdf_outline(reader, title)
+            chapters_titles, chapters_bounds = _get_pdf_outline(doc, title)
+
+            if len(chapters_bounds) == 0 and len(content) > 0:
+                result = web_page(title=title,
+                                    url=url,
+                                    date=date,
+                                    content=content,
+                                    excerpt=excerpt,
+                                    h1={},
+                                    h2={},
+                                    lang=lang,
+                                    category=category)
+                print("found 1 PDF")
+                doc.close()
+                return [result]
 
             for i in range(0, len(chapters_bounds) - 1):
-                #print(chapters_titles[i], chapters_bounds[i], chapters_bounds[i + 1])
                 n_start = chapters_bounds[i]
-                n_end = min(chapters_bounds[i + 1] + 1, len(reader.pages) - 1)
-                content = "\n".join([elem.extract_text() for elem in reader.pages[n_start:n_end]]).strip("\n ")
-                content = HYPHENIZED.sub("", content, concurrent=True)
+                n_end = min(chapters_bounds[i + 1], doc.page_count)
+                parts = []
+                for p in range(n_start, n_end):
+                    parts.append(_extract_text_from_page(doc.load_page(p)))
+                chapter_content = "\n".join(parts).strip("\n ")
+                chapter_content = HYPHENIZED.sub("", chapter_content, concurrent=True)
 
-                if content:
+                if chapter_content:
                     # Make up a page anchor to make URLs to document sections unique
                     # since that's what is used as key for dictionaries. Also, Chrome and Acrobat
                     # will be able to open PDF files at the right page with this anchor.
                     result = web_page(title=chapters_titles[i],
                                         url=f"{url}#page={i + 1}",
                                         date=date,
-                                        content=content,
+                                        content=chapter_content,
                                         excerpt=None,
                                         h1={},
                                         h2={},
                                         lang=lang,
                                         category=category)
-                    #print(result)
                     results.append(result)
 
             print("found", i, "PDF chapters")
+            doc.close()
             return results
 
         else:
@@ -301,8 +347,8 @@ def get_pdf_content(url: str,
                                     h2={},
                                     lang=lang,
                                     category=category)
-                #print(result)
-                print("found 1 OCR-ed PDF")
+                print("found 1 PDF")
+                doc.close()
                 return [result]
     except:
         # Whether or not text comes from OCR, if we save it in one chunk, do it now and exit.
@@ -318,9 +364,10 @@ def get_pdf_content(url: str,
                                 h2={},
                                 lang=lang,
                                 category=category)
-            #print(result)
             print("found 1 PDF")
+            doc.close()
             return [result]
 
 
+    doc.close()
     return []
