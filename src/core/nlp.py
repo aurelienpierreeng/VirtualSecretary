@@ -800,31 +800,61 @@ class Classifier(nltk.classify.SklearnClassifier):
         return (max(output, key=output.get), max(output.values()))
 
 
+DOCUMENTS = None
+TOKENIZER = None
+
+
+def clean_worker(i):
+    text = DOCUMENTS[i]["content"]
+    text = str(text).encode("utf-8", "replace").decode("utf-8")
+    return i, clean_whitespaces(text)
+
+def normalize_worker(i):
+    doc = DOCUMENTS[i]
+    text = (
+        str(doc["title"]).encode("utf-8", "replace").decode("utf-8")
+        + "\n\n"
+        + doc["content"]
+    )
+    return i, TOKENIZER.normalize_text(text)
+
 @timeit()
-def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 128, cores: int | bool = False) -> list[web_page]:
+def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 512, cores: int | bool = False) -> list[web_page]:
+    global DOCUMENTS, TOKENIZER
+
+    DOCUMENTS = documents
+    TOKENIZER = tokenizer
+
     num_cpu = cores or os.cpu_count()
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
-        # Cleanup redundant and superfluous whitespaces in content
-        parsable = [str(item["content"]).encode('utf-8', 'replace').decode('utf-8') for item in documents]
-        content = executor.map(clean_whitespaces, parsable, chunksize=chunksize)
-        for i, item in enumerate(content):
-            documents[i]["content"] = item
+    ctx = multiprocessing.get_context("fork")
+
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=num_cpu,
+        mp_context=ctx,
+    ) as executor:
+
+        # Cleanup whitespaces
+        for i, cleaned in executor.map(
+            clean_worker,
+            range(len(documents)),
+            chunksize=chunksize
+        ):
+            documents[i]["content"] = cleaned
 
         # Normalize text
-        parsable = [str(item["title"]).encode('utf-8', 'replace').decode('utf-8') + "\n\n" + item["content"] for item in documents]
-        content = executor.map(tokenizer.normalize_text, parsable, chunksize=chunksize)
-        for i, item in enumerate(content):
-            documents[i]["parsed"] = item
-
-        del content
-        del parsable
+        for i, parsed in executor.map(
+            normalize_worker,
+            range(len(documents)),
+            chunksize=chunksize
+        ):
+            documents[i]["parsed"] = parsed
 
     return documents
 
 
 @timeit()
-def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 256):
+def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 512):
     """Tokenize a list of `web_pages` in parallel, in a RAM-friendly way.
 
     Populate the `tokens` key to `web_page` elements (taken from a list), containing the tokenized
