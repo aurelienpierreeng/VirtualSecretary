@@ -579,6 +579,81 @@ class Word2Vec(gensim.models.Word2Vec):
         self.prune_idf()
         self.save(self.pathname)
         print("saving done")
+    
+
+    def update_idf(self, documents: list[list[str]]) -> None:
+        """Update IDF statistics and corpus-dependent metadata with new documents.
+
+        Arguments:
+            documents: New pre-tokenized documents.
+        """
+
+        # Prepare new documents stats
+        new_N_docs = len(documents)
+        doc_lens = [ sum(len(sentence) for sentence in doc) for doc in documents ]
+        total_new_tokens = sum(doc_lens)
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            doc_sets = executor.map(unique_terms, documents)
+
+        new_df_counts = Counter()
+        for s in doc_sets:
+            new_df_counts.update(s)
+
+        old_N_docs = self.N_docs
+
+        # Update stats with new and old documents
+        self.N_docs += new_N_docs
+        self.N_words += total_new_tokens
+        self.N_sentences += sum(len(doc) for doc in documents)
+ 
+        old_total_length = self.avg_doc_len * old_N_docs
+        new_total_length = sum(doc_lens)
+        self.avg_doc_len = (old_total_length + new_total_length) / self.N_docs
+
+        # Recover original DF counts from IDF
+        old_df_counts = { term: max(1, int(round(old_N_docs / idf)))
+                          for term, idf in self.idf.items() }
+
+        # Merge new and old DF counts
+        merged_df = Counter(old_df_counts)
+        merged_df.update(new_df_counts)
+
+        # Compute new IDF
+        self.idf = { term: self.N_docs / df
+                     for term, df in merged_df.items() }
+
+        self.prune_idf()
+
+
+    def prune_idf(self):
+        """Prune IDF entries to the actual model vocabulary (remove tokens
+        that were filtered out by gensim during `super().__init__`).
+        """
+
+        vocab = set(self.wv.key_to_index.keys())
+        original = len(self.idf)
+        self.idf = {t: v for t, v in self.idf.items() if t in vocab}
+        print(f"pruned idf: {original} -> {len(self.idf)} terms")
+
+
+    def retrain(self, corpus_iterable: list[list[str]], **kwargs) -> tuple[int, int]:
+
+        # Flatten docs into a list of sentences
+        new_corpus = [sentence for document in corpus_iterable for sentence in document]
+
+        # Add new vocabulary from new corpus
+        self.build_vocab(new_corpus, update=True)
+
+        # Continue training
+        loss_logger = LossLogger()
+        result = self.train(corpus_iterable=new_corpus, total_examples=len(new_corpus), epochs=self.epochs,
+                               callbacks=[loss_logger], compute_loss=True, **kwargs)
+        
+        self.update_idf(corpus_iterable)
+        self.save(self.pathname)
+
+        return result
 
 
     @classmethod
@@ -977,6 +1052,12 @@ def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int 
 
 @timeit()
 def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int = 256):
+    """Vectorize a column of the `db` database using the provided `word2vec` model
+    using all available cores.
+
+    Works on the `tokenized` column of the database and writes the `vectorized` column.
+    Vectors are normalized as per `nlp.Word2Vec.get_features()` output.    
+    """
     num_cpu = os.cpu_count()
     cursor = db.execute('SELECT rowid, tokenized FROM pages')
     batch_size = num_cpu * chunksize
