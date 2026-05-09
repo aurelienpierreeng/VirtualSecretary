@@ -489,6 +489,7 @@ class Word2Vec(gensim.models.Word2Vec):
                  min_count: int = 5, 
                  sample: float = 0.0005, 
                  tokenizer: Tokenizer = None,
+                 compute_idf: bool = False,
                  **kwargs):
         """Train, re-train or retrieve an existing word2vec word embedding model
 
@@ -501,12 +502,12 @@ class Word2Vec(gensim.models.Word2Vec):
             min_count (int): remove all words used fewer times than this from the vocabulary
             sample (float):
             tokenizer: instance of tokenization.
+            compute_idf: compute and store corpus IDF data for SIF weighting. Disable it
+                to keep saved model artifacts smaller when `use_sif` is not needed.
             kwargs: passed directly through to `gensim.Word2Vec.__init__()`
         """
-        if tokenizer is not None:
-            self.tokenizer = tokenizer
-        else:
-            self.tokenizer = Tokenizer()
+        self.tokenizer = tokenizer if tokenizer is not None else Tokenizer()
+        """Tokenizer used to train the model. We store it to be sure to use the same when using it."""
 
         self.pathname = get_models_folder(name)
         self.vector_size = vector_size
@@ -545,14 +546,32 @@ class Word2Vec(gensim.models.Word2Vec):
                 f.write(f"{key}: {value}\n")
         print("stopwords saved")
 
-        # Compute inverse document frequency (IDF) per term using the original
-        # `documents` (outer list). For each document, build the set of unique
-        # tokens it contains then compute df and idf. Store results in a dict
-        # `self.idf` mapping token -> float for direct lookup.
-        # Build a simple dict mapping term -> idf float for direct lookup
-        self.idf: dict[str, float] = {}
-        """Inverse Document Frequency, aka number of documents where each term 
-        appears in the training corpus"""
+        self.idf: dict[str, float] | None = None
+        """Inverse Document Frequency, used only for SIF weighting when enabled."""
+
+        self.avg_doc_len: float | None = None
+        """Average number of words in documents of the training corpus, available with IDF stats."""
+
+        if compute_idf:
+            self.compute_idf(documents)
+
+        del counts
+
+        loss_logger = LossLogger()
+        super().__init__(sentences, vector_size=vector_size, window=window, min_count=min_count, 
+                         epochs=epochs, sample=sample, callbacks=[loss_logger], 
+                         compute_loss=True, sg=1, max_final_vocab=100000, hs=0, negative=20, alpha=0.020,
+                         workers=os.cpu_count() or 1, batch_words=100000, **kwargs)
+        print("training done")
+
+        if self.idf is not None:
+            self.prune_idf()
+        self.save(self.pathname)
+        print("saving done")
+    
+
+    def compute_idf(self, documents: list[list[str]]) -> None:
+        """Compute and store IDF statistics from a tokenized document corpus."""
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
             doc_sets = executor.map(unique_terms, documents)
@@ -563,23 +582,9 @@ class Word2Vec(gensim.models.Word2Vec):
 
         self.idf = { term: self.N_docs / df for term, df in df_counts.items() }
 
-        # Compute average document length (in tokens) for BM25-style TF normalization
         doc_lens = [sum(len(sentence) for sentence in doc) for doc in documents]
         self.avg_doc_len = sum(doc_lens) / len(doc_lens) if len(doc_lens) > 0 else 1.0
-        """Average number of words in documents of the training corpus"""
-        del counts
 
-        loss_logger = LossLogger()
-        super().__init__(sentences, vector_size=vector_size, window=window, min_count=min_count, 
-                         epochs=epochs, sample=sample, callbacks=[loss_logger], 
-                         compute_loss=True, sg=1, max_final_vocab=100000, hs=0, negative=20, alpha=0.020,
-                         workers=os.cpu_count() or 1, batch_words=100000, **kwargs)
-        print("training done")
-
-        self.prune_idf()
-        self.save(self.pathname)
-        print("saving done")
-    
 
     def update_idf(self, documents: list[list[str]]) -> None:
         """Update IDF statistics and corpus-dependent metadata with new documents.
@@ -587,6 +592,9 @@ class Word2Vec(gensim.models.Word2Vec):
         Arguments:
             documents: New pre-tokenized documents.
         """
+
+        if getattr(self, "idf", None) is None or getattr(self, "avg_doc_len", None) is None:
+            raise RuntimeError("IDF stats were not computed for this model")
 
         # Prepare new documents stats
         new_N_docs = len(documents)
@@ -631,6 +639,9 @@ class Word2Vec(gensim.models.Word2Vec):
         that were filtered out by gensim during `super().__init__`).
         """
 
+        if getattr(self, "idf", None) is None:
+            return
+
         vocab = set(self.wv.key_to_index.keys())
         original = len(self.idf)
         self.idf = {t: v for t, v in self.idf.items() if t in vocab}
@@ -650,7 +661,13 @@ class Word2Vec(gensim.models.Word2Vec):
         result = self.train(corpus_iterable=new_corpus, total_examples=len(new_corpus), epochs=self.epochs,
                                callbacks=[loss_logger], compute_loss=True, **kwargs)
         
-        self.update_idf(corpus_iterable)
+        if getattr(self, "idf", None) is not None:
+            self.update_idf(corpus_iterable)
+        else:
+            self.N_docs += len(corpus_iterable)
+            self.N_words += sum(len(sentence) for doc in corpus_iterable for sentence in doc)
+            self.N_sentences += sum(len(doc) for doc in corpus_iterable)
+
         self.save(self.pathname)
 
         return result
@@ -776,6 +793,9 @@ class Word2Vec(gensim.models.Word2Vec):
         Return:
             The SIF weight associated with the token or 0. if the token was not found in the vocabulary.
         """
+        if getattr(self, "idf", None) is None:
+            raise RuntimeError("IDF stats were not computed for this model")
+
         # Note: SIF technically use token frequency in the training dataset, 
         # aka the number of times the token is found in the whole training bag of words.
         # Here we use document frequency, aka number of documents in which the token is found (TF-IDF style).
