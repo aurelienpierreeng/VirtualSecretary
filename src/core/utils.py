@@ -463,7 +463,7 @@ def guess_date(string: str | datetime) -> datetime:
 
     if isinstance(string, str):
         try:
-            date = parser.parse(string, default=datetime.fromtimestamp(0, tz=tz), fuzzy=True)
+            date = parser.parse(string.removeprefix("D:"), default=datetime.fromtimestamp(0, tz=tz), fuzzy=True)
         except Exception as e:
             print("Date parser got an error:", e)
             date = datetime.fromtimestamp(0, tz=tz)
