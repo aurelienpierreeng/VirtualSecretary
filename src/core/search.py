@@ -9,6 +9,7 @@ import regex as re
 
 from rank_bm25 import BM25Plus
 from collections import Counter
+from sklearn.decomposition import PCA
 
 from .utils import get_models_folder, timeit
 from .nlp import Word2Vec
@@ -129,7 +130,8 @@ class Indexer():
                  db: sqlite3.Connection,
                  name: str,
                  word2vec: Word2Vec,
-                 strip_collocations: bool = False):
+                 strip_collocations: bool = False,
+                 principal_components: int = 1):
         """Search engine based on word similarity.
 
         Arguments:
@@ -140,6 +142,8 @@ class Indexer():
             strip_collocations: remove the matrix of collocations in documents, which is the list of word tokens represented by their index in the
             word2vec dictionnary. It is used for [core.nlp.Indexer.find_query_patterns][], which is optional and significatively slower
             (but not significatively better), so if you don't plan on using it, removing collocations saves some RAM and I/O.
+            principal_components (int): number of principal components to compute and remove from the index dataset. 
+            This helps to make queries more selective and specific in the presence of boilerplate text and formatting language in the sampling.
 
         """
 
@@ -153,13 +157,9 @@ class Indexer():
 
         self.vectors_all: np.ndarray | None = None
         """Store the list of document-wise vector embeddings, where the vector represents
-        the (un-normalized) centroid of tokens vectors contained the document.
-
+        the normalized centroid of tokens vectors contained the document.
         Documents are on the first axis.
         """
-
-        self.all_norms: np.ndarray | None = None
-        """Store the list of L2 norms for each document vector representation."""
 
         # TODO
         self.collocations: np.ndarray | None = None # if strip_collocations else [doc[2] for doc in docs]
@@ -204,13 +204,46 @@ class Indexer():
             self.index.append({ "index": item[0], "url": item[1], "datetime": item[2], "category": item[3], "title": item[4], "excerpt": item[5] })
             vectors_all.append(item[6])
 
+        # Note: `nlp.Word2Vec.get_features`` already normalizes output,
+        # so this is assumed vectorized if using our internal workflows
+        # through `nlp.batch_vectorize`.
         self.vectors_all = np.array(vectors_all, dtype=np.float32)
-        self.all_norms = np.linalg.norm(self.vectors_all, axis=1)
+
+        # Compute the principal axis direction and normalize document vectors with it
+        pca = PCA(n_components=principal_components)
+        pca.fit(self.vectors_all)
+        self.pc = pca.components_
+        """Principal component of the dataset vectors (normalized)"""
+
+        # Remove the principal component on the document vector stack
+        self.vectors_all = self.normalize_pc(self.vectors_all)
 
         self.sql = None
         """Cache the previous SQL filtering conditions"""
 
         self.save(name)
+
+
+    def normalize_pc(self, vector: np.ndarray) -> np.ndarray:
+        """Remove the principal component of the dataset to the vector.
+        This helps removing stopwords, webpage boilerplates (menu, sidebars),
+        formatting language and SEO junk, and makes cosine similarity between
+        query and documents more specific.
+
+        Taken from _A simple but tough-to-beat baseline for sentence embeddings_,
+        Sanjeev Arora, Yingyu Liang, Tengyu Ma. https://openreview.net/pdf?id=SyK00v5xx
+
+        Arguments:
+            vector: can be a single vector (1D) or a document-wise stack of vectors (2D).
+            We always consider the embedding vector to be on the last axis, document-wise
+            vectors should be vertically stacked.
+        Return:
+            normalized vector
+        """
+        vector = vector - np.matmul(np.matmul(vector, self.pc.T), self.pc)
+
+        return vector / (np.linalg.norm(vector, axis=-1, keepdims=True) + 1e-8)
+
 
     @timeit()
     def get_contents(self, db: sqlite3.Connection, sql: str = "") -> list[int]:
@@ -256,10 +289,11 @@ class Indexer():
 
         # Get the the centroid of the word embedding vector
         vector = self.word2vec.get_features(tokenized_query, embed="IN")
-        norm = np.linalg.norm(vector)
-        norm = 1.0 if norm == 0.0 else norm
 
-        return vector, norm, tokenized_query
+        # Remove the principal component from the vector
+        vector = self.normalize_pc(vector)
+
+        return vector, 1.0, tokenized_query
 
 
     @timeit()
@@ -352,31 +386,31 @@ class Indexer():
         if not isinstance(query, tuple):
             raise ValueError("Wrong query type (%s) for AI ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
 
-        vector = query[0]
-        norm = query[1]
-        tokens = query[2]
+        query_vector = query[0]
+        query_tokens = query[2]
 
         if fast:
             # The following seems very close to the next in terms of results.
             # Experimentally, I saw very little difference in rankings, at least not in the first results.
             # The by-the-book is perhaps more immune to keywords stuffing and more sensitive to structure.
             # Differences appear in the tail of the ranking, mostly.
-            return np.nan_to_num(np.dot(self.vectors_all, vector) / (norm * self.all_norms))
+            # Note: self.vector_all and vector are already normalized if using `self.vectorize_query`
+            return np.nan_to_num(np.dot(self.vectors_all, query_vector))
         else:
             # This is the by-the-book dual embedding space as defined in
             # https://arxiv.org/pdf/1602.01137.pdf
-            aggregate = np.zeros(self.all_norms.shape, dtype=np.float32)
-            n = 0
-
-            for token in tokens:
+            aggregate = np.zeros(self.vectors_all.shape[0], dtype=np.float32)
+            weights = 0.
+            for token in query_tokens:
                 # Compute the cosine similarity of centroids between query and documents,
-                vector = self.word2vec.get_wordvec(token, embed="IN", normalize=False)
+                # Note: self.vector_all and vector are already normalized if using `self.vectorize_query`
+                vector = self.word2vec.get_wordvec(token, embed="IN", normalize=True)
+                vector = self.normalize_pc(vector)
                 if vector is not None:
-                    norm = np.linalg.norm(vector)
-                    aggregate += np.nan_to_num(np.dot(self.vectors_all, vector) / (norm * self.all_norms))
-                    n += 1
+                    aggregate += np.nan_to_num(np.dot(self.vectors_all, vector))
+                    weights += 1.
 
-            return aggregate / n
+            return aggregate / weights
 
 
     @timeit()
