@@ -759,7 +759,7 @@ class Word2Vec(gensim.models.Word2Vec):
         weights = 0.
 
         for token in tokens:
-            vector = self.get_wordvec(token, normalize=True)
+            vector = self.get_wordvec(token, normalize=True, embed=embed)
             if vector is None:
                 continue
 
