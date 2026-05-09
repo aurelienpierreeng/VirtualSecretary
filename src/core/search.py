@@ -97,6 +97,36 @@ class BM25PlusCSR:
         # 5. Compute IDF (BM25+ log-smoothed)
         self.idf = np.log((self.corpus_size - df + 0.5) / (df + 0.5)).astype(np.float32)
 
+    @classmethod
+    def from_cache(
+        cls,
+        k1: float,
+        b: float,
+        delta: float,
+        corpus_size: int,
+        avgdl: float,
+        doc_lens: np.ndarray,
+        denom_const: np.ndarray,
+        idf: np.ndarray,
+        doc_ids: np.ndarray,
+        tfs: np.ndarray,
+        indptr: np.ndarray,
+    ):
+        ranker = cls.__new__(cls)
+        ranker.k1 = np.float32(k1)
+        ranker.b = np.float32(b)
+        ranker.delta = np.float32(delta)
+        ranker.corpus_size = corpus_size
+        ranker.avgdl = np.float32(avgdl)
+        ranker.doc_lens = doc_lens
+        ranker.denom_const = denom_const
+        ranker.idf = idf
+        ranker.doc_ids = doc_ids
+        ranker.tfs = tfs
+        ranker.indptr = indptr
+
+        return ranker
+
     def get_scores(self, tokens: list[int]) -> np.ndarray:
         scores = np.zeros(self.corpus_size, dtype=np.float32)
 
@@ -125,6 +155,23 @@ class search_methods(IntEnum):
     FUZZY = 2
 
 class Indexer():
+    SEARCH_TABLE_COLUMNS = {
+        "id": "INTEGER PRIMARY KEY",
+        "doc_index": "list",
+        "vectors": "array",
+        "bm25_k1": "REAL",
+        "bm25_b": "REAL",
+        "bm25_delta": "REAL",
+        "bm25_corpus_size": "INTEGER",
+        "bm25_avgdl": "REAL",
+        "bm25_doc_lens": "array",
+        "bm25_denom_const": "array",
+        "bm25_idf": "array",
+        "bm25_doc_ids": "array",
+        "bm25_tfs": "array",
+        "bm25_indptr": "array",
+    }
+
     @timeit()
     def __init__(self,
                  db: sqlite3.Connection,
@@ -152,14 +199,23 @@ class Indexer():
         else:
             raise ValueError("wv needs to be a dictionnary-like map")
 
-        self.index: list | None = None
-        """Store the list of reducted web_pages"""
-
-        self.vectors_all: np.ndarray | None = None
+        self.vectors: np.ndarray | None = None
         """Store the list of document-wise vector embeddings, where the vector represents
         the normalized centroid of tokens vectors contained the document.
         Documents are on the first axis.
         """
+
+        self.pc: np.ndarray | None = None
+        """Principal component(s) of the dataset vectors (normalized)"""
+
+        self.ranker: BM25PlusCSR | None = None
+        """BM25+ CSR ranker, lazily loaded from the database."""
+
+        self.index: list[str] | None = None
+        """LUT of document URLs as ordered when building the ranker, lazily loaded from the database."""
+
+        self.sql = None
+        """Cache the previous SQL filtering conditions"""
 
         # TODO
         self.collocations: np.ndarray | None = None # if strip_collocations else [doc[2] for doc in docs]
@@ -170,7 +226,9 @@ class Indexer():
         Documents are on the first axis.
         """
 
-        cursor = db.execute("SELECT tokenized FROM pages")
+        self.save_search_index(db, self.build_index(db))
+
+        cursor = db.execute("SELECT tokenized FROM pages ORDER BY url")
         rows = cursor.fetchall()
 
         # To spare some memory, build a symbolic corpus representation using
@@ -186,42 +244,198 @@ class Indexer():
             for doc in rows
         ]
 
-        self.ranker = BM25PlusCSR(corpus_token_indices, self.word2vec, k1=1.8, b=0.4, delta=0.8)
+        ranker = BM25PlusCSR(corpus_token_indices, self.word2vec, k1=1.8, b=0.4, delta=0.8)
         # Use our own implementation of BM25+, which gives similar ranking albeit with different coeffs
         # but runs 7 times faster. Otherwise:
         # self.ranker = BM25Plus(corpus_token_indices, k1=1.7, b=0.3, delta=0.65)
         # BM25+ values from https://www.cs.otago.ac.nz/homepages/andrew/papers/2014-2.pdf
+        self.save_search_ranker(db, ranker)
                                
         # Get stats
         self.words = len(word2vec.wv)
-        self.pages = self.ranker.corpus_size
+        self.pages = ranker.corpus_size
 
-        self.index = []
-        vectors_all = []
+        # Compute the principal axis direction and normalize document vectors with it
+        cursor = db.execute("SELECT vectorized FROM pages ORDER BY url")
+        vectors = np.array([item[0] for item in cursor.fetchall()], dtype=np.float32)
+        pca = PCA(n_components=principal_components)
+        pca.fit(vectors)
+        self.pc = pca.components_
+        self.save_search_vectors(db, self.normalize_pc(vectors))
 
-        cursor = db.execute("SELECT rowid, url, datetime, category, title, excerpt, vectorized FROM pages")
-        for item in cursor.fetchall():
-            self.index.append({ "index": item[0], "url": item[1], "datetime": item[2], "category": item[3], "title": item[4], "excerpt": item[5] })
-            vectors_all.append(item[6])
+
+        self.save(name)
+
+
+    def init_search_table(self, db: sqlite3.Connection):
+        """
+        Create or migrate the one-row search cache table.
+        """
+        cursor = db.cursor()
+
+        column_sql = ", ".join(f"{name} {kind}" for name, kind in self.SEARCH_TABLE_COLUMNS.items())
+        cursor.execute(f"""
+            CREATE TABLE IF NOT EXISTS search (
+                {column_sql}
+            )
+        """)
+
+        existing_columns = { row[1] for row in cursor.execute("PRAGMA table_info(search)") }
+
+        for name, kind in self.SEARCH_TABLE_COLUMNS.items():
+            if name not in existing_columns:
+                cursor.execute(f"ALTER TABLE search ADD COLUMN {name} {kind}")
+
+        db.commit()
+
+
+    def save_search_values(self, db: sqlite3.Connection, values: dict):
+        """
+        Store one or more precomputed search cache values in the database.
+        """
+        self.init_search_table(db)
+
+        unknown_columns = set(values) - set(self.SEARCH_TABLE_COLUMNS)
+        if unknown_columns:
+            raise ValueError("Unknown search cache columns: %s" % sorted(unknown_columns))
+
+        cursor = db.cursor()
+        columns = list(values)
+        placeholders = ", ".join(["?" for _ in columns])
+        insert_columns = ", ".join(["id"] + columns)
+        update_columns = ", ".join(
+            f"{column} = excluded.{column}"
+            for column in columns
+        )
+
+        cursor.execute(f"""
+            INSERT INTO search ({insert_columns})
+            VALUES (?, {placeholders})
+            ON CONFLICT(id) DO UPDATE SET {update_columns}
+        """, (1, *[values[column] for column in columns]))
+
+        db.commit()
+
+
+    def get_search_values(self, db: sqlite3.Connection, columns: list[str]):
+        """
+        Fetch one or more precomputed search cache values from the database.
+        """
+        self.init_search_table(db)
+
+        unknown_columns = set(columns) - set(self.SEARCH_TABLE_COLUMNS)
+        if unknown_columns:
+            raise ValueError("Unknown search cache columns: %s" % sorted(unknown_columns))
+
+        cursor = db.cursor()
+        row = cursor.execute(f"""
+            SELECT {", ".join(columns)}
+            FROM search
+            WHERE id = 1
+        """).fetchone()
+
+        if row is None:
+            return None
+
+        return row
+
+
+    def save_search_index(self, db: sqlite3.Connection, index: list[str]):
+        """
+        Store the URL lookup table into `search.doc_index`.
+        """
+        self.save_search_values(db, {"doc_index": index})
+
+
+    def save_search_ranker(self, db: sqlite3.Connection, ranker: BM25PlusCSR):
+        """
+        Store the BM25+ CSR ranker state into `search`.
+        """
+        self.save_search_values(db, {
+            "bm25_k1": float(ranker.k1),
+            "bm25_b": float(ranker.b),
+            "bm25_delta": float(ranker.delta),
+            "bm25_corpus_size": ranker.corpus_size,
+            "bm25_avgdl": float(ranker.avgdl),
+            "bm25_doc_lens": ranker.doc_lens,
+            "bm25_denom_const": ranker.denom_const,
+            "bm25_idf": ranker.idf,
+            "bm25_doc_ids": ranker.doc_ids,
+            "bm25_tfs": ranker.tfs,
+            "bm25_indptr": ranker.indptr,
+        })
+
+
+    def save_search_vectors(self, db: sqlite3.Connection, vectors: np.ndarray):
+        """
+        Store the single global vector matrix into `search.vectors`.
+        """
+        self.save_search_values(db, {"vectors": vectors})
+
+
+    @timeit()
+    def build_index(self, db: sqlite3.Connection) -> list[str]:
+        # We index URLs because they are the database primary key
+        # and therefore guaranteed to be constant over time.
+        # So the index is a LUT of URLs as they were ordered in DB when reading it.
+        cursor = db.execute("SELECT url FROM pages ORDER BY url")
+        return [item[0] for item in cursor.fetchall()]
+
+
+    @timeit()
+    def get_index(self, db: sqlite3.Connection) -> list[str]:
+        if self.index is not None:
+            return self.index
+
+        row = self.get_search_values(db, ["doc_index"])
+
+        if row is None or row[0] is None:
+            raise RuntimeError("Search index was not inited")
+
+        return row[0]
+
+
+    @timeit()
+    def get_doc_vectors(self, db: sqlite3.Connection) -> np.ndarray | None:
+        if self.vectors is not None:
+            return self.vectors
 
         # Note: `nlp.Word2Vec.get_features`` already normalizes output,
         # so this is assumed vectorized if using our internal workflows
         # through `nlp.batch_vectorize`.
-        self.vectors_all = np.array(vectors_all, dtype=np.float32)
+        row = self.get_search_values(db, ["vectors"])
 
-        # Compute the principal axis direction and normalize document vectors with it
-        pca = PCA(n_components=principal_components)
-        pca.fit(self.vectors_all)
-        self.pc = pca.components_
-        """Principal component of the dataset vectors (normalized)"""
+        if row is None:
+            return None
 
-        # Remove the principal component on the document vector stack
-        self.vectors_all = self.normalize_pc(self.vectors_all)
+        self.vectors = row[0]
+        return self.vectors
 
-        self.sql = None
-        """Cache the previous SQL filtering conditions"""
 
-        self.save(name)
+    @timeit()
+    def get_ranker(self, db: sqlite3.Connection) -> BM25PlusCSR:
+        if self.ranker is not None:
+            return self.ranker
+
+        row = self.get_search_values(db, [
+            "bm25_k1",
+            "bm25_b",
+            "bm25_delta",
+            "bm25_corpus_size",
+            "bm25_avgdl",
+            "bm25_doc_lens",
+            "bm25_denom_const",
+            "bm25_idf",
+            "bm25_doc_ids",
+            "bm25_tfs",
+            "bm25_indptr",
+        ])
+
+        if row is None or any(item is None for item in row):
+            raise RuntimeError("BM25+ ranker was not inited")
+
+        self.ranker = BM25PlusCSR.from_cache(*row)
+        return self.ranker
 
 
     def normalize_pc(self, vector: np.ndarray) -> np.ndarray:
@@ -248,8 +462,9 @@ class Indexer():
     @timeit()
     def get_contents(self, db: sqlite3.Connection, sql: str = "") -> list[int]:
         """Lazily load the list of `web_page` from a DB extraction"""
-        cursor = db.execute("SELECT rowid FROM pages " + sql)
-        return [item[0] - 1 for item in cursor.fetchall()]
+        cursor = db.execute("SELECT url FROM pages " + sql)
+        urls = {item[0] for item in cursor.fetchall()}
+        return [i for i, url in enumerate(self.get_index(db)) if url in urls]
 
 
     def save(self, name: str):
@@ -371,7 +586,7 @@ class Indexer():
         return results
 
     @timeit()
-    def rank_fuzzy(self, tokens: list[str]) -> np.ndarray:
+    def rank_fuzzy(self, tokens: list[str], db: sqlite3.Connection) -> np.ndarray:
         if not isinstance(tokens, list):
             raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(tokens))
 
@@ -379,12 +594,15 @@ class Indexer():
                            for word in tokens
                            if word in self.word2vec.wv.key_to_index]
 
+        self.ranker = self.get_ranker(db)
         return self.ranker.get_scores(symbolic_tokens)
 
     @timeit()
-    def rank_ai(self, query: tuple, fast: bool = False) -> np.ndarray:
+    def rank_ai(self, query: tuple, db: sqlite3.Connection, fast: bool = False) -> np.ndarray:
         if not isinstance(query, tuple):
             raise ValueError("Wrong query type (%s) for AI ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
+
+        self.vectors = self.get_doc_vectors(db)
 
         query_vector = query[0]
         query_tokens = query[2]
@@ -395,23 +613,24 @@ class Indexer():
             # The by-the-book is perhaps more immune to keywords stuffing and more sensitive to structure.
             # Differences appear in the tail of the ranking, mostly.
             # Note: self.vector_all and vector are already normalized if using `self.vectorize_query`
-            return np.nan_to_num(np.dot(self.vectors_all, query_vector))
+            return np.nan_to_num(np.dot(self.vectors, query_vector))
         else:
             # This is the by-the-book dual embedding space as defined in
             # https://arxiv.org/pdf/1602.01137.pdf
-            aggregate = np.zeros(self.vectors_all.shape[0], dtype=np.float32)
+            aggregate = np.zeros(self.vectors.shape[0], dtype=np.float32)
             weights = 0.
             for token in query_tokens:
                 # Compute the cosine similarity of centroids between query and documents,
                 # Note: self.vector_all and vector are already normalized if using `self.vectorize_query`
                 vector = self.word2vec.get_wordvec(token, embed="IN", normalize=True)
-                vector = self.normalize_pc(vector)
                 if vector is not None:
-                    aggregate += np.nan_to_num(np.dot(self.vectors_all, vector))
+                    vector = self.normalize_pc(vector)
+                    aggregate += np.nan_to_num(np.dot(self.vectors, vector))
                     weights += 1.
 
             return aggregate / weights
         
+
     def rrf(self, ranks_1: np.ndarray, ranks_2: np.ndarray) -> np.ndarray:
         """Reciprocal Rank Fusion
         
@@ -426,11 +645,13 @@ class Indexer():
 
     @timeit()
     def rank(self, db: sqlite3.Connection, query: str|tuple|re.Pattern, method: search_methods,
-             n_results: int = 500, fine_search: bool = False, sql: str = "", 
-             filter_callback: callable = None, callback_data: dict = None) -> list[tuple[str, float]]:
+             n_results: int = 500, fine_search: bool = False, sql: str = "") -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
+            db: the SQLite database holding the indexed set of document. This database must absolutely be up-to-date
+            with the one used to instanciate this class, regarding row ordering of documents,
+            otherwise rowid mismatches are to be expected between fuzzy, AI and regex searches.
             query (str | tuple | re.Pattern): the query to search. `re.Pattern` is available only with the `grep` method.
             method (str): `ai`, `fuzzy` or `grep`. `ai` use word embedding and meta-tokens with dual-embedding space, `fuzzy` uses meta-tokens with BM25Okapi stats model, `grep` uses direct string and regex search.
             filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker. Its first argument will be a [core.crawler.web_page][] object from the list [core.nlp.Indexer.index][], the next arguments will be passed through from `**kargs` directly.
@@ -463,34 +684,33 @@ class Indexer():
         """
 
         # Note : match needs at least Python 3.10
+        self.index = self.get_index(db)
+
         match method:
             case search_methods.AI:
                 # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
                 # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
                 # This can yield negative results that are still "valid". Offset similarity score by one.
                 # RRF works very poorly here, so we do "alpha blending"
-                aggregates = 0.98 * self.rank_ai(query) + 0.02 * self.rank_fuzzy(query[2])
+                aggregates = 0.98 * self.rank_ai(query, db) + 0.02 * self.rank_fuzzy(query[2], db)
             case search_methods.FUZZY:
-                aggregates = self.rank_fuzzy(query[2])
+                if self.ranker is None:
+                    self.ranker = self.get_ranker(db)
+                aggregates = self.rank_fuzzy(query[2], db)
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
-
 
         # Virtual array sorting, that is sort the aggregates relevance coeffs by order of relevance,
         # but only do it on row indices, so we don't actually sort the table iself
         n_results = min(n_results, aggregates.size - 1)
-        best_indices = np.argpartition(aggregates, -n_results)
+        best_indices = np.argpartition(aggregates, -n_results)[-n_results:]
+        best_indices = best_indices[np.argsort(aggregates[best_indices])[::-1]]
 
         if sql != "":
             # Get the intersection of the indices above with the indices from SQL query
             # but keep the ordering from the ranking above
             mask = np.isin(best_indices, self.get_contents(db, sql))
             best_indices = best_indices[mask]
-
-        if filter_callback:
-            # Use Python filtering on self.index items
-            best_indices = [index for index in best_indices
-                            if filter_callback(self.index[index], callback_data)]
 
         best_indices = best_indices[-n_results:]
         best_elems = [self.index[i] for i in best_indices]
