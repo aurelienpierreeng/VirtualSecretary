@@ -411,11 +411,23 @@ class Indexer():
                     weights += 1.
 
             return aggregate / weights
+        
+    def rrf(self, ranks_1: np.ndarray, ranks_2: np.ndarray) -> np.ndarray:
+        """Reciprocal Rank Fusion
+        
+        Aggregate 2 sets of page rankings obtained from different semantic geometries and weighted differently.
+
+        From _Reciprocal rank fusion outperforms condorcet and individual rank learning methods_,
+        Gordon V. Cormack, Charles L A Clarke, Stefan Buettcher.
+        https://dl.acm.org/doi/10.1145/1571941.1572114
+        """
+        return 1. / (60. + ranks_1) + 1. / (60. + ranks_2)
 
 
     @timeit()
     def rank(self, db: sqlite3.Connection, query: str|tuple|re.Pattern, method: search_methods,
-             n_results: int = 500, fine_search: bool = False, sql: str = "", filter_callback: callable = None, callback_data: dict = None) -> list[tuple[str, float]]:
+             n_results: int = 500, fine_search: bool = False, sql: str = "", 
+             filter_callback: callable = None, callback_data: dict = None) -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
@@ -456,7 +468,8 @@ class Indexer():
                 # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
                 # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
                 # This can yield negative results that are still "valid". Offset similarity score by one.
-                aggregates = 1. + 0.97 * self.rank_ai(query) + 0.03 * self.rank_fuzzy(query[2])
+                # RRF works very poorly here, so we do "alpha blending"
+                aggregates = 0.98 * self.rank_ai(query) + 0.02 * self.rank_fuzzy(query[2])
             case search_methods.FUZZY:
                 aggregates = self.rank_fuzzy(query[2])
             case _:
@@ -482,10 +495,6 @@ class Indexer():
         best_indices = best_indices[-n_results:]
         best_elems = [self.index[i] for i in best_indices]
         best_similarity = aggregates[best_indices]
-
-        if method == search_methods.AI:
-            # Offset back the similarity coeff
-            best_similarity -= 1.
 
         ranked = zip(best_indices, best_elems, best_similarity)
 
