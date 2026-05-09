@@ -11,6 +11,7 @@ import regex as re
 import os
 import concurrent
 import unicodedata as ud
+import multiprocessing
 
 from collections import Counter
 
@@ -475,18 +476,32 @@ class LossLogger(CallbackAny2Vec):
         print(f'  Loss: {loss}')
         self.epoch += 1
 
+def unique_terms(doc: list[list[str]]) -> set[str]:
+    return { word for sentence in doc for word in sentence }
 
 class Word2Vec(gensim.models.Word2Vec):
     @timeit()
-    def __init__(self, sentences: list[list[str]], name: str = "word2vec", vector_size: int = 300, epochs: int = 200, window: int = 5, min_count=5, sample=0.0005, tokenizer: Tokenizer = None):
+    def __init__(self, documents: list[list[str]], 
+                 name: str = "word2vec", 
+                 vector_size: int = 300, 
+                 epochs: int = 200, 
+                 window: int = 5, 
+                 min_count: int = 5, 
+                 sample: float = 0.0005, 
+                 tokenizer: Tokenizer = None,
+                 **kwargs):
         """Train, re-train or retrieve an existing word2vec word embedding model
 
         Arguments:
-            sentences (list[list[str]]): the pre-tokenized training data. The outermost list is the sentences. Each sentence (innermost list) is a list of tokens.
+            documents (list[list[str]]): the pre-tokenized training data. The outermost list is the documents, aka a list of sentences. Each sentence is a list of tokens.
             name (str): filename of the model to save and retrieve. If the model exists already, we automatically load it. Note that this will override the `vector_size` with the parameter defined in the saved model.
             vector_size (int): number of dimensions of the word vectors
             epochs (int): number of iterations of training for the machine learning. Small corpora need 2000 and more epochs. Increases the learning time.
             window (int): size of the token collocation window to detect
+            min_count (int): remove all words used fewer times than this from the vocabulary
+            sample (float):
+            tokenizer: instance of tokenization.
+            kwargs: passed directly through to `gensim.Word2Vec.__init__()`
         """
         if tokenizer is not None:
             self.tokenizer = tokenizer
@@ -495,32 +510,73 @@ class Word2Vec(gensim.models.Word2Vec):
 
         self.pathname = get_models_folder(name)
         self.vector_size = vector_size
-        print(f"got {len(sentences)} pieces of text")
+
+        self.N_docs = len(documents) 
+        """Number of documents in the training corpus"""
+        print(f"got {self.N_docs} documents")
 
         # Flatten the first dimension of the list of list of list of strings :
-        sentences = [sentence for text in sentences for sentence in text]
-        print(f"got {len(sentences)} sentences")
+        sentences = [sentence for text in documents for sentence in text]
+        self.N_sentences = len(sentences)
+        """Number of sentences in the training corpus"""
+        print(f"got {self.N_sentences} sentences")
 
-        # Dump words to a file to detect stopwords
         words = [word for sentence in sentences for word in sentence]
-        print(f"got {len(words)} individual words")
+        self.N_words = len(words)
+        """Number of words (tokens) in the training corpus"""
+        print(f"got {self.N_words} words (tokens)")
 
+        # Frequency of terms aka unique words
         counts = Counter(words)
-        print(f"got {len(counts)} unique words")
+        self.N_terms = len(counts)
+        """Number of terms (unique words) in the training corpus"""
+        print(f"got {self.N_terms} unique terms")
         del words
 
-        # Sort words by frequency
+        # Normalize frequencies
+        counts = {w: c / self.N_words for w, c in counts.items()}
+
+        # Sort terms by frequency
         counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
+
+        # Save to file for manual review of stopwords
         with open(get_models_folder("stopwords"), 'w', encoding='utf8') as f:
             for key, value in counts.items():
                 f.write(f"{key}: {value}\n")
         print("stopwords saved")
+
+        # Compute inverse document frequency (IDF) per term using the original
+        # `documents` (outer list). For each document, build the set of unique
+        # tokens it contains then compute df and idf. Store results in a dict
+        # `self.idf` mapping token -> float for direct lookup.
+        # Build a simple dict mapping term -> idf float for direct lookup
+        self.idf: dict[str, float] = {}
+        """Inverse Document Frequency, aka number of documents where each term 
+        appears in the training corpus"""
+
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            doc_sets = executor.map(unique_terms, documents)
+
+        df_counts = Counter()
+        for s in doc_sets:
+            df_counts.update(s)
+
+        self.idf = { term: self.N_docs / df for term, df in df_counts.items() }
+
+        # Compute average document length (in tokens) for BM25-style TF normalization
+        doc_lens = [sum(len(sentence) for sentence in doc) for doc in documents]
+        self.avg_doc_len = sum(doc_lens) / len(doc_lens) if len(doc_lens) > 0 else 1.0
+        """Average number of words in documents of the training corpus"""
         del counts
 
         loss_logger = LossLogger()
-        super().__init__(sentences, vector_size=vector_size, window=window, min_count=min_count, epochs=epochs, ns_exponent=0.75, sample=sample, callbacks=[loss_logger], compute_loss=True, sg=0, max_final_vocab=100000, hs=1, negative=0, alpha=0.020)
+        super().__init__(sentences, vector_size=vector_size, window=window, min_count=min_count, 
+                         epochs=epochs, sample=sample, callbacks=[loss_logger], 
+                         compute_loss=True, sg=1, max_final_vocab=100000, hs=0, negative=20, alpha=0.020,
+                         workers=os.cpu_count() or 1, batch_words=100000, **kwargs)
         print("training done")
 
+        self.prune_idf()
         self.save(self.pathname)
         print("saving done")
 
@@ -594,30 +650,62 @@ class Word2Vec(gensim.models.Word2Vec):
             return None
 
 
-    def get_features(self, tokens: list[str], embed: str = "IN") -> np.ndarray[np.float32]:
+    def get_features(self, tokens: list[str], embed: str = "IN", use_sif: bool = False, sif_smoothing: float = 1e-3) -> np.ndarray[np.float32]:
         """Calls [core.nlp.Word2Vec.get_wordvec][] over a list of tokens and returns a single vector representing the whole list.
 
         Arguments:
             tokens: list of text tokens.
             embed: see [core.nlp.Word2Vec.get_wordvec][]
-
+            use_sif: Use SIF weighting on each term when embedding a full sentence
+            or document. See [core.nlp.Word2Vec.SIF][].
+            sif_smoothing: The SIF smoothing coefficient.
         Returns:
-            the centroid of word embedding vectors associated with the input tokens (aka the average vector), or the null vector if no word from the list was found in dictionnary.
+            the normalized centroid of word embedding vectors associated with the input tokens 
+            (aka the average vector), or the null vector if no word from the list was found in dictionnary.
         """
         features = np.zeros(self.vector_size, dtype=np.float32)
-        i = 0
+        weights = 0.
 
         for token in tokens:
-            vector = self.get_wordvec(token, embed=embed)
-            if vector is not None:
-                features += vector
-                i += 1
+            vector = self.get_wordvec(token, normalize=True)
+            if vector is None:
+                continue
 
-        # Finish the average calculation (so far, only summed)
-        if i > 0:
-            features /= i
+            weight = self.SIF(token, a=sif_smoothing) if use_sif else 1.0
+            features += vector * weight
+            weights += weight
 
+        if weights > 0:
+            features /= weights
+
+        # Normalize by the L2 norm
+        features /= (np.linalg.norm(features) + 1e-8)
+        
         return features
+
+
+    def SIF(self, token: str, a: float = 1e-3) -> float:
+        """Smooth inverse frequency weighting
+
+        Taken from _A simple but tough-to-beat baseline for sentence embeddings_,
+        Sanjeev Arora, Yingyu Liang, Tengyu Ma. https://openreview.net/pdf?id=SyK00v5xx
+        
+        This helps refining semantics by under-weighting stopwords,
+        however it's unsuited for File Information Retrieval (search engines)
+        because it over-smoothen the embedding space geometry and hinders
+        relevance discrimination with regard to a query.
+
+        Arguments:
+            token: the token to weight. It should be in the model vocabulary.
+        
+        Return:
+            The SIF weight associated with the token or 0. if the token was not found in the vocabulary.
+        """
+        # Note: SIF technically use token frequency in the training dataset, 
+        # aka the number of times the token is found in the whole training bag of words.
+        # Here we use document frequency, aka number of documents in which the token is found (TF-IDF style).
+        freq = 1. / self.idf.get(token, 0.0)
+        return a / (a + freq)
 
 
     def tokens_to_indices(self, tokens: list[str]) -> np.ndarray[np.int32]:
