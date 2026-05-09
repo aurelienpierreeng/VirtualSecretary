@@ -431,3 +431,91 @@ def deduplicate_pages(db: sqlite3.Connection):
     except Exception:
         db.rollback()
         raise
+
+
+def update_pages_from_database( target_db: sqlite3.Connection, source_db: sqlite3.Connection) -> list[str]:
+    """
+    Update rows in `target_db.pages` from `source_db.pages`
+    using `url` as PRIMARY KEY.
+
+    Only shared columns are updated.
+
+    Returns
+        missing_urls: URLs present in target_db but absent from source_db.
+    """
+
+    target_cursor = target_db.cursor()
+    source_cursor = source_db.cursor()
+
+    source_path = source_cursor.execute("PRAGMA database_list").fetchone()[2]
+
+    target_cursor.execute("ATTACH DATABASE ? AS source_db", (source_path,))
+
+    try:
+        # Shared columns
+        source_columns = { row[1] for row in target_cursor.execute("PRAGMA source_db.table_info(pages)") }
+        target_columns = { row[1] for row in target_cursor.execute("PRAGMA table_info(pages)")}
+        shared_columns = sorted((source_columns & target_columns) - {"url"})
+
+        if not shared_columns:
+            raise RuntimeError("No shared columns to update.")
+
+        # Build SET clause
+        set_clause = ", ".join(
+            f"{col} = ("
+            f"SELECT s.{col} "
+            f"FROM source_db.pages s "
+            f"WHERE s.url = pages.url"
+            f")"
+            for col in shared_columns
+        )
+
+        target_cursor.execute("BEGIN")
+
+        # Update only rows existing in source
+        query = f"""
+            UPDATE pages
+            SET {set_clause}
+            WHERE EXISTS (
+                SELECT 1
+                FROM source_db.pages s
+                WHERE s.url = pages.url
+            )
+        """
+
+        target_cursor.execute(query)
+
+        updated = target_cursor.rowcount
+
+        # Get missing URLs
+        missing_urls = [
+            row[0]
+            for row in target_cursor.execute("""
+                SELECT url
+                FROM pages
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM source_db.pages s
+                    WHERE s.url = pages.url
+                )
+            """)
+        ]
+
+        target_db.commit()
+
+        print(f"Updated {updated} rows.")
+        print(f"{len(missing_urls)} URLs not found in source DB.")
+
+        return missing_urls
+
+    except Exception:
+        target_db.rollback()
+        raise
+
+    finally:
+        try:
+            target_cursor.execute(
+                "DETACH DATABASE source_db"
+            )
+        except sqlite3.OperationalError:
+            pass
