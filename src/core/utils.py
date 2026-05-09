@@ -456,21 +456,66 @@ def clean_whitespaces(string:str) -> str:
     return string.strip()
 
 
-def guess_date(string: str | datetime) -> datetime:
+def parse_pdf_date(s: str):
+    s = s.removeprefix("D:")
+
+    # Fix PDF timezone apostrophes
+    s = re.sub(r"([+-]\d{2})'(\d{2})'?", r"\1:\2", s)
+
+    # Strip garbage after timezone (fix broken +00:0000'00')
+    s = re.sub(r"(\+\d{2}:\d{2}).*$", r"\1", s)
+
+    return s
+
+MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4,
+    "may": 5, "jun": 6, "jul": 7, "aug": 8,
+    "sep": 9, "oct": 10, "nov": 11, "dec": 12
+}
+
+
+def parse_human_date(text: str):
+    # Matches: "11 Oct 2017"
+    m = re.search(
+        r"(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})",
+        text
+    )
+    if not m:
+        return None
+
+    day = int(m.group(1))
+    mon_str = m.group(2)[:3].lower()
+    year = int(m.group(3))
+
+    month = MONTHS.get(mon_str)
+    if not month:
+        return None
+
+    try:
+        return datetime(year, month, day).date().isoformat()
+    except ValueError:
+        return None
+
+
+def guess_date(string: str | datetime) -> datetime | None:
     """Best effort to guess a date from a string using typical date/time formats"""
     # If no timezone/offset is provided, default to UTC
     tz = timezone(timedelta(0))
 
     if isinstance(string, str):
+        if string.startswith("D:"):
+            string = parse_pdf_date(string)
+
         try:
-            date = parser.parse(string.removeprefix("D:"), default=datetime.fromtimestamp(0, tz=tz), fuzzy=True)
+            date = parser.parse(string, default=None, fuzzy=True)
         except Exception as e:
-            print("Date parser got an error:", e)
-            date = datetime.fromtimestamp(0, tz=tz)
+            date = parse_human_date(string)
+            print("Date parser got an error:", e, "recovered:", date)
+
     elif isinstance(string, datetime):
         date = string.replace(tzinfo=tz)
     else:
-        date = datetime.fromtimestamp(0, tz=tz)
+        date = None
 
     return date
 

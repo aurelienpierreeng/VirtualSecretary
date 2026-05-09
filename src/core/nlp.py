@@ -29,7 +29,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
 from .patterns import *
-from .utils import get_models_folder, typography_undo, clean_whitespaces, timeit
+from .utils import get_models_folder, typography_undo, clean_whitespaces, timeit, guess_date
 from .language import *
 from .crawler import web_page
 
@@ -1017,7 +1017,7 @@ def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: 
 
 
 @timeit()
-def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 512):
+def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 256):
     """Tokenize a list of `web_pages` in parallel, in a RAM-friendly way.
 
     Populate the `tokens` key to `web_page` elements (taken from a list), containing the tokenized
@@ -1078,6 +1078,34 @@ def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int =
 
             del ids
             del vectors
+
+            #TODO:
+            #indices = word2vec.tokens_to_indices(tokens)
+
+@timeit()
+def batch_guess_dates(db: sqlite3.Connection, chunksize: int = 256):
+    """Refresh the datetime database objects for each row by reading the textual date extracted from pages.    
+    """
+    num_cpu = os.cpu_count()
+    cursor = db.execute('SELECT rowid, date FROM pages')
+    batch_size = num_cpu * chunksize
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
+        while True:
+            batch = cursor.fetchmany(batch_size)
+            if not batch:
+                break
+
+            ids = [item[0] for item in batch]
+            parsable = [item[1] for item in batch]
+            datetimes = executor.map(guess_date, parsable, chunksize=chunksize)
+            del parsable
+
+            db.executemany('UPDATE pages SET datetime=? WHERE rowid=?', list(zip(datetimes, ids)))
+            db.commit()
+
+            del ids
+            del datetimes
 
             #TODO:
             #indices = word2vec.tokens_to_indices(tokens)
