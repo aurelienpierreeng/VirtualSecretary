@@ -1017,7 +1017,7 @@ def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: 
 
 
 @timeit()
-def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 256):
+def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 256, urls: list[str] | None = None):
     """Tokenize a list of `web_pages` in parallel, in a RAM-friendly way.
 
     Populate the `tokens` key to `web_page` elements (taken from a list), containing the tokenized
@@ -1027,10 +1027,24 @@ def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int 
 
     The list is processed in parallel, broken down in chunks, saved temporarily and individually to disk cache.
     You need to ensure you have enough space on your disk. The function doesn't check for it.
+
+    Arguments:
+        urls: list of URLs to tokenize. If None, the whole database is processed.
     """
     num_cpu = os.cpu_count()
-    cursor = db.execute('SELECT rowid, parsed FROM pages')
-    batch_size = num_cpu * chunksize
+    batch_size = (num_cpu or 1) * chunksize
+
+    if urls is not None:
+        cursor = db.execute(
+            f"""
+            SELECT rowid, parsed
+            FROM pages
+            WHERE url IN ({ ",".join(["?" for _ in urls]) })
+            """,
+            urls,
+        )
+    else:
+        cursor = db.execute('SELECT rowid, parsed FROM pages')
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
         while True:
