@@ -539,15 +539,15 @@ class Indexer():
 
 
     @timeit()
-    def filter_contents(self, db: sqlite3.Connection, sql: str = "") -> list[int]:        
+    def filter_contents(self, db: sqlite3.Connection, sql_query: str = "", sql_params: list[str] = []) -> list[int]:        
         """Filter pages by arbitrary SQL queries"""
         query = f"""
             SELECT url
             FROM pages
-            {sql}
+            {sql_query}
             ORDER BY url
         """
-        cursor = db.execute(query)
+        cursor = db.execute(query, sql_params)
         return [self.url_to_index[row[0]] for row in cursor.fetchall()]
 
 
@@ -726,7 +726,8 @@ class Indexer():
 
     @timeit()
     def rank(self, db: sqlite3.Connection, tokens: list[str], method: search_methods,
-             n_results: int = 500, fine_search: bool = False, sql: str = "") -> list[tuple[int, str, float]]:
+             n_results: int = 500, fine_search: bool = False, 
+             sql_query: str = "", sql_params: list[str] = []) -> list[tuple[int, str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
@@ -739,8 +740,22 @@ class Indexer():
             pattern: optional pattern/text search to add on top of AI search
             n_results: number of results to retain
             fine_search: optionally refine the search using a 2D interaction matrix. See [1]
-            sql: SQL query to narrow-down the search, for example `WHERE field = value`. Supports PCRE regex with `WHERE field REGEXP 'pattern'`.
-
+            sql_query: SQL query to narrow-down the search, for example `WHERE field = value`. Supports PCRE regex with `WHERE field REGEXP 'pattern'`.
+            sql_params: the SQL parameters such that:
+            ```python
+                cursor = db.execute(
+                f"SELECT url FROM pages {sql_query}",
+                sql_params
+            )
+            ```
+            where each `sql_params` item is matched in the `sql_query` by a `?`. For example:
+            ```sql
+                SELECT url              // imposed by the search API
+                FROM pages              // imposed by the search API
+                WHERE instr(url, ?) > 0 // implementation-side `sql_query`
+                ORDER BY url            // imposed by the search API
+            ```
+            and `sql_params = ['google.com']` will filter all URLs from Google.
         Note:
             Both SQL search into the database and Python filtering into the index are supported,
             and can be combined. The local index is a partial copy of the database and is already
@@ -771,10 +786,10 @@ class Indexer():
         best_indices = np.argpartition(aggregates, -n_results)[-n_results:]
         best_indices = best_indices[np.argsort(aggregates[best_indices])[::-1]]
 
-        if sql != "":
+        if sql_query != "":
             # Get the intersection of the indices above with the indices from SQL query
             # but keep the ordering from the ranking above
-            mask = np.isin(best_indices, self.filter_contents(db, sql))
+            mask = np.isin(best_indices, self.filter_contents(db, sql_query, sql_params))
             best_indices = best_indices[mask]
 
         best_indices = best_indices[-n_results:]
@@ -793,14 +808,10 @@ class Indexer():
                        if similarity > 0.], key=lambda x:x[2], reverse=True)
 
 
-    def get_related(self, post: tuple[np.ndarray, float, list[str]], n: int = 15, k: int = 5) -> list:
+    def get_related(self, tokens: list[str], n: int = 15, k: int = 5) -> list:
         """Get the n closest keywords from the query."""
 
-        if not isinstance(post, tuple):
-            raise TypeError("The argument should be either a (vector, norm) tuple or a string")
-
-        vector = post[0]
-        tokens = post[2]
+        vector = self.word2vec.get_features(tokens)
 
         # wv.similar_by_vector returns a list of (word, distance) tuples
         from_query = [elem for elem in self.word2vec.wv.similar_by_vector(vector, topn=n)]
