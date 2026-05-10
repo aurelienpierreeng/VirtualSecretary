@@ -196,33 +196,22 @@ class Indexer():
             principal_components (int): number of principal components to compute and remove from the index dataset. 
             This helps to make queries more selective and specific in the presence of boilerplate text and formatting language in the sampling.
 
+        NOTE:
+            The class is optimized to run online, on server: load fast when spawning a new server-side worker,
+            use RAM sparingly.
+            
         """
 
-        if word2vec:
-            self.word2vec = word2vec
-        else:
-            raise ValueError("wv needs to be a dictionnary-like map")
-
-        self.db: sqlite3.Connection | None = db
-        """Runtime-only database handle, dropped from saved joblib state."""
-
-        self.vectors: np.ndarray | None = None
-        """Store the list of document-wise vector embeddings, where the vector represents
-        the normalized centroid of tokens vectors contained the document.
-        Documents are on the first axis.
-        """
-
-        self.pc: np.ndarray | None = None
-        """Principal component(s) of the dataset vectors (normalized)"""
-
-        self.ranker: BM25PlusCSR | None = None
-        """BM25+ CSR ranker, lazily loaded from the database."""
-
-        self.index: list[str] | None = None
-        """LUT of document URLs as ordered when building the ranker, lazily loaded from the database."""
-
-        self.sql = None
+        self.sql: str = ""
         """Cache the previous SQL filtering conditions"""
+
+        self.word2vec: Word2Vec = word2vec
+        """Word2Vec embedding language model"""
+
+        self.db: sqlite3.Connection = db
+        """Runtime-only database handle, dropped from saved joblib state."""       
+        
+        self.init_search_table()
 
         # TODO
         self.collocations: np.ndarray | None = None # if strip_collocations else [doc[2] for doc in docs]
@@ -232,6 +221,11 @@ class Indexer():
 
         Documents are on the first axis.
         """
+
+        ##################################################################
+        # 1. Precompute the BM25+ document-wise constants (stats & counts)
+        ##################################################################
+
         cursor = db.execute("SELECT tokenized FROM pages ORDER BY url")
         rows = cursor.fetchall()
 
@@ -248,49 +242,75 @@ class Indexer():
             for doc in rows
         ]
 
-        ranker = BM25PlusCSR(corpus_token_indices, self.word2vec, k1=1.8, b=0.4, delta=0.8)
+        self.ranker: BM25PlusCSR = BM25PlusCSR(corpus_token_indices, self.word2vec, k1=1.8, b=0.4, delta=0.8)
+        """BM25+ CSR ranker (TF-IDF)."""
+
         # Use our own implementation of BM25+, which gives similar ranking albeit with different coeffs
         # but runs 7 times faster. Otherwise:
         # self.ranker = BM25Plus(corpus_token_indices, k1=1.7, b=0.3, delta=0.65)
         # BM25+ values from https://www.cs.otago.ac.nz/homepages/andrew/papers/2014-2.pdf
-                               
-        # Get stats
-        self.words = len(word2vec.wv)
-        self.pages = ranker.corpus_size
 
-        # Compute the principal axis direction and normalize document vectors with it
+        #######################################################################################
+        # 2. Compute the embedded corpus principal component(s) and remove them from embeddings
+        #######################################################################################
+
+        # PC encode boilerplate text, stopwords and non-specific language structures that hinder
+        # discrimination between relevant and irrelevant documents. You can see them as the "common glue"
+        # between all documents in the corpus, which is the opposite of what we are looking for to retrieve information.
+
         cursor = db.execute("SELECT vectorized FROM pages ORDER BY url")
-        vectors = np.array([item[0] for item in cursor.fetchall()], dtype=np.float32)
+
+        self.vectors = np.array([item[0] for item in cursor.fetchall()], dtype=np.float32)
+        """Store the list of document-wise vector embeddings, where the vector represents
+        the normalized centroid of tokens vectors contained the document.
+        Documents are on the first axis.
+        """
+
         pca = PCA(n_components=principal_components)
-        pca.fit(vectors)
-        self.pc = pca.components_
+        pca.fit(self.vectors)
+        self.pc: np.ndarray = pca.components_
+        """Principal component(s) of the dataset vectors (normalized)"""
 
-        # Save search vectors, with principal components removed,
-        # to DB as a single numpy array blob for later reuse.
-        self.save_search_vectors(db, self.normalize_pc(vectors))
+        # Remove PC from embedding vectors. 
+        # Note: DB document embeddings are left unchanged.
+        self.vectors = self.normalize_pc(self.vectors)
 
-        # Save the whole Word2Vec language model to database.
+        ########################################
+        # 3. Save heavy numpy arrays to database
+        ########################################
+
+        # Save the whole Word2Vec language model and BM25+ ranker constants to database.
         # This has several benefits:
-        #   1. the Indexer class, once saved as a joblib artifact, is much leaner
-        #      and faster to decompress to load in RAM on server,
-        #   2. we ensure that the language model used to vectorize/embed documents
-        #      is stored alongside them, so no version mismatches anymore.
-        #   3. same for the vocabulary used to tokenize.
-        self.save_search_word2vec(db)
-        self.delete_word2vec_embeddings()
+        #   1. the Indexer class, once saved as a joblib/pickled artifact, is much leaner
+        #      and faster to decompress and load in RAM on server,
+        #   2. we freeze the whole state of the NLP stack (vocabulary, language model, document embeddings)
+        #      in a single, consistent place, so there is no version mismatches anymore:
+        #      the database is an unit of processing.
+        self.save_search_vectors(self.vectors) # those have principal components already removed
+        self.save_search_word2vec()
+        self.save_search_ranker(self.ranker)
 
-        # Same thing with the whole search index. Here it's a bit different:
-        # we use a static LUT mapping URLs to index, which depends on current
-        # database content. So storing both at the same place ensures consistency.
-        self.save_search_index(db, self.build_index(db))
+        # Storing a pre-built index list as a single BLOB in database is 2.5 times faster
+        # to restore at runtime than unrolling it from SQL `SELECT url FROM pages`.
+        self.index: list[str] = self.build_index()
+        """LUT of document URLs as ordered when building the ranker, lazily loaded from the database."""
 
-        # Same with BM25+ precomputed stats
-        self.save_search_ranker(db, ranker)
+        self.save_search_index(self.index)
 
+        ###############
+        # 4. Misc stats
+        ###############
+        self.words = len(word2vec.wv)
+        self.pages = self.ranker.corpus_size
+
+        # 5. Save the pickled object to disk for reuse
         self.save(name)
 
 
     def __getstate__(self):
+        # Remove huge Numpy arrays from the instance before pickling it to save.
+        # They were saved in database at __init__()
+        # and will be reloaded from there when loading the pickled object
         import copy
 
         state = self.__dict__.copy()
@@ -311,11 +331,11 @@ class Indexer():
         return state
 
 
-    def init_search_table(self, db: sqlite3.Connection):
+    def init_search_table(self):
         """
         Create or migrate the one-row search cache table.
         """
-        cursor = db.cursor()
+        cursor = self.db.cursor()
 
         column_sql = ", ".join(f"{name} {kind}" for name, kind in self.SEARCH_TABLE_COLUMNS.items())
         cursor.execute(f"""
@@ -330,20 +350,19 @@ class Indexer():
             if name not in existing_columns:
                 cursor.execute(f"ALTER TABLE search ADD COLUMN {name} {kind}")
 
-        db.commit()
+        self.db.commit()
 
 
-    def save_search_values(self, db: sqlite3.Connection, values: dict):
+    def save_search_values(self, values: dict):
         """
         Store one or more precomputed search cache values in the database.
         """
-        self.init_search_table(db)
 
         unknown_columns = set(values) - set(self.SEARCH_TABLE_COLUMNS)
         if unknown_columns:
             raise ValueError("Unknown search cache columns: %s" % sorted(unknown_columns))
 
-        cursor = db.cursor()
+        cursor = self.db.cursor()
         columns = list(values)
         placeholders = ", ".join(["?" for _ in columns])
         insert_columns = ", ".join(["id"] + columns)
@@ -358,20 +377,19 @@ class Indexer():
             ON CONFLICT(id) DO UPDATE SET {update_columns}
         """, (1, *[values[column] for column in columns]))
 
-        db.commit()
+        self.db.commit()
 
 
-    def get_search_values(self, db: sqlite3.Connection, columns: list[str]):
+    def get_search_values(self, columns: list[str]):
         """
         Fetch one or more precomputed search cache values from the database.
         """
-        self.init_search_table(db)
 
         unknown_columns = set(columns) - set(self.SEARCH_TABLE_COLUMNS)
         if unknown_columns:
             raise ValueError("Unknown search cache columns: %s" % sorted(unknown_columns))
 
-        cursor = db.cursor()
+        cursor = self.db.cursor()
         row = cursor.execute(f"""
             SELECT {", ".join(columns)}
             FROM search
@@ -384,18 +402,18 @@ class Indexer():
         return row
 
 
-    def save_search_index(self, db: sqlite3.Connection, index: list[str]):
+    def save_search_index(self, index: list[str]):
         """
         Store the URL lookup table into `search.doc_index`.
         """
-        self.save_search_values(db, {"doc_index": index})
+        self.save_search_values({"doc_index": index})
 
 
-    def save_search_ranker(self, db: sqlite3.Connection, ranker: BM25PlusCSR):
+    def save_search_ranker(self, ranker: BM25PlusCSR):
         """
         Store the BM25+ CSR ranker state into `search`.
         """
-        self.save_search_values(db, {
+        self.save_search_values({
             "bm25_k1": float(ranker.k1),
             "bm25_b": float(ranker.b),
             "bm25_delta": float(ranker.delta),
@@ -410,18 +428,18 @@ class Indexer():
         })
 
 
-    def save_search_vectors(self, db: sqlite3.Connection, vectors: np.ndarray):
+    def save_search_vectors(self, vectors: np.ndarray):
         """
         Store the single global vector matrix into `search.vectors`.
         """
-        self.save_search_values(db, {"vectors": vectors})
+        self.save_search_values({"vectors": vectors})
 
 
-    def save_search_word2vec(self, db: sqlite3.Connection):
+    def save_search_word2vec(self):
         """
         Store Word2Vec vocabulary and embedding matrices into the search cache.
         """
-        self.save_search_values(db, {
+        self.save_search_values({
             "w2v_index_to_key": list(self.word2vec.wv.index_to_key),
             "w2v_vectors": self.word2vec.wv.vectors,
             "w2v_syn1": getattr(self.word2vec, "syn1", None),
@@ -429,34 +447,21 @@ class Indexer():
         })
 
 
-    def delete_word2vec_embeddings(self):
-        """
-        Drop heavy Word2Vec embedding payloads before saving this Indexer object.
-        """
-        if hasattr(self.word2vec, "wv"):
-            del self.word2vec.wv
-        if hasattr(self.word2vec, "syn1"):
-            del self.word2vec.syn1
-        if hasattr(self.word2vec, "syn1neg"):
-            del self.word2vec.syn1neg
-
-
-
     @timeit()
-    def build_index(self, db: sqlite3.Connection) -> list[str]:
+    def build_index(self) -> list[str]:
         # We index URLs because they are the database primary key
         # and therefore guaranteed to be constant over time.
         # So the index is a LUT of URLs as they were ordered in DB when reading it.
-        cursor = db.execute("SELECT url FROM pages ORDER BY url")
+        cursor = self.db.execute("SELECT url FROM pages ORDER BY url")
         return [item[0] for item in cursor.fetchall()]
 
 
     @timeit()
-    def get_index(self, db: sqlite3.Connection) -> list[str]:
+    def get_index(self) -> list[str]:
         if self.index is not None:
             return self.index
 
-        row = self.get_search_values(db, ["doc_index"])
+        row = self.get_search_values(["doc_index"])
 
         if row is None or row[0] is None:
             raise RuntimeError("Search index was not inited")
@@ -465,14 +470,14 @@ class Indexer():
 
 
     @timeit()
-    def get_doc_vectors(self, db: sqlite3.Connection) -> np.ndarray | None:
+    def get_doc_vectors(self) -> np.ndarray | None:
         if self.vectors is not None:
             return self.vectors
 
         # Note: `nlp.Word2Vec.get_features`` already normalizes output,
         # so this is assumed vectorized if using our internal workflows
         # through `nlp.batch_vectorize`.
-        row = self.get_search_values(db, ["vectors"])
+        row = self.get_search_values(["vectors"])
 
         if row is None:
             return None
@@ -482,11 +487,11 @@ class Indexer():
 
 
     @timeit()
-    def get_ranker(self, db: sqlite3.Connection) -> BM25PlusCSR:
+    def get_ranker(self) -> BM25PlusCSR:
         if self.ranker is not None:
             return self.ranker
 
-        row = self.get_search_values(db, [
+        row = self.get_search_values([
             "bm25_k1",
             "bm25_b",
             "bm25_delta",
@@ -508,15 +513,11 @@ class Indexer():
 
 
     @timeit()
-    def get_word2vec(self, db: sqlite3.Connection = None):
+    def get_word2vec(self):
         if hasattr(self.word2vec, "wv"):
             return
-
-        db = db if db is not None else self.db
-        if db is None:
-            raise RuntimeError("Word2Vec embeddings were not loaded and no database was provided")
-
-        row = self.get_search_values(db, [
+        
+        row = self.get_search_values([
             "w2v_index_to_key",
             "w2v_vectors",
             "w2v_syn1",
@@ -559,9 +560,9 @@ class Indexer():
 
 
     @timeit()
-    def get_contents(self, db: sqlite3.Connection, sql: str = "") -> list[int]:
+    def get_contents(self, sql: str = "") -> list[int]:
         """Lazily load the list of `web_page` from a DB extraction"""
-        cursor = db.execute("SELECT url FROM pages " + sql)
+        cursor = self.db.execute("SELECT url FROM pages " + sql)
         urls = {item[0] for item in cursor.fetchall()}
         return [i for i, url in enumerate(self.get_index(db)) if url in urls]
 
@@ -573,35 +574,36 @@ class Indexer():
 
     @classmethod
     @timeit()
-    def load(cls, name: str):
+    def load(cls, name: str, db: sqlite3.Connection):
         """Load an existing trained model by its name from the `../models` folder."""
         try:
             model = joblib.load(get_models_folder(name) + ".joblib")
-            if isinstance(model, Indexer):
-                return model
         except FileNotFoundError:
             model = joblib.load(get_models_folder(name) + ".joblib.bz2")
-            if isinstance(model, Indexer):
-                return model
-            else:
-                raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
+            
+        if not isinstance(model, Indexer):
+            raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
+        
+        # Reload all class properties from database
+        model.db = db
+        model.get_word2vec()
+        model.ranker = model.get_ranker()
+        model.vectors = model.get_doc_vectors()
+        model.index = model.get_index()
+
+        return model
 
 
     def tokenize_query(self, query:str, language: str = None, meta_tokens: bool = True) -> list[str]:
         return self.word2vec.tokenizer.tokenize_document(query, language=language, meta_tokens=meta_tokens)
 
 
-    def vectorize_query(self, tokenized_query: list[str], db: sqlite3.Connection = None) -> tuple[np.ndarray, float, list[str]]:
+    def vectorize_query(self, tokenized_query: list[str]) -> np.ndarray:
         """Prepare a text search query: cleanup, tokenize and get the centroid vector.
 
         Returns:
             tuple[vector, norm, tokens]
         """
-
-        if not tokenized_query:
-            return np.array([]), 0., []
-
-        self.get_word2vec(db)
 
         # Get the the centroid of the word embedding vector
         vector = self.word2vec.get_features(tokenized_query, embed="IN")
@@ -609,7 +611,7 @@ class Indexer():
         # Remove the principal component from the vector
         vector = self.normalize_pc(vector)
 
-        return vector, 1.0, tokenized_query
+        return vector
 
 
     @timeit()
@@ -687,27 +689,15 @@ class Indexer():
         return results
 
     @timeit()
-    def rank_fuzzy(self, tokens: list[str], db: sqlite3.Connection) -> np.ndarray:
-        if not isinstance(tokens, list):
-            raise ValueError("Wrong query type (%s) for FUZZY ranking method. Should be a list of strings." % type(tokens))
-
-        self.get_word2vec(db)
+    def rank_fuzzy(self, tokens: list[str]) -> np.ndarray:
         symbolic_tokens = [self.word2vec.wv.key_to_index[word]
                            for word in tokens
                            if word in self.word2vec.wv.key_to_index]
 
-        self.ranker = self.get_ranker(db)
         return self.ranker.get_scores(symbolic_tokens)
 
     @timeit()
-    def rank_ai(self, query: tuple, db: sqlite3.Connection, fast: bool = False) -> np.ndarray:
-        if not isinstance(query, tuple):
-            raise ValueError("Wrong query type (%s) for AI ranking method. Should be a `(vector, norm, tokens)` tuple" % type(query))
-
-        self.vectors = self.get_doc_vectors(db)
-
-        query_vector = query[0]
-        query_tokens = query[2]
+    def rank_ai(self, tokens: list[str], fast: bool = False) -> np.ndarray:
 
         if fast:
             # The following seems very close to the next in terms of results.
@@ -715,14 +705,15 @@ class Indexer():
             # The by-the-book is perhaps more immune to keywords stuffing and more sensitive to structure.
             # Differences appear in the tail of the ranking, mostly.
             # Note: self.vector_all and vector are already normalized if using `self.vectorize_query`
-            return np.nan_to_num(np.dot(self.vectors, query_vector))
+            return np.nan_to_num(np.dot(self.vectors, self.vectorize_query(tokens)))
+        
         else:
+
             # This is the by-the-book dual embedding space as defined in
             # https://arxiv.org/pdf/1602.01137.pdf
-            self.get_word2vec(db)
             aggregate = np.zeros(self.vectors.shape[0], dtype=np.float32)
             weights = 0.
-            for token in query_tokens:
+            for token in tokens:
                 # Compute the cosine similarity of centroids between query and documents,
                 # Note: self.vector_all and vector are already normalized if using `self.vectorize_query`
                 vector = self.word2vec.get_wordvec(token, embed="IN", normalize=True)
@@ -734,7 +725,7 @@ class Indexer():
             return aggregate / weights
         
 
-    def rrf(self, ranks_1: np.ndarray, ranks_2: np.ndarray) -> np.ndarray:
+    def rrf(self, ranks_1: np.ndarray, ranks_2: np.ndarray, coeff: float = 60) -> np.ndarray:
         """Reciprocal Rank Fusion
         
         Aggregate 2 sets of page rankings obtained from different semantic geometries and weighted differently.
@@ -743,11 +734,11 @@ class Indexer():
         Gordon V. Cormack, Charles L A Clarke, Stefan Buettcher.
         https://dl.acm.org/doi/10.1145/1571941.1572114
         """
-        return 1. / (60. + ranks_1) + 1. / (60. + ranks_2)
+        return 1. / (coeff + ranks_1) + 1. / (coeff + ranks_2)
 
 
     @timeit()
-    def rank(self, db: sqlite3.Connection, query: str|tuple|re.Pattern, method: search_methods,
+    def rank(self, db: sqlite3.Connection, tokens: list[str], method: search_methods,
              n_results: int = 500, fine_search: bool = False, sql: str = "") -> list[tuple[str, float]]:
         """Apply a label on a post based on the trained model.
 
@@ -755,7 +746,7 @@ class Indexer():
             db: the SQLite database holding the indexed set of document. This database must absolutely be up-to-date
             with the one used to instanciate this class, regarding row ordering of documents,
             otherwise rowid mismatches are to be expected between fuzzy, AI and regex searches.
-            query (str | tuple | re.Pattern): the query to search. `re.Pattern` is available only with the `grep` method.
+            tokens: the tokenized query.
             method (str): `ai`, `fuzzy` or `grep`. `ai` use word embedding and meta-tokens with dual-embedding space, `fuzzy` uses meta-tokens with BM25Okapi stats model, `grep` uses direct string and regex search.
             filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker. Its first argument will be a [core.crawler.web_page][] object from the list [core.nlp.Indexer.index][], the next arguments will be passed through from `**kargs` directly.
             pattern: optional pattern/text search to add on top of AI search
@@ -787,19 +778,14 @@ class Indexer():
         """
 
         # Note : match needs at least Python 3.10
-        self.index = self.get_index(db)
-
         match method:
             case search_methods.AI:
                 # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
                 # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
-                # This can yield negative results that are still "valid". Offset similarity score by one.
                 # RRF works very poorly here, so we do "alpha blending"
-                aggregates = 0.98 * self.rank_ai(query, db) + 0.02 * self.rank_fuzzy(query[2], db)
+                aggregates = 0.98 * self.rank_ai(tokens) + 0.02 * self.rank_fuzzy(tokens)
             case search_methods.FUZZY:
-                if self.ranker is None:
-                    self.ranker = self.get_ranker(db)
-                aggregates = self.rank_fuzzy(query[2], db)
+                aggregates = self.rank_fuzzy(tokens)
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
 
@@ -822,9 +808,8 @@ class Indexer():
         ranked = zip(best_indices, best_elems, best_similarity)
 
         # Now is time for the really heavy stuff: find tokens in sequential order
-        if self.collocations and isinstance(query, tuple) and isinstance(query[2], list) and len(query[2]) > 2 and fine_search:
-            self.get_word2vec(db)
-            indexed_query = self.word2vec.tokens_to_indices(query[2])
+        if self.collocations and len(tokens) > 2 and fine_search:
+            indexed_query = self.word2vec.tokens_to_indices(tokens)
             ranked = self.find_query_pattern(indexed_query, ranked)
 
         return sorted([(index, page, similarity)
@@ -832,13 +817,12 @@ class Indexer():
                        if similarity > 0.], key=lambda x:x[2], reverse=True)
 
 
-    def get_related(self, post: tuple[np.ndarray, float, list[str]], db: sqlite3.Connection = None, n: int = 15, k: int = 5) -> list:
+    def get_related(self, post: tuple[np.ndarray, float, list[str]], n: int = 15, k: int = 5) -> list:
         """Get the n closest keywords from the query."""
 
         if not isinstance(post, tuple):
             raise TypeError("The argument should be either a (vector, norm) tuple or a string")
 
-        self.get_word2vec(db)
         vector = post[0]
         tokens = post[2]
 
