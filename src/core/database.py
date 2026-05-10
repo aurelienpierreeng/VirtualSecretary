@@ -83,11 +83,7 @@ def create_db(name: str) -> sqlite3.Connection:
         else:
             columns.append(f"{key} {sql_type}")
 
-    cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS pages (
-            {", ".join(columns)}
-        )
-    """)
+    cursor.execute(f"CREATE TABLE IF NOT EXISTS pages ({", ".join(columns)})")
 
     # Fetch existing columns
     existing_columns = {
@@ -105,9 +101,7 @@ def create_db(name: str) -> sqlite3.Connection:
         if sql_type is None:
             continue
 
-        cursor.execute(
-            f"ALTER TABLE pages ADD COLUMN {key} {sql_type}"
-        )
+        cursor.execute(f"ALTER TABLE pages ADD COLUMN {key} {sql_type}")
 
     connector.commit()
 
