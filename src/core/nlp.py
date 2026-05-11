@@ -28,10 +28,18 @@ from nltk.tokenize import RegexpTokenizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
+from fast_langdetect import detect
+import blingfire
+import langcodes
+import pycountry
+
 from .patterns import *
 from .utils import get_models_folder, typography_undo, clean_whitespaces, timeit, guess_date
 from .language import *
 from .crawler import web_page
+
+DOCUMENTS = None
+TOKENIZER = None
 
 latin_letters = {}
 
@@ -46,6 +54,30 @@ def _roman_chars(unistr):
     return [_is_latin(uchr) for uchr in unistr if uchr.isalpha()]
 
 
+def parse_lang_to_iso639_1(value: str | None) -> str | None:
+    """Parse any string language code to ISO 639-1 language code"""
+    try:
+        lang = langcodes.find(value)
+        code = lang.language
+
+        # Ensure it's actually ISO 639-1
+        if len(code) == 2:
+            return code
+
+        # Convert ISO639-3 -> ISO639-1 if possible
+        macro = lang.to_alpha3()
+
+        # langcodes itself cannot always reverse-map
+        entry = pycountry.languages.get(alpha_3=macro)
+        if entry and hasattr(entry, "alpha_2"):
+            return entry.alpha_2
+
+    except Exception:
+        pass
+
+    return None
+
+
 def guess_language(string: str, stopwords_threshold: float = 0.05, letters_threshold: float = 0.8) -> str | None:
     """Basic language guesser based on stopwords detection.
 
@@ -57,7 +89,7 @@ def guess_language(string: str, stopwords_threshold: float = 0.05, letters_thres
         letters_threshold: the minimum ratio of roman (latin) characters among all characters (including numbers, symbols and non-latin alphabets) to be found to conclude on a language.
 
     Returns:
-        language name in English or `None`.
+        ISO 639-1 language code. Defaults to "en" if nothing found.
     """
 
     # Number of roman characters
@@ -82,10 +114,88 @@ def guess_language(string: str, stopwords_threshold: float = 0.05, letters_thres
     value = scores[index_max]
 
     if value > max(stopwords_threshold * len(words), 1):
-        return language
+        return LANG_MAP_REVERSE[language]
     else:
         # The best language found still has a too-low ratio of use in string
         return None
+
+
+def detect_language(text: str) -> str | None:
+    """
+    Detect language from arbitrary text safely.
+
+    Returns:
+        ISO 639-1 language code.
+    """
+
+    if not text or len(text.strip()) < 5:
+        return None
+
+    try:
+        result = detect(text, model="full")
+        lang = str(result[0]["lang"])
+        score = float(result[0]["score"])
+
+        # Confidence threshold
+        if score < 0.70:
+            return guess_language(text)
+
+        return lang
+
+    except Exception as e:
+        print(e)
+        return None
+
+
+def tokenize_document_to_words(text: str, language: str | None = None, backend: str = "blingfire") -> list[str]:
+    """Split a text into single words
+
+    Arguments:
+        language: ISO 639-1 language code.
+
+    Returns:
+        Bag of words for the whole document. Sentence delimiters are removed.
+    """
+    if backend == "blingfire" or not language:
+        return blingfire.text_to_words(text).split()
+    elif backend == "nltk":
+        return nltk.word_tokenize(text, language=LANG_MAP[language])
+    
+
+def split_document_to_sentences(text: str, language: str | None = None, backend: str = "blingfire") -> list[str]:
+    """Split a text into a list of sentences.
+    
+    Arguments:
+        language: ISO 639-1 language code.
+
+    Returns:
+        List of sentences as full text.
+    """
+    if backend == "blingfire" or not language:
+        return blingfire.text_to_sentences(text).splitlines()
+    elif backend == "nltk":
+        return nltk.sent_tokenize(text, language=LANG_MAP[language])
+
+
+def tokenize_document_to_sentences(text: str, language: str | None = None, backend: str = "blingfire") -> list[list[str]]:
+    """Split a text into single words as a list of lists
+
+    Arguments:
+        language: ISO 639-1 language code.
+
+    Returns: 
+        List of sentences, each sentence is itself a list of words.
+    """
+    result = []
+    sentences = split_document_to_sentences(text, language=language, backend=backend)
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent:
+            continue
+        result.append(tokenize_document_to_words(sent, language=language, backend=backend))
+
+    return result
+
 
 class Tokenizer():
     characters_cleanup: dict[re.Pattern: str] = {
@@ -235,37 +345,60 @@ class Tokenizer():
         at the benefit of generality. In case this does not suit your usecase, you may
         inherit the `Tokenizer` class, build a child class and re-implement this method
         """
-
         return typography_undo(str(document).lower())
 
 
-    def normalize_token(self, word: str, language: str, meta_tokens: bool = True):
+    def normalize_token(self, 
+                        word: str, 
+                        language: str, 
+                        normalize: bool = True,
+                        meta_tokens: bool = True, 
+                        stem: bool = True,
+                        remove_stopwords: bool = True) -> str | None:
         """Return normalized, lemmatized and stemmed word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
 
         Arguments:
             word (str): tokenized word in lower case only.
-            language (str): the language used to detect dates. Supports `"french"`, `"english"` or `"any"`.
-            vocabulary (dict): a `token: list` mapping where `token` is the stemmed token and `list` stores all words from corpus which share this stem. Because stemmed tokens are not user-friendly anymore, this vocabulary can be used to build a reverse mapping `normalized token` -> `natural language keyword` for GUI.
+            language (str): the ISO 369-1 language code used to remove typical stopwords.
+            normalize (str): remove punctuation and leading/trailing symbols, replace abbreviations, etc.
+            meta_tokens (bool): replace string patterns by meta_tokens
+            stem (bool): remove word suffixes, double consonnants, etc.
+            remove_stopwords (bool): remove stopwords
 
         Examples:
             `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
             `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
         """
-        string = word.strip("?!#=+-,:;'\"^*./`()[]{}& \n\r\t<>")
 
-        if len(string) == 0 or " " in string or "\n" in string:
-            # empty string or
-            # tokenizer failed to split tokens on spaces
-            return None
+        string = word
 
-        if string in REPLACEMENTS:
-            string = REPLACEMENTS[string]
+        if normalize:
+            string = word.strip("?!#=+-,:;'\"^*./`()[]{}& \n\r\t<>")
 
-        if string.upper() in self.meta_tokens:
-            return string.upper()
+            if len(string) == 0 or " " in string or "\n" in string:
+                # empty string or
+                # tokenizer failed to split tokens on spaces
+                return None
+
+        # Replace abbreviations by full text or meta-tokens, as defined in the replacement dict
+        if self.replacements and string in self.replacements:
+            test_string = self.replacements[string]
+            if test_string in self.meta_tokens:
+                # In case replacement yields a meta-token:
+                # 1. if meta_tokens mode enabled, return immediately : we are done.
+                if meta_tokens:
+                    return test_string
+                # 2. if meta_tokens mode disabled, do nothing : cancel meta_tokens.
+            else:
+                string = test_string
+
+        # If token is a meta-token, nothing more to do.
+        string_upper = string.upper()
+        if string_upper in self.meta_tokens:
+            return string_upper
 
         # Remove Markdown markers for _italics_ and __bold__
-        # Note: internal under_scores are already removed in metatokens regex loop.
+        # Note: internal under_scores and da-shes are already handled in metatokens regex loop.
         string = string.strip("_")
 
         # Last chance of identifying meta-tokens in an atomic way
@@ -275,48 +408,63 @@ class Tokenizer():
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
                 if key.match(string, timeout=10, concurrent=True):
                     return value
+                
+        # Check if string is a stopword from our custom list
+        if remove_stopwords:
+            # Language-specific stopwords don't use stemmed words
+            if self.lang_stopwords and language in self.lang_stopwords:
+                if string in self.lang_stopwords[language]:
+                    return None
 
         # Lemmatize / Stem
-        string = self.lemmatize(string)
+        if stem:
+            string = self.lemmatize(string)
 
-        # Check if string is a stopword
-        return None if ((self.stopwords is not None) and (string in self.stopwords)) else string
+        # Check if string is a stopword from our custom list
+        if remove_stopwords:
+            # Language-agnostic stopwords may use stemmed words
+            if self.stopwords and string in self.stopwords:
+                return None
+            
+        return string
 
 
-    def tokenize_sentence(self, sentence: str, language: str, meta_tokens: bool = True) -> list[str]:
-        """Split a sentence into normalized word tokens and meta-tokens.
+    def tokenize_text(self, 
+                      sentence: str, 
+                      language: str | None = None, 
+                      normalize: bool = True,
+                      meta_tokens: bool = True, 
+                      stem: bool = True,
+                      remove_stopwords: bool = True) -> list[str]:
+        """Split an arbitrary text into normalized word tokens and meta-tokens.
+        No sentence or paragraph detection will be attempted.
 
         Arguments:
             sentence: the input single sentence.
-            language: the language string to be used by the tokenizer. It needs to be one of those supported by the module [core.nlp][].
-            meta_tokens: find meta-tokens through regular expressions and replace them in the text. This helps tokenization to keep similar objects together, especially dates that would otherwise be splitted.
+            others: see [core.nlp.Tokenizer.normalize_token][] arguments
+
+        Note:
+            the language is detected internally if not provided
 
         Returns:
-            tokens (list[str]): the list of normalized tokens.
+            tokens (list[str]): the list of normalized tokens as a bag of words.
         """
-        tokens = [self.normalize_token(token, language, meta_tokens=meta_tokens)
-                  for token in nltk.word_tokenize(str(sentence), language=language or "english")]
-        tokens = [item for item in tokens if isinstance(item, str)]
-
-        if len(tokens) == 0:
-            # Tokenization seems to fail on single-word queries, try again without it
-            tokens = [self.normalize_token(sentence, "english")]
-
+        tokens = [self.normalize_token(token, language, meta_tokens=meta_tokens, stem=stem, normalize=normalize, remove_stopwords=remove_stopwords)
+                  for token in tokenize_document_to_words(sentence, language=language, backend=self.backend)]
+ 
         return [item for item in tokens if isinstance(item, str)]
 
 
-    def split_sentences(self, document: str, language: str) -> list[str]:
-        """Split a document into sentences using an unsupervised machine learning model.
-
-        Arguments:
-            text (str): the paragraph to break into sentences.
-            language (str): the language of the text, used to select what pre-trained model will be used.
-        """
-        return nltk.sent_tokenize(str(document), language=language or "english")
-
-
-    def tokenize_document(self, document:str, language:str = None, meta_tokens: bool = True) -> list[str]:
-        """Cleanup and tokenize a document or a sentence as an atomic element, meaning we don't split it into sentences. Use this either for search-engine purposes (into a document's body) or if the document is already split into sentences. The document text needs to have been prepared and cleaned, which means :
+    def tokenize_document_flat(self, 
+                                document:str, 
+                                language: str | None = None, 
+                                normalize: bool = True,
+                                meta_tokens: bool = True, 
+                                stem: bool = True,
+                                remove_stopwords: bool = True) -> list[str]:
+        """Cleanup and tokenize a document or a sentence as an atomic element, meaning we don't split it into sentences. 
+        Use this either for search-engine purposes (into a document's body) or if the document is already split into sentences. 
+        The document text needs to have been prepared and cleaned, which means :
 
         - lowercased (optional but recommended) with `str.lower()`,
         - translated from Unicode to ASCII (optional but recommended) with [utils.typography_undo()][],
@@ -327,48 +475,109 @@ class Tokenizer():
 
         Arguments:
             document (str): the text of the document to tokenize
-            language (str): the language of the document. Will be internally inferred if not given.
+            others: see [core.nlp.Tokenizer.normalize_token][] arguments
+
+        Note:
+            the language is detected internally if not provided. The text is prefiltered with [self.prefilter][].
 
         Returns:
             tokens (list[str]): a 1D list of normalized tokens and meta-tokens.
         """
         if language is None:
-            language = guess_language(document)
+            language = detect_language(document)
 
         clean_text = self.prefilter(document, meta_tokens=meta_tokens)
-        return self.tokenize_sentence(clean_text, language, meta_tokens=meta_tokens)
+        return self.tokenize_text(clean_text, language=language, meta_tokens=meta_tokens, stem=stem, normalize=normalize, remove_stopwords=remove_stopwords)
 
 
-    def tokenize_per_sentence(self, document: str, meta_tokens: bool = True) -> list[list[str]]:
-        """Cleanup and tokenize a whole document as a list of sentences, meaning we split it into sentences before tokenizing. Use this to train a Word2Vec (embedding) model so each token is properly embedded into its syntactic context. The document text needs to have been prepared and cleaned, which means :
+    def tokenize_document_per_sentence(self, 
+                                       document: str, 
+                                       language: str | None = None, 
+                                        normalize: bool = True,
+                                        meta_tokens: bool = True, 
+                                        stem: bool = True,
+                                        remove_stopwords: bool = True) -> list[list[str]]:
+        """Cleanup and tokenize a whole document as a list of sentences, meaning we split it into sentences before tokenizing. 
+        Use this to train a Word2Vec (embedding) model so each token is properly embedded into its syntactic context. 
+        The document text needs to have been prepared and cleaned, which means :
 
         - lowercased (optional but recommended) with `str.lower()`,
         - translated from Unicode to ASCII (optional but recommended) with [utils.typography_undo()][],
         - cleaned up for sequences of whitespaces with [utils.cleanup_whitespaces()][]
 
+        Arguments:
+            document (str): the text of the document to tokenize
+            others: see [core.nlp.Tokenizer.normalize_token][] arguments
+
         Note:
-            the language is detected internally.
+            the language is detected internally if not provided. The text is prefiltered with [self.prefilter][]
 
         Returns:
-            tokens: a 2D list of sentences (1st axis), each containing a list of normalizel tokens and meta-tokens (2nd axis).
+            tokens: a 2D list of sentences (1st axis), each containing a list of normalized tokens and meta-tokens (2nd axis).
         """
         # TODO: prefilter n-grams ?
-        language = guess_language(document)
+        if language is None:
+            language = detect_language(document)
+
         clean_text = self.prefilter(document, meta_tokens=meta_tokens)
-        return [self.tokenize_sentence(sentence, language, meta_tokens=meta_tokens)
-                for sentence in self.split_sentences(clean_text, language)]
+        return [self.tokenize_text(sentence, language=language, meta_tokens=meta_tokens, stem=stem, normalize=normalize, remove_stopwords=remove_stopwords)
+                for sentence in split_document_to_sentences(clean_text, language=language, backend=self.backend)]
+
+
+    def tokenize_document_per_paragraph(self, 
+                                       document: str, 
+                                       language: str | None = None, 
+                                        normalize: bool = True,
+                                        meta_tokens: bool = True, 
+                                        stem: bool = True,
+                                        remove_stopwords: bool = True) -> list[list[str]]:
+        """Cleanup and tokenize a whole document as a list of paragraphs, meaning we split it on `\n\n` or `\r\n` before tokenizing. 
+        Use this to train a Word2Vec (embedding) model so each token is properly embedded into its syntactic context. 
+        The document text needs to have been prepared and cleaned, which means :
+
+        - lowercased (optional but recommended) with `str.lower()`,
+        - translated from Unicode to ASCII (optional but recommended) with [utils.typography_undo()][],
+        - cleaned up for sequences of whitespaces with [utils.cleanup_whitespaces()][]
+
+        Arguments:
+            document (str): the text of the document to tokenize
+            others: see [core.nlp.Tokenizer.normalize_token][] arguments
+
+        Note:
+            the language is detected internally if not provided. The text is prefiltered with [self.prefilter][]
+
+        Returns:
+            tokens: a 2D list of paragraphs (1st axis), each containing a list of normalized tokens and meta-tokens (2nd axis).
+        """
+        # TODO: prefilter n-grams ?
+        if language is None:
+            language = detect_language(document)
+
+        clean_text = self.prefilter(document, meta_tokens=meta_tokens)
+        return [self.tokenize_text(paragraph, language=language, meta_tokens=meta_tokens, stem=stem, normalize=normalize, remove_stopwords=remove_stopwords)
+                for paragraph in re.split(r'(?:\r\n|\r|\n){2,}', clean_text)]
 
 
     def __init__(self,
-                 meta_tokens: dict[re.Pattern: str] = None,
-                 abbreviations: dict[str: str] = None,
-                 stopwords: list[str] = None):
+                 meta_tokens: dict[re.Pattern: str] | None = None,
+                 abbreviations: dict[str: str] | None = None,
+                 replacements: dict[str: str] | None = None,
+                 stopwords: set[str] | None = None,
+                 lang_stopwords: dict[str: set[str]] | None = None,
+                 backend: str = "blingfire"):
         """Pre-processing pipeline and tokenizer, splitting a string into normalized word tokens.
 
         Arguments:
             meta_token: the pipeline of regular expressions to replace with meta-tokens. Keys must be `re.Pattern` declared with `re.compile()`, values must be meta-tokens assumed to be nested in underscores. The pipeline dictionnary will be processed in the order of declaration, which relies on using Python >= 3.7 (making `dict` ordered by default). If not provided, it is inited by default with a pipeline suitable for bilingual English/French language processing on technical writings (see notes).
             abbreviations (dict[str: str]): pipeline of abbreviations to replace, as `to_replace: replacement` dictionnary. Will be processed in order of declaration.
+            replacements: dictionnary used to replace 1:1 `key` with `value` in tokens.
+            stopwords: flat list of language-agnostic stopwords to remove from tokens.
+            lang_stopwords: language-specific stopwords as a dictionnary. Keys have to be ISO 639-1 language code, and values the set of stopwords.
+            backend: `blingfire` or `nltk`, choose which Python library will perform the actual tokenization.
+            `blingfire` uses Microsoft Blingfire default tokenizer (pattern-based), while `nltk` uses Punkt. 
         """
+        self.backend = backend
+
         if meta_tokens is None:
             self.meta_tokens_pipe = {
                 # Anonymize users/emails and prevent tokenizers from splitting @ from the username
@@ -423,8 +632,8 @@ class Tokenizer():
                 NUMBER_PATTERN: ' _NUMBER_ ',
                 # Remove HEX hashes, like IDs and commit names
                 HASH_PATTERN: ' _HASH_ ',
-                # In-words dashes : replace by space
-                DASHES: " ",
+                # In-words dashes/compound words : replace by underscore for uniform handling with n-grams
+                DASHES: "_",
                 # French words contractions : expand for generality
                 FRANCAIS: r"\1e ",
                 # Weird domains that are not really URLs : replace dots by space
@@ -446,7 +655,21 @@ class Tokenizer():
         else:
             self.abbreviations = abbreviations
 
-        self.stopwords = stopwords
+        if replacements is None:
+            self.replacements = REPLACEMENTS
+        else:
+            self.replacements = replacements
+
+        if stopwords:
+            self.stopwords = set(stopwords)
+        else:
+            self.stopwords = None
+
+        if lang_stopwords is None:
+            self.lang_stopwords = { LANG_MAP_REVERSE[lang]: value 
+                                    for lang, value in STOPWORDS_DICT.items() }
+        else:
+            self.lang_stopwords = None
 
 
 class Data():
@@ -839,7 +1062,7 @@ class Doc2Vec(gensim.models.doc2vec.Doc2Vec):
                      for post in training_set]
 
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            sentences = executor.map(self.tokenizer.tokenize_document, sentences, chunksize=32)
+            sentences = executor.map(self.tokenizer.tokenize_document_flat, sentences, chunksize=32)
 
         train_corpus = [gensim.models.doc2vec.TaggedDocument(tokens, tags)
                         for tokens, tags in zip(sentences, tags_list)]
@@ -946,7 +1169,7 @@ class Classifier(nltk.classify.SklearnClassifier):
 
     def get_features_parallel(self, post: Data) -> tuple[str, str]:
         """Thread-safe call to `.get_features()` to be called in multiprocessing.Pool map"""
-        tokens = self.word2vec.tokenizer.tokenize_document(post.text)
+        tokens = self.word2vec.tokenizer.tokenize_document_flat(post.text)
         features = dict(enumerate(self.word2vec.get_features(tokens)))
         return (features, post.label)
 
@@ -963,14 +1186,14 @@ class Classifier(nltk.classify.SklearnClassifier):
 
     def classify(self, post: str) -> str:
         """Apply a label on a post based on the trained model."""
-        tokens = self.word2vec.tokenizer.tokenize_document(post)
+        tokens = self.word2vec.tokenizer.tokenize_document_flat(post)
         features = dict(enumerate(self.word2vec.get_features(tokens)))
         return super().classify(features)
 
 
     def prob_classify(self, post: str) -> tuple[str, float]:
         """Apply a label on a post based on the trained model and output the probability too."""
-        tokens = self.word2vec.tokenizer.tokenize_document(post)
+        tokens = self.word2vec.tokenizer.tokenize_document_flat(post)
         features = dict(enumerate(self.word2vec.get_features(tokens)))
 
         # This returns a weird distribution of probabilities for each label that is not quite a dict
@@ -1036,6 +1259,32 @@ def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: 
     return documents
 
 
+def _init_worker(tokenizer):
+    global TOKENIZER
+    TOKENIZER = tokenizer
+
+
+def _batch_tokenize_worker(inputs: tuple[int, str, str, str | None]) -> tuple[str, str, int]:
+    # Unroll SQL params
+    rowid, content, parsed, lang = inputs
+
+    # Guess lang
+    lang_mem = lang
+    lang = parse_lang_to_iso639_1(lang)
+    if lang is None:
+        lang = detect_language(content)
+    if lang is None:
+        lang = detect_language(parsed)
+
+    # Tokenize without stemming/lemmatization and keep stopwords
+    tokenized = TOKENIZER.tokenize_document_per_sentence(parsed, lang, 
+                                                         normalize=False, meta_tokens=True, 
+                                                         stem=False, remove_stopwords=False)
+
+    return lang, tokenized, rowid # keep order in sync with updating SQL query
+
+
+
 @timeit()
 def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 256, urls: list[str] | None = None):
     """Tokenize a list of `web_pages` in parallel, in a RAM-friendly way.
@@ -1051,37 +1300,39 @@ def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int 
     Arguments:
         urls: list of URLs to tokenize. If None, the whole database is processed.
     """
+    # Prepare SQLite DB for max throughput in batch environment
+    db.execute("PRAGMA journal_mode=WAL;")
+    db.execute("PRAGMA synchronous=NORMAL;")
+    db.execute("PRAGMA temp_store=MEMORY;")
+
     num_cpu = os.cpu_count()
     batch_size = (num_cpu or 1) * chunksize
 
     if urls is not None:
         cursor = db.execute(
             f"""
-            SELECT rowid, parsed
+            SELECT rowid, content, parsed, lang
             FROM pages
             WHERE url IN ({ ",".join(["?" for _ in urls]) })
             """,
             urls,
         )
     else:
-        cursor = db.execute('SELECT rowid, parsed FROM pages')
+        cursor = db.execute('SELECT rowid, content, parsed, lang FROM pages')
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=num_cpu,
+        initializer=_init_worker,
+        initargs=(tokenizer,),
+    ) as executor:       
         while True:
             batch = cursor.fetchmany(batch_size)
             if not batch:
                 break
 
-            ids = [item[0] for item in batch]
-            parsable = [item[1] for item in batch]
-            tokens = executor.map(tokenizer.tokenize_per_sentence, parsable, chunksize=chunksize)
-            del parsable
-
-            db.executemany('UPDATE pages SET tokenized=? WHERE rowid=?', list(zip(tokens, ids)))
+            results = executor.map(_batch_tokenize_worker, batch, chunksize=chunksize)
+            db.executemany('UPDATE pages SET lang=?, tokenized=? WHERE rowid=?', results)
             db.commit()
-
-            del ids
-            del tokens
 
 
 @timeit()

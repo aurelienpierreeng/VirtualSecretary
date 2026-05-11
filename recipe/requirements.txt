@@ -19,10 +19,17 @@ numpy>=2.0,<=2.1 # needed for numba 0.61
 cython # needed for Gensim fast version
 scipy
 gensim==4.4
-nltk
 scikit-learn
 rank-bm25
 levenshtein
+
+# NLP stack
+nltk
+fast-langdetect
+blingfire
+langcodes
+language_data
+pycountry
 
 # PDF I/O and OCR
 opencv-python-headless

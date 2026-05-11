@@ -580,7 +580,8 @@ class Indexer():
 
     def tokenize_query(self, query:str, language: str = None, meta_tokens: bool = True) -> list[str]:
         """Tokenize a query string, returning only tokens known to our vocabulary."""
-        tokens = self.word2vec.tokenizer.tokenize_document(query, language=language, meta_tokens=meta_tokens)
+        query = self.word2vec.tokenizer.normalize_text(query)
+        tokens = self.word2vec.tokenizer.tokenize_document_flat(query, language=language, meta_tokens=meta_tokens)
         # Filter out unknown tokens
         return [token for token in tokens if self.word2vec.get_word(token) is not None]
 
