@@ -34,7 +34,7 @@ import langcodes
 import pycountry
 
 from .patterns import *
-from .utils import get_models_folder, typography_undo, clean_whitespaces, timeit, guess_date
+from .utils import get_models_folder, typography_undo, clean_whitespaces, timeit, guess_date, sanitize_unicode
 from .language import *
 from .crawler import web_page
 
@@ -346,7 +346,7 @@ class Tokenizer():
         at the benefit of generality. In case this does not suit your usecase, you may
         inherit the `Tokenizer` class, build a child class and re-implement this method
         """
-        return typography_undo(str(document).lower())
+        return typography_undo(document.lower())
 
 
     def normalize_token(self, 
@@ -1225,37 +1225,66 @@ def normalize_worker(i):
     )
     return i, TOKENIZER.normalize_text(text)
 
-@timeit()
-def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 512, cores: int | bool = False) -> list[web_page]:
-    global DOCUMENTS, TOKENIZER
-
-    DOCUMENTS = documents
+def _init_batch_normalize_worker(tokenizer):
+    global TOKENIZER
     TOKENIZER = tokenizer
 
-    num_cpu = cores or os.cpu_count()
+
+def _batch_normalize_worker(batch) -> list[tuple[int, str, str, str, any]]:
+    normalize = TOKENIZER.normalize_text
+    out: list[tuple[int, str, str, str, any]] = []
+
+    for i, doc in batch:
+        title = clean_whitespaces(sanitize_unicode(doc["title"]))
+        content = clean_whitespaces(sanitize_unicode(doc["content"]))
+        parsed = normalize(f"{title}\n\n{content}")
+        datetime = guess_date(doc["date"])
+        out.append((i, title, content, parsed, datetime))
+
+    return out
+
+
+@timeit()
+def batch_parse_web_page(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 512, cores: int | bool = False):
+    """High-performance parallel parsing for [src.core.types.web_page] objects
+    
+    This function is meant to cleanup text encoding issues and multi-spacings in `web_page` title and content.
+    It prepares the `web_page["parsed"]` field from title and content for the next stages of tokenization.
+    
+    It is needed to call it before [src.core.deduplicator.Deduplicator.dedup()][], so the content duplication
+    has a clean parsed version to compare web pages.
+    """
+    num_cpu = cores or os.cpu_count() or 1
+
+    # Pre-batch work to drastically reduce IPC overhead
+    batches = []
+    current = []
+
+    for i, doc in enumerate(documents):
+        current.append((i, doc))
+
+        if len(current) >= chunksize:
+            batches.append(current)
+            current = []
+
+    if current:
+        batches.append(current)
 
     ctx = multiprocessing.get_context("fork")
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_cpu,
         mp_context=ctx,
+        initializer=_init_batch_normalize_worker,
+        initargs=(tokenizer,),
     ) as executor:
-
-        # Cleanup whitespaces
-        for i, cleaned in executor.map(
-            clean_worker,
-            range(len(documents)),
-            chunksize=chunksize
-        ):
-            documents[i]["content"] = cleaned
-
-        # Normalize text
-        for i, parsed in executor.map(
-            normalize_worker,
-            range(len(documents)),
-            chunksize=chunksize
-        ):
-            documents[i]["parsed"] = parsed
+        for results in executor.map(_batch_normalize_worker, batches):
+            for i, title, content, parsed, datetime in results:
+                doc = documents[i]
+                doc["title"] = title
+                doc["content"] = content
+                doc["parsed"] = parsed
+                doc["datetime"] = datetime
 
     return documents
 
@@ -1385,33 +1414,43 @@ def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int =
             db.commit()
 
 
+def _guess_dates_batch(batch: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    out = []
+    for rowid, text_date in batch:
+        out.append((guess_date(text_date), rowid))
+
+    return out
+
+
 @timeit()
-def batch_guess_dates(db: sqlite3.Connection, chunksize: int = 256):
-    """Refresh the datetime database objects for each row by reading the textual date extracted from pages.    
+def batch_guess_dates(db: sqlite3.Connection, chunksize: int = 2048):
+    """
+    High-throughput parallel datetime parsing.
     """
 
-    # Prepare SQLite DB for max throughput in batch environment
-    db.execute("PRAGMA journal_mode=WAL;")
-    db.execute("PRAGMA synchronous=NORMAL;")
-    db.execute("PRAGMA temp_store=MEMORY;")
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=NORMAL")
+    db.execute("PRAGMA temp_store=MEMORY")
+    db.execute("PRAGMA cache_size=-200000")
 
-    num_cpu = os.cpu_count()
-    cursor = db.execute('SELECT rowid, date FROM pages')
-    batch_size = num_cpu * chunksize
+    num_cpu = os.cpu_count() or 1
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
-        while True:
-            batch = cursor.fetchmany(batch_size)
-            if not batch:
-                break
+    cursor = db.execute("SELECT rowid, date FROM pages")
+    execute = db.executemany
 
-            ids = [item[0] for item in batch]
-            parsable = [item[1] for item in batch]
-            datetimes = executor.map(guess_date, parsable, chunksize=chunksize)
-            del parsable
+    # Prebatch to reduce IPC overhead
+    batches = []
 
-            db.executemany('UPDATE pages SET datetime=? WHERE rowid=?', list(zip(datetimes, ids)))
-            db.commit()
+    while True:
+        batch = cursor.fetchmany(chunksize)
 
-            del ids
-            del datetimes
+        if not batch:
+            break
+
+        batches.append(batch)
+
+    with db:  # single transaction
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
+            # chunksize is 1 because our chunk is already a batch list
+            for results in executor.map(_guess_dates_batch, batches, chunksize=1):
+                execute("UPDATE pages SET datetime=? WHERE rowid=?", results)
