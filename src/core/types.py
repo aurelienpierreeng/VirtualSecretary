@@ -16,49 +16,57 @@ class web_page(TypedDict):
     in `web_pages` instances from other modules.
     """
 
+    # WARNING: don't write complete types here (like list[list[str]]), because that needs to be tied
+    # to SQLite formats in src.core.database.py and they only support top-most types.
+
     title: str
     """Title of the page"""
 
-    url: str = ""
+    url: str
     """Where to find the page on the network. Can be a local or distant URI, with or without protocol, or even an unique identifier."""
 
-    domain: str = ""
+    domain: str
     """Domain of the url"""
 
-    date: str = ""
+    date: str
     """Date of the last modification of the page, to assess relevance of the content, as a string."""
 
-    content: str = ""
+    content: str
     """The actual content of the page in a human-readable way."""
 
-    excerpt: str = ""
+    excerpt: str
     """Shortened version of the content for search results previews. Typically provided as `description` meta tag by websites."""
 
-    h1: list = []
+    h1: list
     """Title of the post if any. There should be only one h1 per page, matching title, but some templates wrongly use h1 for section titles."""
 
-    h2: list = []
+    h2: list
     """Section titles if any"""
 
-    lang: str = "en"
+    lang: str
     """2-letters ISO code of the page language. Not used internally, it's important only if you need to use it in implementations."""
 
-    category: str = None
+    category: str
     """Arbitrary category, tag or label set by user, to be reused for example in AI document tagging."""
 
-    datetime: dt = None
+    datetime: dt
     """The page date as a `datetime.datetime` object directly usable"""
 
-    length: int = 0
+    length: int
     """Characters length of `content`"""
 
-    parsed: str = ""
+    parsed: str
     """The normalized content of the page (lowercase, possibly converted to simple ASCII characters) for machine view over the content."""
 
-    tokenized: list = [[]]
-    """List of parsed content text tokens, including metatokens, if needed, as a list of sentences, where sentences are themselves a list of string tokens."""
+    tokenized: list
+    """List of parsed content text tokens, including metatokens, if needed, as a list of sentences, where sentences are themselves a list of string tokens.
+    This is a basic tokenization meant to train n-grams, so it should retain enough semantics.
+    """
 
-    vectorized: np.ndarray = np.empty(0, dtype=np.float32)
+    stemmed: list
+    """Same as tokenized but stemmed and normalized on top."""
+
+    vectorized: np.ndarray
     """Precomputed vector representation of the tokenized content."""
 
 
@@ -69,7 +77,6 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
         to_db: set to `True` to convert arrays of strings into semicolon-separated strings.
     """
     # Handle legacy code : h1 and h2 used to be sets, now they are lists
-    page = dict(page)
 
     if "h1" in page:
         if isinstance(page["h1"], str):
@@ -94,6 +101,9 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
             raise TypeError(f"Invalid type for h2: {type(page['h2'])}")
 
     # Handle legacy code : fields added recently
+    if "stemmed" not in page:
+        page["stemmed"] = [[]]
+
     if "vectorized" not in page:
         page["vectorized"] = np.empty(0, dtype=np.float32)
 
@@ -107,7 +117,7 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
         page["domain"] = ""
 
     if "datetime" not in page:
-        page["datetime"] = guess_date(str(page["date"])) if page["date"] else None
+        page["datetime"] = None
 
     if "length" not in page:
         page["length"] = 0
