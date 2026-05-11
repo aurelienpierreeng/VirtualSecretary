@@ -458,7 +458,35 @@ def clean_whitespaces(string:str) -> str:
     return string.strip()
 
 
-def parse_pdf_date(s: str):
+
+_SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
+
+
+def sanitize_unicode(text) -> str:
+    """
+    Normalize arbitrary string-like objects into safe Python UTF-8 text.
+    """
+
+    # Fast path
+    if isinstance(text, str):
+        out = text
+
+    # Bytes-like objects
+    elif isinstance(text, (bytes, bytearray, memoryview)):
+        out = bytes(text).decode("utf-8", errors="replace")
+
+    # Arbitrary foreign objects
+    else:
+        out = str(text)
+
+    # Rare slow-path for invalid surrogates
+    if _SURROGATE_RE.search(out, concurrent=True):
+        out = out.encode("utf-8", "replace").decode("utf-8")
+
+    return out
+
+
+def parse_pdf_date(s: str) -> str:
     s = s.removeprefix("D:")
 
     # Fix PDF timezone apostrophes
@@ -475,8 +503,19 @@ MONTHS = {
     "sep": 9, "oct": 10, "nov": 11, "dec": 12
 }
 
+UTC = timezone.utc
 
-def parse_human_date(text: str):
+TZINFOS = {
+    "UTC": UTC,
+    "PDT": timezone(timedelta(hours=-7)),
+    "PST": timezone(timedelta(hours=-8)),
+    "EDT": timezone(timedelta(hours=-4)),
+    "EST": timezone(timedelta(hours=-5)),
+    "CDT": timezone(timedelta(hours=-5)),
+    "CST": timezone(timedelta(hours=-6)),
+}
+
+def parse_human_date(text: str) -> datetime | None:
     # Matches: "11 Oct 2017"
     m = re.search(
         r"(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})",
@@ -494,32 +533,51 @@ def parse_human_date(text: str):
         return None
 
     try:
-        return datetime(year, month, day).date().isoformat()
+        return datetime(year, month, day, tzinfo=UTC)
     except ValueError:
         return None
 
 
 def guess_date(string: str | datetime) -> datetime | None:
-    """Best effort to guess a date from a string using typical date/time formats"""
-    # If no timezone/offset is provided, default to UTC
-    tz = timezone(timedelta(0))
+    """
+    Best-effort datetime parsing.
 
-    if isinstance(string, str):
-        if string.startswith("D:"):
-            string = parse_pdf_date(string)
+    Always returns:
+        - timezone-aware UTC datetime
+        - or None
+    """
 
-        try:
-            date = parser.parse(string, default=None, fuzzy=True)
-        except Exception as e:
-            date = parse_human_date(string)
-            print("Date parser got an error:", e, "recovered:", date)
+    if isinstance(string, datetime):
+        # Already datetime
+        if string.tzinfo is None:
+            return string.replace(tzinfo=UTC)
 
-    elif isinstance(string, datetime):
-        date = string.replace(tzinfo=tz)
+        return string.astimezone(UTC)
+
+    if not isinstance(string, str):
+        return None
+
+    # Handle PDF date formats
+    if string.startswith("D:"):
+        string = parse_pdf_date(string)
+
+    try:
+        date = parser.parse(string, fuzzy=True, tzinfos=TZINFOS)
+
+    except Exception:
+        return parse_human_date(string)
+
+    if date is None:
+        return None
+
+    # Normalize timezone handling
+    if date.tzinfo is None:
+        date = date.replace(tzinfo=UTC)
     else:
-        date = None
+        date = date.astimezone(UTC)
 
     return date
+
 
 ## Default files and pathes
 
