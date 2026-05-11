@@ -133,7 +133,7 @@ def close_db(db: sqlite3.Connection):
    db.close()
 
 
-def populate_db(db: sqlite3.Connection, pages: list[web_page]):
+def populate_db(db: sqlite3.Connection, pages: list[web_page], batch_size: int = 4096):
     """Insert or update `web_page` records into the SQLite database.
 
     Existing rows are matched using the PRIMARY KEY `url`.
@@ -144,16 +144,17 @@ def populate_db(db: sqlite3.Connection, pages: list[web_page]):
         by SQLite.
     """
 
-    cursor = db.cursor()
-    keys = list(web_page.__annotations__.keys())
-    insert_columns = ", ".join(keys)
-    placeholders = ", ".join(["?" for _ in keys])
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=NORMAL")
+    db.execute("PRAGMA temp_store=MEMORY")
+    db.execute("PRAGMA cache_size=-200000")
 
-    update_columns = ", ".join(
-        f"{key}=excluded.{key}"
-        for key in keys
-        if key != "url"
-    )
+    cursor = db.cursor()
+    keys = tuple(web_page.__annotations__.keys())
+    insert_columns = ",".join(keys)
+    placeholders = ",".join("?" for _ in keys)
+
+    update_columns = ",".join(f"{k}=excluded.{k}" for k in keys if k != "url")
 
     query = f"""
         INSERT INTO pages ({insert_columns})
@@ -162,25 +163,21 @@ def populate_db(db: sqlite3.Connection, pages: list[web_page]):
         {update_columns}
     """
 
-    # Batched is part of itertools from Python 3.12.
-    # Import it here so older Python versions that run online (and don't need to populate DB)
-    # can still import this module.
-    from itertools import batched
+    batch = []
+    append = batch.append
+    execute = cursor.executemany
 
-    # Process by batches of 512 records for good memory vs. speed trade-off
-    # Note: we insert only web_page keys that have a matching DB column
-    pages_tuple = batched(
-        (
-            tuple(sanitize_web_page(elem, to_db=True).get(key) for key in keys)
-            for elem in pages
-        ),
-        512,
-    )
+    with db:  # single transaction
+        for page in pages:
+            row = sanitize_web_page(page, to_db=True)
+            append(tuple(row[k] for k in keys))
 
-    for batch in pages_tuple:
-        cursor.executemany(query, list(batch))
+            if len(batch) >= batch_size:
+                execute(query, batch)
+                batch.clear()
 
-    db.commit()
+        if batch:
+            execute(query, batch)
 
 
 def migrate_url_to_primary_key(db: sqlite3.Connection):
