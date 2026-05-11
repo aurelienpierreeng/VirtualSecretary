@@ -166,7 +166,11 @@ PRICE_PATTERN = re.compile(r"%s%s%s" % (regex_starter, price_regex, end_of_word)
 RESOLUTION_PATTERN = re.compile(r"\d+(?:×|x|X)\d+")
 """Pixel resolution like 10x20 or 10×20. Units are discarded."""
 
-regex_number = r"(%s?(?:\d+[\.\,\/\+\- ]?)+)" % regex_algebra
+hex_part = r"0[xX][0-9a-fA-F]+[uU]?"
+exp_part = r"(?:\d+(?:[.,]\d+)?)[eE][+\-]?\d+[fFuU]?"
+float_part = r"\d+(?:[.,]\d+)?[fFuU]?"
+int_part = r"\d+[uU]?"
+regex_number = rf"{regex_algebra}?({hex_part}|{exp_part}|{float_part}|{int_part})"
 NUMBER_PATTERN_FAST = re.compile(r"^%s$" % regex_number)
 NUMBER_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_number, regex_stopper))
 """Signed integers and decimals, fractions and numeric IDs with interal dashes and underscores.
@@ -175,7 +179,7 @@ Numbers with starting or trailing units are not considered. Lazy decimals (.1 an
 
 ORDINAL = re.compile(r"%s([0-9]+)(st|nd|rd|th|e|er|ère|ere|nde|ème|eme)%s" % (regex_starter, end_of_word), re.IGNORECASE)
 
-regex_hash = r"([0-9a-f]){8,}"
+regex_hash = r"([0-9a-f]){6,}"
 HASH_PATTERN_FAST = re.compile(r"^%s$" % regex_hash, re.IGNORECASE)
 HASH_PATTERN = re.compile(r"%s%s%s" % (regex_starter, regex_hash, end_of_word), re.IGNORECASE)
 """Cryptographic hexadecimal hashes and fingerprints, of a min length of 8 characters."""
@@ -221,7 +225,7 @@ gain_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(dB|decibel|décibel)s?" %
 GAIN = re.compile(r"%s%s%s" % (regex_starter, gain_regex, end_of_word), flags=re.IGNORECASE)
 """Gain, attenuation and PSNR in dB"""
 
-filesize_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?i?(b|o)s?" % regex_algebra
+filesize_regex = r"(%s)? ?([0-9]+(?:[.,\-+\/ ][0-9]*)*?) ?(kilo|k|mega|m|giga|g|tera|t|peta|p)?i?(b|o|bit|byte)s?" % regex_algebra
 FILE_SIZE = re.compile(r"%s%s%s" % (regex_starter, filesize_regex, end_of_word), flags=re.IGNORECASE)
 """File and memory size in bit, byte, or octet and their multiples"""
 
@@ -297,19 +301,19 @@ ORDINAL_FR = re.compile(r"n° ?([0-9]+)")
 FRANCAIS = re.compile(r"%s(j|t|s|l|d|qu|lorsqu|quelqu|jusqu|m|c|n)\'(?=[aeiouyéèàêâîôûïüäëöh][\w\s])" % regex_starter, flags=re.IGNORECASE)
 """French contractions of pronouns and determinants"""
 
-DASHES = re.compile(r"(?<=\w)(-|_|=)(?=\w)", re.IGNORECASE)
+DASHES = re.compile(r"(?<=\w)(-|_|=)+(?=\w)", re.IGNORECASE)
 """Dashes in the middle of ASCII/Latin compounded words. Will not work if accented or Unicode characters are immediately surrounding the dash."""
 
 ALTERNATIVES = re.compile(r"(?<=[a-z])(\/)(?=[a-z])", re.IGNORECASE)
 """Slash-separated word alternatives like `and/or` `mr/mrs`"""
 
-PLURAL_S = re.compile(r"(?<=\w{4,})s?e{0,2}s%s" % end_of_word)
+PLURAL_S = re.compile(r"(?<=[a-zA-Z]{4,})s?e{0,2}s%s" % end_of_word)
 """Identify plural form of nouns (French and English), adjectives (French) and third-person present verbs (English) and second-person verbs (French) in -s."""
 
 FEMININE_E = re.compile(r"(?<=\w{4,})e{1,2}%s" % end_of_word)
 """Identify feminine form of adjectives (French) in -e."""
 
-DOUBLE_CONSONANTS = re.compile(r"(?<=\w{2,})([^aeiouy])\1")
+DOUBLE_CONSONANTS = re.compile(r"(?<=\w{2,})([bcfghjklmnpqrstvwxz])\1", re.IGNORECASE)
 """Identify double consonants in the middle of words."""
 
 FEMININE_TRICE = re.compile(r"(?<=\w{4,})t(rice|eur|or)%s" % end_of_word)
