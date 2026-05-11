@@ -141,11 +141,11 @@ class Deduplicator():
                 length = cand_length
                 vote = True
 
-            if cand_date > date:
+            if cand_date and date and cand_date > date:
                 # Replace by more recent content if any
                 date = cand_date
                 vote = True
-            elif cand_date < date:
+            elif cand_date and date and cand_date < date:
                 # Cancel replacement if candidate is older
                 vote = False
             # else: same age or both undefined date, let length decide
