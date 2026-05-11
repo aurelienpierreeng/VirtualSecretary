@@ -40,6 +40,7 @@ from .crawler import web_page
 
 DOCUMENTS = None
 TOKENIZER = None
+WORD2VEC = None
 
 latin_letters = {}
 
@@ -61,7 +62,7 @@ def parse_lang_to_iso639_1(value: str | None) -> str | None:
         code = lang.language
 
         # Ensure it's actually ISO 639-1
-        if len(code) == 2:
+        if code and len(code) == 2:
             return code
 
         # Convert ISO639-3 -> ISO639-1 if possible
@@ -1259,12 +1260,12 @@ def batch_normalize(documents: list[web_page], tokenizer: Tokenizer, chunksize: 
     return documents
 
 
-def _init_worker(tokenizer):
+def _init_tokenizer_worker(tokenizer):
     global TOKENIZER
     TOKENIZER = tokenizer
 
 
-def _batch_tokenize_worker(inputs: tuple[int, str, str, str | None]) -> tuple[str, str, int]:
+def _batch_tokenize_worker(inputs: tuple[int, str, str, str | None]) -> tuple[str | None, list[list[str]], int]:
     # Unroll SQL params
     rowid, content, parsed, lang = inputs
 
@@ -1322,7 +1323,7 @@ def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int 
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_cpu,
-        initializer=_init_worker,
+        initializer=_init_tokenizer_worker,
         initargs=(tokenizer,),
     ) as executor:       
         while True:
@@ -1335,6 +1336,23 @@ def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int 
             db.commit()
 
 
+def _init_vectorizer_worker(word2vec):
+    global WORD2VEC
+    WORD2VEC = word2vec
+
+
+def _batch_vectorize_worker(inputs: tuple[int, list[list[str]]]) -> tuple[np.ndarray[np.float32], int]:
+    rowid, tokenized = inputs
+
+    # NOTE: tokens are per-sentence/paragraph, so it's a list of list
+    vector = WORD2VEC .get_features([word for sentence in tokenized for word in sentence], embed="OUT")
+
+    #TODO:
+    #indices = word2vec.tokens_to_indices(tokens)
+
+    return vector, rowid # keep in sync with SQL query
+
+
 @timeit()
 def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int = 256):
     """Vectorize a column of the `db` database using the provided `word2vec` model
@@ -1343,34 +1361,40 @@ def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int =
     Works on the `tokenized` column of the database and writes the `vectorized` column.
     Vectors are normalized as per `nlp.Word2Vec.get_features()` output.    
     """
+    # Prepare SQLite DB for max throughput in batch environment
+    db.execute("PRAGMA journal_mode=WAL;")
+    db.execute("PRAGMA synchronous=NORMAL;")
+    db.execute("PRAGMA temp_store=MEMORY;")
+
     num_cpu = os.cpu_count()
     cursor = db.execute('SELECT rowid, tokenized FROM pages')
     batch_size = num_cpu * chunksize
 
-    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
+    with concurrent.futures.ProcessPoolExecutor(
+        max_workers=num_cpu,
+        initializer=_init_vectorizer_worker,
+        initargs=(word2vec,),
+    ) as executor:  
         while True:
             batch = cursor.fetchmany(batch_size)
             if not batch:
                 break
 
-            ids = [item[0] for item in batch]
-            parsable = [[token for sentence in item[1] for token in sentence] for item in batch]
-            vectors = executor.map(word2vec.get_features, parsable, ["OUT" for i in ids], chunksize=chunksize)
-            del parsable
-
-            db.executemany('UPDATE pages SET vectorized=? WHERE rowid=?', list(zip(vectors, ids)))
+            results = executor.map(_batch_vectorize_worker, batch, chunksize=chunksize)
+            db.executemany('UPDATE pages SET vectorized=? WHERE rowid=?', results)
             db.commit()
 
-            del ids
-            del vectors
-
-            #TODO:
-            #indices = word2vec.tokens_to_indices(tokens)
 
 @timeit()
 def batch_guess_dates(db: sqlite3.Connection, chunksize: int = 256):
     """Refresh the datetime database objects for each row by reading the textual date extracted from pages.    
     """
+
+    # Prepare SQLite DB for max throughput in batch environment
+    db.execute("PRAGMA journal_mode=WAL;")
+    db.execute("PRAGMA synchronous=NORMAL;")
+    db.execute("PRAGMA temp_store=MEMORY;")
+
     num_cpu = os.cpu_count()
     cursor = db.execute('SELECT rowid, date FROM pages')
     batch_size = num_cpu * chunksize
@@ -1391,6 +1415,3 @@ def batch_guess_dates(db: sqlite3.Connection, chunksize: int = 256):
 
             del ids
             del datetimes
-
-            #TODO:
-            #indices = word2vec.tokens_to_indices(tokens)
