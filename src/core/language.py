@@ -1,10 +1,50 @@
 from nltk.corpus import stopwords
 
+from .utils import typography_undo
+
 # The set of languages supported at the same time by NLTK tokenizer, stemmer and stopwords data is not consistent.
 # We build the least common denominator here, that is languages supported in the 3 modules.
 # See SnowballStemmer.languages and stopwords.fileids()
-_supported_lang = {'danish', 'dutch', 'english', 'finnish', 'french',
-                   'german', 'italian', 'norwegian', 'portuguese', 'spanish', 'swedish'}
+_supported_lang_iso = {
+    'da',  # danish
+    'nl',  # dutch
+    'en',  # english
+    'fi',  # finnish
+    'fr',  # french
+    'de',  # german
+    'it',  # italian
+    'no',  # norwegian
+    'pt',  # portuguese
+    'es',  # spanish
+    'sv',  # swedish
+}
+"""ISO 639-1 language codes of supported languages"""
+
+LANG_MAP = {
+    "en": "english",
+    "fr": "french",
+    "de": "german",
+    "es": "spanish",
+    "it": "italian",
+    "pt": "portuguese",
+    "nl": "dutch",
+    "sv": "swedish",
+    "no": "norwegian",
+    "da": "danish",
+    "fi": "finnish",
+    "ru": "russian",
+    "ro": "romanian",
+    "hu": "hungarian",
+    "tr": "turkish",
+}
+"""Map ISO 639-1 language codes of supported languages to their full-name, as used by pre-trained corpora"""
+
+
+LANG_MAP_REVERSE = {v: k for k, v in LANG_MAP.items()}
+"""Map the full-name of supported languages, as used by pre-trained corpora, to ISO 639-1 language codes"""
+
+
+_supported_lang = {LANG_MAP[iso] for iso in _supported_lang_iso}
 
 # Stopwords to remove
 # We remove stopwords only if they are grammatical operators not briging semantic meaning.
@@ -60,8 +100,9 @@ STOPWORDS_PUNCT = {
 STOPWORDS = set(list(STOPWORDS_PUNCT))
 
 # Static dict of stopwords for language detection, inited from NLTK corpus
-STOPWORDS_DICT = {language: list(stopwords.words(
-    language)) for language in stopwords.fileids() if language in _supported_lang}
+STOPWORDS_DICT = { language: list(stopwords.words(language)) 
+                   for language in stopwords.fileids() 
+                   if language in _supported_lang}
 
 # Some stopwords are missing from the corpus for some languages, add them
 STOPWORDS_DICT["french"] += ["ça", "ceci", "cela", "tout", "tous", "toutes", "toute",
@@ -107,8 +148,9 @@ STOPWORDS_DICT["german"] += ["best", "beste", "besten", "besser", "mehr", "alle"
                              "durch", "für", "gegen", "ohne", "um"]
 
 # Build a dict of sets
-STOPWORDS_DICT = {language: set(
-    STOPWORDS_DICT[language]) for language in STOPWORDS_DICT}
+STOPWORDS_DICT = {language: set(STOPWORDS_DICT[language]) 
+                  for language in STOPWORDS_DICT}
+"""Dictionnary of stopwords (as sets values) mapped to full language names (as keys)"""
 
 # Abbreviations and common typos, as `original: replacement`
 # Those replacements assume the following pipeline :
