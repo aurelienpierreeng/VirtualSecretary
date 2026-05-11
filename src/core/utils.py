@@ -15,6 +15,7 @@ import time
 import signal
 import numba
 import psutil
+import unicodedata
 from collections.abc import Iterable
 
 from typing import TypedDict
@@ -439,6 +440,7 @@ def typography_undo(string:str) -> str:
     [^2]: https://eng.aurelienpierre.com/wp-scholar/
     """
     if string and isinstance(string, str):
+        string = unicodedata.normalize("NFKC", string)
         string = _unicode_to_ascii(string)
         # Blindly remove all remaining non-ASCII characters:
         # emojis, bullets, non-latin characters including Chinese, Japanese, Greek, etc.
