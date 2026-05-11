@@ -304,7 +304,7 @@ def merge_databases(old_db: sqlite3.Connection, new_db: sqlite3.Connection):
 
 def add_content_hash_column(db: sqlite3.Connection):
     """
-    Add and populate `content_hash` column from the `content` column,
+    Add and populate/update `content_hash` column from the `parsed` column,
     for content integrity and deduplication purposes.
     """
 
@@ -323,9 +323,8 @@ def add_content_hash_column(db: sqlite3.Connection):
 
     # Stream rows to avoid RAM explosion
     rows = cursor.execute("""
-        SELECT rowid, content
+        SELECT rowid, parsed
         FROM pages
-        WHERE content_hash IS NULL
     """)
 
     updates = []
@@ -387,10 +386,10 @@ def deduplicate_pages(db: sqlite3.Connection):
         # Important: only rows with non-null hashes
         cursor.execute("""
             CREATE TEMP TABLE keep_rowids AS
-            SELECT MIN(p1.rowid) AS rowid
-            FROM pages p1
-            WHERE p1.content_hash IS NOT NULL
-            GROUP BY p1.content_hash, p1.content
+            SELECT MIN(rowid) AS rowid
+            FROM pages
+            WHERE content_hash IS NOT NULL
+            GROUP BY content_hash
         """)
 
         # Delete only rows NOT selected
