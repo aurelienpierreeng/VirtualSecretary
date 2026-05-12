@@ -673,7 +673,7 @@ def timeit(runs: int = 1):
             results.append(end - start)
 
           results = np.array(results)
-          print("function %s took (%f ± %f) s, average of %i runs" % (func.__name__, np.mean(results), np.std(results), results.size))
+          print("function %s took (%f ± %f) s, average of %i runs" % (func.__qualname__, np.mean(results), np.std(results), results.size))
           return out
         return wrapper
     return decorate
