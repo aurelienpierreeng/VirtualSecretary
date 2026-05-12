@@ -509,3 +509,85 @@ def update_pages_from_database( target_db: sqlite3.Connection, source_db: sqlite
             )
         except sqlite3.OperationalError:
             pass
+
+
+class SQLitePageCorpus:
+    """
+    Lazily stream rows from an SQLite request, avoiding full copy.
+
+    Example:
+        ```python
+            corpus = SQLitePageCorpus(
+                db,
+                \"""
+                SELECT tokenized
+                FROM pages
+                WHERE lang IN ('fr', 'en')
+                \""",
+                max_depth=0
+            )
+        ```
+        - `max_depth=0` will not flatten the content, so it will return
+          the original `list[list[str]]` (list of sentences, aka list of list of words),
+        - `max_depth=1` flattens documents, to it will return
+          `list[str]` (list of words)
+    """
+
+    def __init__(self, db, query, params=(), atomic_types=(str, bytes), max_depth=None):
+        self.db = db
+        self.query = query
+        self.params = params
+        self.atomic_types = atomic_types
+        self.max_depth = max_depth
+
+        self._length = None
+
+
+    def __iter__(self):
+        """Iterate over the SQLite query rows with no full copy"""
+        cursor = self.db.execute(self.query, self.params)
+
+        for row in cursor:
+            if not row:
+                continue
+
+            for value in row:
+                yield from self._flatten(value)
+
+
+    def __len__(self):
+        if self._length is not None:
+            return self._length
+
+        count = 0
+
+        cursor = self.db.execute(self.query, self.params)
+
+        for row in cursor:
+            if not row:
+                continue
+
+            for value in row:
+                count += sum(1 for _ in self._flatten(value))
+
+        self._length = count
+
+        return count
+        
+
+    def _flatten(self, obj, depth=0):
+        """Recursively flatten nested iterables up to `depth` recursions."""
+
+        if obj is None:
+            return
+
+        if isinstance(obj, self.atomic_types):
+            yield obj
+            return
+
+        if (isinstance(obj, Iterable) and (self.max_depth is None or depth < self.max_depth)):
+            for item in obj:
+                yield from self._flatten(item, depth + 1)
+            return
+
+        yield obj
