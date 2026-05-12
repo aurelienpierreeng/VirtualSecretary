@@ -102,25 +102,25 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
 
     # Handle legacy code : fields added recently
     if "stemmed" not in page:
-        page["stemmed"] = [[]]
+        page["stemmed"] = None
 
     if "vectorized" not in page:
         page["vectorized"] = np.empty(0, dtype=np.float32)
 
     if "tokenized" not in page:
-        page["tokenized"] = [[]]
+        page["tokenized"] = None
 
     if "parsed" not in page:
-        page["parsed"] = ""
+        page["parsed"] = None
 
     if "domain" not in page:
-        page["domain"] = ""
+        page["domain"] = None
 
     if "datetime" not in page:
         page["datetime"] = None
 
     if "length" not in page:
-        page["length"] = 0
+        page["length"] = None
 
     if "excerpt" not in page or not page["excerpt"] or len(page["excerpt"]) < 800:
         page["excerpt"] = str(page["content"])[0:min(len(page["content"]), 800)]
