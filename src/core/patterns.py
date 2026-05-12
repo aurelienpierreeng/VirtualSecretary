@@ -298,7 +298,7 @@ MULTIPLE_QUESTIONS = re.compile(r"\?{1,}")
 ORDINAL_FR = re.compile(r"n° ?([0-9]+)")
 """French ordinal numbers (numéros n°)"""
 
-FRANCAIS = re.compile(r"%s(j|t|s|l|d|qu|lorsqu|quelqu|jusqu|m|c|n)\'(?=[aeiouyéèàêâîôûïüäëöh][\w\s])" % regex_starter, flags=re.IGNORECASE)
+FRANCAIS = re.compile(r"%s(j|t|s|d|qu|lorsqu|quelqu|jusqu|m|c|n)\'(?=[aeiouyéèàêâîôûïüäëöh][\w\s])" % regex_starter, flags=re.IGNORECASE)
 """French contractions of pronouns and determinants"""
 
 DASHES = re.compile(r"(?<=\w)(-|_|=)+(?=\w)", re.IGNORECASE)
