@@ -1330,10 +1330,6 @@ def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int 
     Arguments:
         urls: list of URLs to tokenize. If None, the whole database is processed.
     """
-    # Prepare SQLite DB for max throughput in batch environment
-    db.execute("PRAGMA journal_mode=WAL;")
-    db.execute("PRAGMA synchronous=NORMAL;")
-    db.execute("PRAGMA temp_store=MEMORY;")
 
     num_cpu = os.cpu_count()
     batch_size = (num_cpu or 1) * chunksize
@@ -1390,13 +1386,9 @@ def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int =
     Works on the `tokenized` column of the database and writes the `vectorized` column.
     Vectors are normalized as per `nlp.Word2Vec.get_features()` output.    
     """
-    # Prepare SQLite DB for max throughput in batch environment
-    db.execute("PRAGMA journal_mode=WAL;")
-    db.execute("PRAGMA synchronous=NORMAL;")
-    db.execute("PRAGMA temp_store=MEMORY;")
 
     num_cpu = os.cpu_count()
-    cursor = db.execute('SELECT rowid, tokenized FROM pages')
+    cursor = db.execute('SELECT rowid, stemmed FROM pages')
     batch_size = num_cpu * chunksize
 
     with concurrent.futures.ProcessPoolExecutor(
@@ -1427,11 +1419,6 @@ def batch_guess_dates(db: sqlite3.Connection, chunksize: int = 2048):
     """
     High-throughput parallel datetime parsing.
     """
-
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=NORMAL")
-    db.execute("PRAGMA temp_store=MEMORY")
-    db.execute("PRAGMA cache_size=-200000")
 
     num_cpu = os.cpu_count() or 1
 
