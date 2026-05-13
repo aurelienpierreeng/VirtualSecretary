@@ -11,6 +11,8 @@ import regex as re
 
 import json
 from datetime import datetime
+from collections.abc import Iterable
+from pathlib import Path
 
 from .utils import get_models_folder
 from .types import web_page, sanitize_web_page
@@ -55,7 +57,8 @@ def create_db(name: str) -> sqlite3.Connection:
     The `url` column is used as the PRIMARY KEY.
     """
 
-    connector = sqlite3.connect(get_models_folder(name), detect_types=sqlite3.PARSE_DECLTYPES)
+    connector = open_db(name, mode="bulk")
+    
     cursor = connector.cursor()
 
     type_map = {
@@ -110,26 +113,80 @@ def create_db(name: str) -> sqlite3.Connection:
     return connector
 
 
-def open_db(name: str) -> sqlite3.Connection:
-    """Create or recreate (overwrite) a new table of `web_page` items.
+def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
+    """Open an SQLite database with workload-specific optimizations.
 
-    Warning: The columns are initialized straight from the keys of `web_page`.
+    Arguments:
+        name: Database identifier/path passed to `get_models_folder()`.
+        mode:
+            - "rw": Generic read/write mode.
+            - "ro": Read-only immutable mode optimized for serving/search workloads.
+            - "bulk": Bulk-ingestion mode optimized for large batch writes.
+
+    Returns:
+        sqlite3.Connection
     """
-    # Note: detect_types is mandatory for custom types support
-    db = sqlite3.connect(get_models_folder(name), detect_types=sqlite3.PARSE_DECLTYPES, isolation_level=None)
+
+    path = Path(get_models_folder(name))
+
+    common_kwargs = {
+        "detect_types": sqlite3.PARSE_DECLTYPES,
+    }
+
+    if mode == "ro":
+        uri = f"file:{path}?mode=ro&immutable=1"
+
+        db = sqlite3.connect(uri, uri=True,
+            isolation_level=None,  # autocommit
+            **common_kwargs
+        )
+
+        db.execute("PRAGMA query_only = ON")
+        db.execute("PRAGMA synchronous = OFF")
+        db.execute("PRAGMA temp_store = MEMORY")
+
+        # 256 MB page cache per process
+        db.execute("PRAGMA cache_size = -262144")
+
+        # 30 GB max mmap window
+        db.execute("PRAGMA mmap_size = 30000000000")
+
+    elif mode == "bulk":
+        db = sqlite3.connect(path, **common_kwargs)
+
+        db.execute("PRAGMA journal_mode = TRUNCATE")
+        db.execute("PRAGMA synchronous = NORMAL")
+        db.execute("PRAGMA temp_store = MEMORY")
+
+        # ~200 MB page cache
+        db.execute("PRAGMA cache_size = -200000")
+
+        # Larger mmap can help indexing workloads too
+        db.execute("PRAGMA mmap_size = 8000000000")
+
+        # db.execute("VACUUM")
+
+    elif mode == "rw":
+        db = sqlite3.connect(path, **common_kwargs)
+
+        db.execute("PRAGMA journal_mode = TRUNCATE")
+        db.execute("PRAGMA synchronous = NORMAL")
+        db.execute("PRAGMA temp_store = MEMORY")
+
+    else:
+        raise ValueError(f"Invalid SQLite mode: {mode!r}")
 
     # Add regex support to SQLite3
     def regexp(pattern, string):
         return re.search(pattern, string, re.IGNORECASE, concurrent=True) is not None
 
-    db.create_function("regexp", 2, regexp)
+    db.create_function("regexp", 2, regexp, deterministic=True)
 
     return db
 
 
 def close_db(db: sqlite3.Connection):
    db.execute("ANALYZE")
-   db.execute("VACUUM")
    db.close()
 
 
@@ -143,11 +200,6 @@ def populate_db(db: sqlite3.Connection, pages: list[web_page], batch_size: int =
         then to `bytes` in order to be handled as `BLOB`
         by SQLite.
     """
-
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA synchronous=NORMAL")
-    db.execute("PRAGMA temp_store=MEMORY")
-    db.execute("PRAGMA cache_size=-200000")
 
     cursor = db.cursor()
     keys = tuple(web_page.__annotations__.keys())
