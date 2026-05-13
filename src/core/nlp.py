@@ -1406,38 +1406,3 @@ def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int =
             db.commit()
 
 
-def _guess_dates_batch(batch: list[tuple[int, str]]) -> list[tuple[int, str]]:
-    out = []
-    for rowid, text_date in batch:
-        out.append((guess_date(text_date), rowid))
-
-    return out
-
-
-@timeit()
-def batch_guess_dates(db: sqlite3.Connection, chunksize: int = 2048):
-    """
-    High-throughput parallel datetime parsing.
-    """
-
-    num_cpu = os.cpu_count() or 1
-
-    cursor = db.execute("SELECT rowid, date FROM pages")
-    execute = db.executemany
-
-    # Prebatch to reduce IPC overhead
-    batches = []
-
-    while True:
-        batch = cursor.fetchmany(chunksize)
-
-        if not batch:
-            break
-
-        batches.append(batch)
-
-    with db:  # single transaction
-        with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
-            # chunksize is 1 because our chunk is already a batch list
-            for results in executor.map(_guess_dates_batch, batches, chunksize=1):
-                execute("UPDATE pages SET datetime=? WHERE rowid=?", results)
