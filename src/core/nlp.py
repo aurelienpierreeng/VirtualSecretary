@@ -56,22 +56,16 @@ def _roman_chars(unistr):
 
 
 def parse_lang_to_iso639_1(value: str | None) -> str | None:
-    """Parse any string language code to ISO 639-1 language code"""
+    """Normalize language identifier to ISO 639-1."""
+
+    if not value:
+        return None
+
     try:
-        lang = langcodes.find(value)
-        code = lang.language
+        lang = langcodes.get(value)
 
-        # Ensure it's actually ISO 639-1
-        if code and len(code) == 2:
-            return code
-
-        # Convert ISO639-3 -> ISO639-1 if possible
-        macro = lang.to_alpha3()
-
-        # langcodes itself cannot always reverse-map
-        entry = pycountry.languages.get(alpha_3=macro)
-        if entry and hasattr(entry, "alpha_2"):
-            return entry.alpha_2
+        if lang.language and len(lang.language) == 2:
+            return lang.language
 
     except Exception:
         pass
