@@ -6,20 +6,25 @@ Supports automatic language detection, word tokenization and stemming for `'dani
 © 2023 - Aurélien Pierre
 """
 
+from __future__ import annotations
+
 import random
 import regex as re
 import os
 import concurrent
 import unicodedata as ud
-import multiprocessing
 
 from collections import Counter
+from dataclasses import dataclass, field
+from typing import Iterable
 
 import gensim
 from gensim.models.callbacks import CallbackAny2Vec
+from gensim.models.phrases import Phrases, Phraser
 
 import joblib
-import sqlite3
+import pickle
+import json
 
 import numpy as np
 
@@ -38,9 +43,6 @@ from .utils import get_models_folder, typography_undo, clean_whitespaces, timeit
 from .language import *
 from .crawler import web_page
 
-DOCUMENTS = None
-TOKENIZER = None
-WORD2VEC = None
 
 latin_letters = {}
 
@@ -192,6 +194,199 @@ def tokenize_document_to_sentences(text: str, language: str | None = None, backe
     return result
 
 
+@dataclass(slots=True)
+class Lexicon:
+    """
+    Mutable token frequency index with canonicalization helpers for:
+    - malformed n-grams,
+    - merged/split variants,
+    - plural compound normalization.
+
+    Examples:
+        liber_tarian  -> libertarian
+        etres_humains -> etre_humain
+    """
+
+    counts: Counter[str] = field(default_factory=Counter)
+
+    def update(self, corpus: Iterable[Iterable[str]]) -> None:
+        """
+        Update token frequencies from a corpus of tokenized sentences.
+
+        Args:
+            corpus:
+                Iterable of tokenized sentences:
+                [
+                    ["this", "is", "a", "sentence"],
+                    ["another", "sentence"]
+                ]
+        """
+        for sentence in corpus:
+            self.counts.update(sentence)
+
+
+    def frequency(self, token: str) -> int:
+        """Return token frequency."""
+        return self.counts[token]
+
+
+    def exists(self, token: str) -> bool:
+        """Check whether a token exists in the lexicon."""
+        return token in self.counts
+    
+
+    def prune(self, min_count: int = 10) -> None:
+        """
+        Remove all entries whose frequency is lower than `min_count`.
+
+        Args:
+            min_count:
+                Minimum frequency to keep.
+        """
+
+        self.counts = Counter({
+            token: count
+            for token, count in self.counts.items()
+            if count >= min_count
+        })
+    
+
+    @staticmethod
+    def _singularize(token: str) -> str:
+        """
+        Very lightweight EN/FR singularization heuristic.
+
+        Conservative on purpose:
+        avoids damaging valid words.
+        """
+
+        # French plurals
+        if token.endswith("aux") and len(token) > 4:
+            return token[:-3] + "al"
+
+        if token.endswith("s") and len(token) > 3:
+            return token[:-1]
+
+        # English plurals
+        if token.endswith("ies") and len(token) > 4:
+            return token[:-3] + "y"
+
+        return token
+
+
+    def resolve_token(self, token: str, separator: str = "_", min_ratio: float = 1.0) -> str:
+        """
+        Attempt to canonicalize malformed n-grams.
+
+        Operations:
+        1. malformed n-grams:
+            liber_tarian -> libertarian
+
+        2. plural compound reduction:
+            etres_humains -> etre_humain
+
+        Strategy:
+        - if token exists already -> keep it
+        - otherwise:
+            - remove separators,
+            - check if merged variant exists,
+            - compare frequencies,
+            - prefer merged form if sufficiently frequent.
+
+        Args:
+            token:
+                Token to canonicalize.
+
+            separator:
+                N-gram separator.
+
+            min_ratio:
+                Require merged token frequency to be at least
+                `min_ratio` times the split variant frequency.
+
+                Helps avoid false positives.
+
+        Returns:
+            Canonicalized token.
+        """
+
+        # Fast path. Ignore meta-tokens which have trailing and leading _
+        if separator not in token[1:-1]:
+            return token
+
+        original_freq = self.counts.get(token, 0)
+
+        candidates: list[str] = []
+
+        # Candidate 1:
+        # merge the compound entirely
+        # liber_tarian -> libertarian
+        merged = token.replace(separator, "")
+
+        if merged in self.counts:
+            candidates.append(merged)
+
+        # Candidate 2:
+        # singularize each compound segment
+        # etres_humains -> etre_humain
+        parts = token.split(separator)
+
+        singular_parts = [
+            self._singularize(part)
+            for part in parts
+        ]
+
+        singular = separator.join(singular_parts)
+
+        if singular != token and singular in self.counts:
+            candidates.append(singular)
+
+        # Candidate 3:
+        # singularize + merge
+        # etres_humains -> etrehumain
+        merged_singular = "".join(singular_parts)
+
+        if merged_singular in self.counts:
+            candidates.append(merged_singular)
+
+        if not candidates:
+            return token
+
+        # Prefer highest-frequency candidate
+        best = max(
+            candidates,
+            key=lambda candidate: self.counts[candidate]
+        )
+
+        best_freq = self.counts[best]
+
+        # If original token does not exist,
+        # aggressively canonicalize
+        if original_freq == 0:
+            return best
+
+        # Otherwise require statistical dominance
+        if best_freq >= original_freq * min_ratio:
+            return best
+
+        return token
+
+
+    def canonicalize_sentence(self, sentence: list[str], separator: str = "_", min_ratio: float = 1.0) -> list[str]:
+        """
+        Canonicalize all tokens in a sentence.
+        """
+
+        return [
+            self.resolve_token(
+                token,
+                separator=separator,
+                min_ratio=min_ratio,
+            )
+            for token in sentence
+        ]
+
+
 class Tokenizer():
     characters_cleanup: dict[re.Pattern: str] = {
         MULTIPLE_DOTS: "...",
@@ -224,8 +419,9 @@ class Tokenizer():
             # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
             string = key.sub(value, string, concurrent=True)
 
-        for key, value in self.abbreviations.items():
-            string = string.replace(key, value)
+        if self.abbreviations:
+            for key, value in self.abbreviations.items():
+                string = string.replace(key, value)
 
         if meta_tokens:
             for key, value in self.meta_tokens_pipe.items():
@@ -246,6 +442,8 @@ class Tokenizer():
     def lemmatize(self, word: str) -> str:
         """Find the root (lemma) of words to help topical generalization."""
         lemmas = {
+            # French words contractions : expand for generality
+            FRANCAIS: r"\1 ",
             # Simplify double consonants. They are irregular, people misspell them and they vary between languages.
             DOUBLE_CONSONANTS: r"\1",
             # Remove final "s" or "es" as a plural mark.
@@ -345,24 +543,34 @@ class Tokenizer():
 
     def normalize_token(self, 
                         word: str, 
-                        language: str, 
+                        language: str | None, 
                         normalize: bool = True,
                         meta_tokens: bool = True, 
                         stem: bool = True,
                         remove_stopwords: bool = True) -> str | None:
-        """Return normalized, lemmatized and stemmed word tokens, where dates, times, digits, monetary units and URLs have their actual value replaced by meta-tokens designating their type. Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
+        """Return normalized, lemmatized and stemmed word tokens, where dates, times, digits, monetary units 
+        and URLs have their actual value replaced by meta-tokens designating their type. 
+        Stopwords ("the", "a", etc.), punctuation etc. is replaced by `None`, which should be filtered out at the next step.
 
         Arguments:
             word (str): tokenized word in lower case only.
             language (str): the ISO 369-1 language code used to remove typical stopwords.
-            normalize (str): remove punctuation and leading/trailing symbols, replace abbreviations, etc.
+            normalize (str): remove punctuation and leading/trailing symbols.
             meta_tokens (bool): replace string patterns by meta_tokens
             stem (bool): remove word suffixes, double consonnants, etc.
             remove_stopwords (bool): remove stopwords
 
+        NOTE:
+            Tokenization is non-destructive (full sentences can be reconstructed entirely from token lists)
+            if `normalize=False`, `meta_tokens=False`, `stem=False` and `remove_stopwords=False`. In this setting,
+            only 1:1 token replacements defined in `self.replacements` will be applied, which can allow
+            to replace abbreviations or accronyms.
+            Other modes start generalizing semantics by removing meaning.
+
         Examples:
-            `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
-            `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
+            Meta-tokens:
+                `10:00` or `10 h` or `10am` or `10 am` will all be replaced by a `_TIME_` meta-token.
+                `feb`, `February`, `feb.`, `monday` will all be replaced by a `_DATE_` meta-token.
         """
 
         string = word
@@ -374,6 +582,12 @@ class Tokenizer():
                 # empty string or
                 # tokenizer failed to split tokens on spaces
                 return None
+            
+        # Find out if this is an n-gram that also exists as a singleton word.
+        # Wrong splitting of compound words and hyphenation, especially in OCRed PDF
+        # will often duplicate words as n-grams, which challenges Word2Vec learning.
+        # This helps generalizing by catching this error.
+        string = self.vocabulary.resolve_token(string)
 
         # Replace abbreviations by full text or meta-tokens, as defined in the replacement dict
         if self.replacements and string in self.replacements:
@@ -392,12 +606,20 @@ class Tokenizer():
         if string_upper in self.meta_tokens:
             return string_upper
 
+        # For n-grams, limit post-processing to stopwords removal
+        # We do lazy detection of undescores within the string,
+        # which will also track function names and technical stuff.
+        # We probably don't wont to filter those either anyway.
+        is_ngram = "_" in string[1:-1]
+        
         # Remove Markdown markers for _italics_ and __bold__
         # Note: internal under_scores and da-shes are already handled in metatokens regex loop.
-        string = string.strip("_")
+        # This is mandatory since we use `_` as n-gram delimiter later.
+        if not is_ngram:
+            string = string.strip("_ ")
 
         # Last chance of identifying meta-tokens in an atomic way
-        if meta_tokens:
+        if meta_tokens and not is_ngram:
             for key, value in self.internal_meta_tokens.items():
                 # Note: since Python 3.8 or so, dictionnaries are ordered.
                 # Treating the pre-processing pipeline as dict wouldn't work for ealier versions.
@@ -406,20 +628,21 @@ class Tokenizer():
                 
         # Check if string is a stopword from our custom list
         if remove_stopwords:
-            # Language-specific stopwords don't use stemmed words
+            # Language-specific stopwords
             if self.lang_stopwords and language in self.lang_stopwords:
                 if string in self.lang_stopwords[language]:
                     return None
-
-        # Lemmatize / Stem
-        if stem:
-            string = self.lemmatize(string)
-
-        # Check if string is a stopword from our custom list
-        if remove_stopwords:
-            # Language-agnostic stopwords may use stemmed words
+                
+            # Language-agnostic stopwords
             if self.stopwords and string in self.stopwords:
                 return None
+
+        # Lemmatize / Stem
+        if stem and not is_ngram:
+            string = self.lemmatize(string)
+
+        # Last chance to catch badly-hyphenated n-grams
+        string = self.vocabulary.resolve_token(string)
             
         return string
 
@@ -427,6 +650,7 @@ class Tokenizer():
     def tokenize_text(self, 
                       sentence: str, 
                       language: str | None = None, 
+                      n_grams: bool = True,
                       normalize: bool = True,
                       meta_tokens: bool = True, 
                       stem: bool = True,
@@ -436,6 +660,8 @@ class Tokenizer():
 
         Arguments:
             sentence: the input single sentence.
+            n_grams: apply n-grams detection and collapsing on tokens. Need to have trained the 
+            n-grams model with [self.train_ngrams][]
             others: see [core.nlp.Tokenizer.normalize_token][] arguments
 
         Note:
@@ -444,15 +670,72 @@ class Tokenizer():
         Returns:
             tokens (list[str]): the list of normalized tokens as a bag of words.
         """
-        tokens = [self.normalize_token(token, language, meta_tokens=meta_tokens, stem=stem, normalize=normalize, remove_stopwords=remove_stopwords)
-                  for token in tokenize_document_to_words(sentence, language=language, backend=self.backend)]
- 
-        return [item for item in tokens if isinstance(item, str)]
 
+        if n_grams and self.supports_ngrams:
+            # First pass needs basic tokenization so the N-gram detection can pick up
+            tokens = self.post_filter_tokens(tokenize_document_to_words(sentence, 
+                                                                        language=language, 
+                                                                        backend=self.backend),
+                                             language,
+                                             meta_tokens=meta_tokens,
+                                             stem=False,
+                                             normalize=False,
+                                             remove_stopwords=False)
+
+            # Spot n-grams into tokens and collapse them into a single token,
+            # then finish normalization
+            return self.post_filter_tokens(self.replace_ngrams(tokens),
+                                            language,
+                                            meta_tokens=meta_tokens,
+                                            stem=stem,
+                                            normalize=normalize,
+                                            remove_stopwords=remove_stopwords)
+        else:
+
+            return self.post_filter_tokens(tokenize_document_to_words(sentence, 
+                                                                      language=language, 
+                                                                      backend=self.backend),
+                                           language,
+                                           meta_tokens=meta_tokens,
+                                           stem=stem,
+                                           normalize=normalize,
+                                           remove_stopwords=remove_stopwords)
+
+
+    def post_filter_tokens(self,
+                           tokens: list[str], 
+                           language: str | None = None,
+                           meta_tokens: bool = True,
+                           stem: bool = False,
+                           normalize: bool = False,
+                           remove_stopwords: bool = False) -> list[str]:
+        """Apply a post-processing step (normalization, etc.) on an existing list of tokens.
+        
+        Arguments:
+            See [core.nlp.Tokenizer.normalize_token][]
+        """
+        normalize_token = self.normalize_token
+
+        return [
+            t
+            for token in tokens
+            if (
+                t := normalize_token(
+                    token,
+                    language,
+                    meta_tokens=meta_tokens,
+                    stem=stem,
+                    normalize=normalize,
+                    remove_stopwords=remove_stopwords
+                )
+            )
+        ]
+ 
 
     def tokenize_document_flat(self, 
                                 document:str, 
                                 language: str | None = None, 
+                                n_grams: bool = True,
                                 normalize: bool = True,
                                 meta_tokens: bool = True, 
                                 stem: bool = True,
@@ -470,6 +753,7 @@ class Tokenizer():
 
         Arguments:
             document (str): the text of the document to tokenize
+            n_grams (bool): see [core.nlp.Tokenizer.tokenize_text][]
             others: see [core.nlp.Tokenizer.normalize_token][] arguments
 
         Note:
@@ -478,20 +762,20 @@ class Tokenizer():
         Returns:
             tokens (list[str]): a 1D list of normalized tokens and meta-tokens.
         """
-        if language is None:
-            language = detect_language(document)
-
         clean_text = self.prefilter(document, meta_tokens=meta_tokens)
-        return self.tokenize_text(clean_text, language=language, meta_tokens=meta_tokens, stem=stem, normalize=normalize, remove_stopwords=remove_stopwords)
+        return self.tokenize_text(clean_text, language=language, meta_tokens=meta_tokens, 
+                                  stem=stem, normalize=normalize, remove_stopwords=remove_stopwords,
+                                  n_grams=n_grams)
 
 
     def tokenize_document_per_sentence(self, 
                                        document: str, 
                                        language: str | None = None, 
-                                        normalize: bool = True,
-                                        meta_tokens: bool = True, 
-                                        stem: bool = True,
-                                        remove_stopwords: bool = True) -> list[list[str]]:
+                                       n_grams: bool = True,
+                                       normalize: bool = True,
+                                       meta_tokens: bool = True, 
+                                       stem: bool = True,
+                                       remove_stopwords: bool = True) -> list[list[str]]:
         """Cleanup and tokenize a whole document as a list of sentences, meaning we split it into sentences before tokenizing. 
         Use this to train a Word2Vec (embedding) model so each token is properly embedded into its syntactic context. 
         The document text needs to have been prepared and cleaned, which means :
@@ -502,6 +786,7 @@ class Tokenizer():
 
         Arguments:
             document (str): the text of the document to tokenize
+            n_grams (bool): see [core.nlp.Tokenizer.tokenize_text][]
             others: see [core.nlp.Tokenizer.normalize_token][] arguments
 
         Note:
@@ -510,18 +795,17 @@ class Tokenizer():
         Returns:
             tokens: a 2D list of sentences (1st axis), each containing a list of normalized tokens and meta-tokens (2nd axis).
         """
-        # TODO: prefilter n-grams ?
-        if language is None:
-            language = detect_language(document)
-
         clean_text = self.prefilter(document, meta_tokens=meta_tokens)
-        return [self.tokenize_text(sentence, language=language, meta_tokens=meta_tokens, stem=stem, normalize=normalize, remove_stopwords=remove_stopwords)
+        return [self.tokenize_text(sentence, language=language, meta_tokens=meta_tokens, 
+                                   stem=stem, normalize=normalize, remove_stopwords=remove_stopwords,
+                                   n_grams=n_grams)
                 for sentence in split_document_to_sentences(clean_text, language=language, backend=self.backend)]
 
 
     def tokenize_document_per_paragraph(self, 
-                                       document: str, 
-                                       language: str | None = None, 
+                                        document: str, 
+                                        language: str | None = None, 
+                                        n_grams: bool = True,
                                         normalize: bool = True,
                                         meta_tokens: bool = True, 
                                         stem: bool = True,
@@ -536,6 +820,7 @@ class Tokenizer():
 
         Arguments:
             document (str): the text of the document to tokenize
+            n_grams (bool): see [core.nlp.Tokenizer.tokenize_text][]
             others: see [core.nlp.Tokenizer.normalize_token][] arguments
 
         Note:
@@ -544,28 +829,30 @@ class Tokenizer():
         Returns:
             tokens: a 2D list of paragraphs (1st axis), each containing a list of normalized tokens and meta-tokens (2nd axis).
         """
-        # TODO: prefilter n-grams ?
-        if language is None:
-            language = detect_language(document)
-
         clean_text = self.prefilter(document, meta_tokens=meta_tokens)
-        return [self.tokenize_text(paragraph, language=language, meta_tokens=meta_tokens, stem=stem, normalize=normalize, remove_stopwords=remove_stopwords)
-                for paragraph in re.split(r'(?:\r\n|\r|\n){2,}', clean_text)]
+        return [self.tokenize_text(paragraph, language=language, meta_tokens=meta_tokens, 
+                                   stem=stem, normalize=normalize, remove_stopwords=remove_stopwords,
+                                   n_grams=n_grams)
+                for paragraph in re.split(r'(?:\r\n|\r|\n){2,}', clean_text, concurrent=True)]
 
 
     def __init__(self,
-                 meta_tokens: dict[re.Pattern: str] | None = None,
-                 abbreviations: dict[str: str] | None = None,
-                 replacements: dict[str: str] | None = None,
+                 meta_tokens: dict[re.Pattern, str] | None = None,
+                 abbreviations: dict[str, str] | None = None,
+                 replacements: dict[str, str] | None = None,
                  stopwords: set[str] | None = None,
-                 lang_stopwords: dict[str: set[str]] | None = None,
+                 lang_stopwords: dict[str, set[str]] | None = None,
                  backend: str = "blingfire"):
         """Pre-processing pipeline and tokenizer, splitting a string into normalized word tokens.
 
         Arguments:
-            meta_token: the pipeline of regular expressions to replace with meta-tokens. Keys must be `re.Pattern` declared with `re.compile()`, values must be meta-tokens assumed to be nested in underscores. The pipeline dictionnary will be processed in the order of declaration, which relies on using Python >= 3.7 (making `dict` ordered by default). If not provided, it is inited by default with a pipeline suitable for bilingual English/French language processing on technical writings (see notes).
-            abbreviations (dict[str: str]): pipeline of abbreviations to replace, as `to_replace: replacement` dictionnary. Will be processed in order of declaration.
-            replacements: dictionnary used to replace 1:1 `key` with `value` in tokens.
+            meta_token: the pipeline of regular expressions to replace with meta-tokens in documents.
+            Keys must be `re.Pattern` declared with `re.compile()`, values must be meta-tokens assumed to be nested in underscores. 
+            The pipeline dictionnary will be processed in the order of declaration, which relies on using Python >= 3.8 (making `dict` ordered by default). 
+            If not provided, it is inited by default with a pipeline suitable for bilingual English/French language processing on technical writings (see notes).
+            abbreviations (dict[str: str]): pipeline of abbreviations to replace, as `to_replace: replacement` dictionnary. 
+            Will be processed in order of declaration.
+            replacements: dictionnary used to replace 1:1 `key` with `value` as strings in tokens.
             stopwords: flat list of language-agnostic stopwords to remove from tokens.
             lang_stopwords: language-specific stopwords as a dictionnary. Keys have to be ISO 639-1 language code, and values the set of stopwords.
             backend: `blingfire` or `nltk`, choose which Python library will perform the actual tokenization.
@@ -623,20 +910,10 @@ class Tokenizer():
                 # Numerical : prices and resolutions
                 PRICE_PATTERN: " _PRICE_ ",
                 RESOLUTION_PATTERN: " _RESOLUTION_ ",
-                # Remove numbers
-                NUMBER_PATTERN: ' _NUMBER_ ',
-                # Remove HEX hashes, like IDs and commit names
-                HASH_PATTERN: ' _HASH_ ',
-                # In-words dashes/compound words : replace by underscore for uniform handling with n-grams
-                DASHES: "_",
-                # French words contractions : expand for generality
-                FRANCAIS: r"\1e ",
-                # Weird domains that are not really URLs : replace dots by space
-                MEMBERS_PATTERN: " ",
                 # Missing/partial/invalid file pathes
                 PARTIAL_PATH_REGEX: " _PATH_ ",
-                # Word alternatives like and/or : replace slash by space
-                ALTERNATIVES: " ",
+                # In-words dashes/compound words : replace by underscore for uniform handling with n-grams
+                DASHES: "_",
             }
         else:
             self.meta_tokens_pipe = meta_tokens
@@ -645,26 +922,254 @@ class Tokenizer():
                             for value in self.meta_tokens_pipe.values()
                             if value.startswith(" _") and value.endswith("_ ")}
 
-        if abbreviations is None:
-            self.abbreviations = ABBREVIATIONS
-        else:
-            self.abbreviations = abbreviations
 
-        if replacements is None:
-            self.replacements = REPLACEMENTS
-        else:
-            self.replacements = replacements
+        self.abbreviations = abbreviations
+        """Abbreviations and contractions to replace in full documents"""
 
-        if stopwords:
-            self.stopwords = set(stopwords)
-        else:
-            self.stopwords = None
+        self.replacements = replacements
+        """Arbitrary string replacements in single tokens"""
 
-        if lang_stopwords is None:
-            self.lang_stopwords = { LANG_MAP_REVERSE[lang]: value 
-                                    for lang, value in STOPWORDS_DICT.items() }
+        self.stopwords = set(stopwords) if stopwords else None
+        """Language-agnostic stopwords"""
+
+        self.lang_stopwords = lang_stopwords
+        """Language-specific stopwords"""
+
+        self.supports_ngrams: bool = False
+        """Whether or not the tokenizer has an embedded n-grams model"""
+
+        self.ngrams_trie = {}
+        """Prefix tree of known n-grams for efficient lookups"""
+
+        self.vocabulary: Lexicon = Lexicon()
+        """Known tokens, if trained for n-grams."""
+
+
+    def save(self, name: str):
+        # Save the model to a reusable object
+        joblib.dump(self, get_models_folder(name + ".joblib"), compress=0, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+    @classmethod
+    @timeit()
+    def load(cls, name: str):
+        """Load an existing trained model by its name from the `../models` folder."""
+        try:
+            model = joblib.load(get_models_folder(name) + ".joblib")
+        except FileNotFoundError:
+            model = joblib.load(get_models_folder(name) + ".joblib.bz2")
+            
+        if not isinstance(model, Tokenizer):
+            raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
+
+        return model
+    
+
+    def members_from_ngram(self, token: str | None) -> list[str] | None:
+        """Recover n-grams members from a single tokenized phrase, separated with `_`.
+        This expects lower-case tokens, except for meta-tokens which are expected capitalized.
+
+        Returns:
+            the list of n-gram members, or None if the token was not an n-gram but a singleton.
+        """
+        if not token:
+            return None
+        
+        # Split phrases on _ and keep only the non-empty tokens
+        # Note: empty tokens are the _ separators that got removed
+        members = [s for s in token.split("_") if s]
+
+        # The above will destroy leading and trailing _ of our meta-tokens,
+        # but we can safely rely on the assumption that only meta-tokens are
+        # capitalized at this stage of the pipeline, so restore them.
+        members = [f"_{t}_" 
+                    if t.isupper() and len(t) > 1 
+                    else t 
+                    for t in members]
+        
+        if len(members) > 1:
+            return members
         else:
-            self.lang_stopwords = None
+            return None
+            
+
+    @timeit()
+    def train_ngrams(self, 
+                     sentences: list[str], 
+                     connector_words: str = "", 
+                     min_count=10,
+                     threshold=0.7,
+                     scoring="npmi"):
+        """Train an n-gram model for bigrams and trigrams, detecting phrases like `New York City`
+        as one single token.
+
+        Arguments:
+            sentences: training corpus,
+            connector_words: a flat string of space-separated connector words that are allowed
+            to join bigrams and trigrams in the target language, like `by` in `piece by piece`,
+            others: see [gensim.models.phrases.Phrases][] documentation.
+
+        Warning:
+            N-gram training needs to run on single sentences, tokenized in a non-destructive way,
+            meaning without stemming and punctuation removal. See [core.nlp.Tokenizer.normalize_token][] arguments.
+
+        Note:
+            - output an `ngrams` log file in the models folder containing the list of all n-grams found.
+            - this can safely be called several time, for example once for each language. n-grams are appended to the existing list.
+
+        """
+        print(f"Training n-grams with {len(sentences)} sentences.")
+
+        self.vocabulary.update(sentences)
+        self.vocabulary.prune(min_count=min_count)
+
+        connectors = frozenset(connector_words.split()) if connector_words else frozenset()
+
+        # Train models
+        bigrams = Phrases(sentences, min_count=min_count,
+                          threshold=threshold, scoring=scoring,
+                          connector_words=connectors,
+                          delimiter="_")
+
+        trigrams = Phrases(bigrams[sentences], min_count=min_count,
+                          threshold=threshold, scoring=scoring,
+                          connector_words=connectors,
+                          delimiter="_")
+        
+        # As part of the meta-tokenization, we also replace dashes in compound words
+        # by underscores. They will vote too here in Gensim stats for phrases.
+        # So this helps generalizing n-grams with properly
+        # and improperly dashed (and possibly hyphenated) individual tokens in corpora.
+        ngrams: list[str] = []
+        for k in (set(bigrams.export_phrases().keys()) | set(trigrams.export_phrases().keys())):
+            # Split phrases on _ and keep only the non-empty tokens
+            members = self.members_from_ngram(k)
+            if members:
+                ngrams.append("_".join(members))
+
+        self.compile_ngrams(ngrams)
+        self.supports_ngrams = True
+
+    
+    def compile_ngrams(self, ngrams: list[str]):
+        """Build a nested n-grams dictionnary for efficient querying, like:
+        ```
+        {
+            "new": {
+                "york": {
+                    "__value__": "new_york",
+                    "city": {
+                        "__value__": "new_york_city"
+                    }
+                }
+            }
+        }
+        ```
+        """
+
+        # Hack for French n-grams starting with those:
+        # we need to add them to valid word connectors in Phrases learning
+        # because they are valid, but the algo allows them to appear as leading member.
+        # Other connectors (de, le, etc.) behave properly, it's only the 
+        # apostrophe that makes Gensim loose it.
+        INVALID_START = {"l'", "d'"}
+
+        for token in ngrams:
+            members = self.members_from_ngram(token)
+            node = self.ngrams_trie
+            if members and members[0] not in INVALID_START:
+                for token in members:
+                    node = node.setdefault(token, {})
+
+                node["__value__"] = "_".join(members)
+
+        # Dump the JSON for debug
+        with open(get_models_folder("ngrams.json"), "w", encoding="utf-8") as f:
+            json.dump(self.ngrams_trie, f, ensure_ascii=False, indent=2)
+
+
+    def replace_ngrams(self, tokens: list[str]) -> list[str]:
+        """Identify n-grams among tokens and collapse them into single tokens.
+        N-grams should have been trained before, with [self.train_ngrams][].
+
+        Returns:
+            the collapsed list of strings, or the original list if no n-grams
+            was found or the n-grams model has not been trained.
+        """
+        if not self.supports_ngrams:
+            return tokens
+
+        out = []
+        length = len(tokens)
+        i = 0
+
+        trie = self.ngrams_trie
+
+        while i < length:
+            node = trie
+
+            j = i
+            best = None
+            best_j = i
+
+            while j < length:
+                token = tokens[j]
+
+                # Descend from current node
+                node = node.get(token)
+
+                if node is None:
+                    break
+
+                value = node.get("__value__")
+
+                if value is not None:
+                    best = value
+                    best_j = j + 1
+
+                j += 1
+
+            if best is not None:
+                out.append(best)
+                i = best_j
+            else:
+                out.append(tokens[i])
+                i += 1
+
+        return out
+
+
+    def lookup_ngram(self, members: list[str] | tuple[str, ...]) -> str | None:
+        """
+        Lookup an n-gram in the trie from its token members.
+
+        Arguments:
+            members: the tokens iterable
+        
+        Returns:
+            the collapsed n-gram if found in the trie, or `None` if the input members match
+            no known n-gram.
+
+        Example:
+            lookup_ngram(("new", "york"))
+            -> "new_york"
+
+            lookup_ngram(("new", "york", "city"))
+            -> "new_york_city"
+
+            lookup_ngram(("foo", "bar"))
+            -> None
+        """
+
+        node = self.ngrams_trie
+
+        for member in members:
+            node = node.get(member)
+
+            if node is None:
+                return None
+
+        return node.get("__value__")
 
 
 class Data():
@@ -1199,204 +1704,3 @@ class Classifier(nltk.classify.SklearnClassifier):
 
         # Finally, return label and probability only for the max proba of each element
         return (max(output, key=output.get), max(output.values()))
-
-
-DOCUMENTS = None
-TOKENIZER = None
-
-
-def clean_worker(i):
-    text = DOCUMENTS[i]["content"]
-    text = str(text).encode("utf-8", "replace").decode("utf-8")
-    return i, clean_whitespaces(text)
-
-def normalize_worker(i):
-    doc = DOCUMENTS[i]
-    text = (
-        str(doc["title"]).encode("utf-8", "replace").decode("utf-8")
-        + "\n\n"
-        + doc["content"]
-    )
-    return i, TOKENIZER.normalize_text(text)
-
-def _init_batch_normalize_worker(tokenizer):
-    global TOKENIZER
-    TOKENIZER = tokenizer
-
-
-def _batch_normalize_worker(batch) -> list[tuple[int, str, str, str, any]]:
-    normalize = TOKENIZER.normalize_text
-    out: list[tuple[int, str, str, str, any]] = []
-
-    for i, doc in batch:
-        title = clean_whitespaces(sanitize_unicode(doc["title"]))
-        content = clean_whitespaces(sanitize_unicode(doc["content"]))
-        parsed = normalize(f"{title}\n\n{content}")
-        datetime = guess_date(doc["date"])
-        out.append((i, title, content, parsed, datetime))
-
-    return out
-
-
-@timeit()
-def batch_parse_web_page(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 512, cores: int | bool = False):
-    """High-performance parallel parsing for [src.core.types.web_page] objects
-    
-    This function is meant to cleanup text encoding issues and multi-spacings in `web_page` title and content.
-    It prepares the `web_page["parsed"]` field from title and content for the next stages of tokenization.
-    
-    It is needed to call it before [src.core.deduplicator.Deduplicator.dedup()][], so the content duplication
-    has a clean parsed version to compare web pages.
-    """
-    num_cpu = cores or os.cpu_count() or 1
-
-    # Pre-batch work to drastically reduce IPC overhead
-    batches = []
-    current = []
-
-    for i, doc in enumerate(documents):
-        current.append((i, doc))
-
-        if len(current) >= chunksize:
-            batches.append(current)
-            current = []
-
-    if current:
-        batches.append(current)
-
-    ctx = multiprocessing.get_context("fork")
-
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=num_cpu,
-        mp_context=ctx,
-        initializer=_init_batch_normalize_worker,
-        initargs=(tokenizer,),
-    ) as executor:
-        for results in executor.map(_batch_normalize_worker, batches):
-            for i, title, content, parsed, datetime in results:
-                doc = documents[i]
-                doc["title"] = title
-                doc["content"] = content
-                doc["parsed"] = parsed
-                doc["datetime"] = datetime
-
-    return documents
-
-
-def _init_tokenizer_worker(tokenizer):
-    global TOKENIZER
-    TOKENIZER = tokenizer
-
-
-def _batch_tokenize_worker(inputs: tuple[int, str, str, str | None]) -> tuple[str | None, list[list[str]], int]:
-    # Unroll SQL params
-    rowid, content, parsed, lang = inputs
-
-    # Guess lang
-    lang_mem = lang
-    lang = parse_lang_to_iso639_1(lang)
-    if lang is None:
-        lang = detect_language(content)
-    if lang is None:
-        lang = detect_language(parsed)
-
-    # Tokenize without stemming/lemmatization and keep stopwords
-    tokenized = TOKENIZER.tokenize_document_per_sentence(parsed, lang, 
-                                                         normalize=False, meta_tokens=True, 
-                                                         stem=False, remove_stopwords=False)
-
-    return lang, tokenized, rowid # keep order in sync with updating SQL query
-
-
-
-@timeit()
-def batch_tokenize(db: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 256, urls: list[str] | None = None):
-    """Tokenize a list of `web_pages` in parallel, in a RAM-friendly way.
-
-    Populate the `tokens` key to `web_page` elements (taken from a list), containing the tokenized
-    parsed content as a list of lists (each sentence is a list of tokens, the document is a list of sentences).
-    Tokens are taken from the concatenated `web_page` `title` and `parsed` values, where `parsed` is the
-    parsed `content`, pre-normalized through the tokenizer method.
-
-    The list is processed in parallel, broken down in chunks, saved temporarily and individually to disk cache.
-    You need to ensure you have enough space on your disk. The function doesn't check for it.
-
-    Arguments:
-        urls: list of URLs to tokenize. If None, the whole database is processed.
-    """
-
-    num_cpu = os.cpu_count()
-    batch_size = (num_cpu or 1) * chunksize
-
-    if urls is not None:
-        cursor = db.execute(
-            f"""
-            SELECT rowid, content, parsed, lang
-            FROM pages
-            WHERE url IN ({ ",".join(["?" for _ in urls]) })
-            """,
-            urls,
-        )
-    else:
-        cursor = db.execute('SELECT rowid, content, parsed, lang FROM pages')
-
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=num_cpu,
-        initializer=_init_tokenizer_worker,
-        initargs=(tokenizer,),
-    ) as executor:       
-        while True:
-            batch = cursor.fetchmany(batch_size)
-            if not batch:
-                break
-
-            results = executor.map(_batch_tokenize_worker, batch, chunksize=chunksize)
-            db.executemany('UPDATE pages SET lang=?, tokenized=? WHERE rowid=?', results)
-            db.commit()
-
-
-def _init_vectorizer_worker(word2vec):
-    global WORD2VEC
-    WORD2VEC = word2vec
-
-
-def _batch_vectorize_worker(inputs: tuple[int, list[list[str]]]) -> tuple[np.ndarray[np.float32], int]:
-    rowid, tokenized = inputs
-
-    # NOTE: tokens are per-sentence/paragraph, so it's a list of list
-    vector = WORD2VEC .get_features([word for sentence in tokenized for word in sentence], embed="OUT")
-
-    #TODO:
-    #indices = word2vec.tokens_to_indices(tokens)
-
-    return vector, rowid # keep in sync with SQL query
-
-
-@timeit()
-def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int = 256):
-    """Vectorize a column of the `db` database using the provided `word2vec` model
-    using all available cores.
-
-    Works on the `tokenized` column of the database and writes the `vectorized` column.
-    Vectors are normalized as per `nlp.Word2Vec.get_features()` output.    
-    """
-
-    num_cpu = os.cpu_count()
-    cursor = db.execute('SELECT rowid, stemmed FROM pages')
-    batch_size = num_cpu * chunksize
-
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=num_cpu,
-        initializer=_init_vectorizer_worker,
-        initargs=(word2vec,),
-    ) as executor:  
-        while True:
-            batch = cursor.fetchmany(batch_size)
-            if not batch:
-                break
-
-            results = executor.map(_batch_vectorize_worker, batch, chunksize=chunksize)
-            db.executemany('UPDATE pages SET vectorized=? WHERE rowid=?', results)
-            db.commit()
-
-
