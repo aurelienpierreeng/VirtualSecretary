@@ -562,6 +562,83 @@ def update_pages_from_database( target_db: sqlite3.Connection, source_db: sqlite
         except sqlite3.OperationalError:
             pass
 
+def import_pages(source_db: str, destination_db: str, where_clause: str = "1=1", params: tuple = ()) -> int:
+    """
+    Import rows from one SQLite database into another.
+
+    Rows are copied from `source.pages` into `destination.pages`.
+    Existing rows are updated on conflict of the `url` primary key.
+
+    All columns are automatically discovered from the destination
+    `pages` schema, so the function adapts automatically if the
+    schema evolves.
+
+    Args:
+        source_db:
+            Path to the source SQLite database.
+
+        destination_db:
+            Path to the destination SQLite database.
+
+        where_clause:
+            SQL WHERE clause applied to `source.pages`.
+
+            Example:
+                "domain = ? AND date >= ?"
+
+        params:
+            Optional SQL parameters used by the WHERE clause.
+
+    Returns:
+        Number of affected rows.
+
+    Example:
+        import_pages(
+            source_db="old.db",
+            destination_db="new.db",
+            where_clause="domain = ?",
+            params=("example.com",)
+        )
+    """
+
+    with sqlite3.connect(get_models_folder(destination_db)) as db:
+        db.row_factory = sqlite3.Row
+
+        # Attach source DB under alias "source"
+        db.execute("ATTACH DATABASE ? AS source", (get_models_folder(source_db),))
+
+        # Discover destination schema
+        columns = [
+            row["name"]
+            for row in db.execute("PRAGMA table_info(pages)")
+        ]
+
+        quoted_columns = ", ".join(columns)
+
+        # Build ON CONFLICT update clause
+        updates = ", ".join(
+            f"{column}=excluded.{column}"
+            for column in columns
+            if column != "url"
+        )
+
+        sql = f"""
+            INSERT INTO pages ({quoted_columns})
+            SELECT {quoted_columns}
+            FROM source.pages
+            WHERE {where_clause}
+            ON CONFLICT(url) DO UPDATE SET
+                {updates}
+        """
+
+        cursor = db.execute(sql, params)
+
+        db.commit()
+
+        db.execute("DETACH DATABASE source")
+        print(f"{cursor.rowcount} rows imported from {source_db} to {destination_db}")
+        return cursor.rowcount
+
 
 class SQLitePageCorpus:
     """
