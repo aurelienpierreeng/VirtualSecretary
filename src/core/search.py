@@ -209,6 +209,7 @@ class Indexer():
         """Word2Vec embedding language model"""
         
         self.init_search_table(db)
+        self.init_pages_search_indexes(db)
 
         # TODO
         self.collocations: np.ndarray | None = None # if strip_collocations else [doc[2] for doc in docs]
@@ -347,6 +348,31 @@ class Indexer():
         for name, kind in self.SEARCH_TABLE_COLUMNS.items():
             if name not in existing_columns:
                 cursor.execute(f"ALTER TABLE search ADD COLUMN {name} {kind}")
+
+        db.commit()
+
+
+    def init_pages_search_indexes(self, db: sqlite3.Connection):
+        """
+        Add persistent indexes for the user-facing search filters.
+
+        The URL primary key already gives us an index for URL lookups. The
+        category indexes help equality filters and provide a stable ordering
+        path for category-only queries. Substring filters such as
+        `NOT LIKE '%github.com%'`, `instr(parsed, ?)`, and `REGEXP` cannot use a
+        normal B-tree index, so `filter_contents()` narrows those to ranked
+        candidate URLs before SQLite evaluates them.
+        """
+        cursor = db.cursor()
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pages_category_url
+            ON pages(category, url)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pages_category_coalesce_url
+            ON pages(COALESCE(category, ''), url)
+        """)
 
         db.commit()
 
@@ -540,8 +566,42 @@ class Indexer():
 
 
     @timeit()
-    def filter_contents(self, db: sqlite3.Connection, sql_query: str = "", sql_params: list[str] = []) -> list[int]:        
+    def filter_contents(self,
+                        db: sqlite3.Connection,
+                        sql_query: str = "",
+                        sql_params: list[str] | None = None,
+                        candidate_indices: np.ndarray | list[int] | None = None) -> list[int]:        
         """Filter pages by arbitrary SQL queries"""
+        if sql_params is None:
+            sql_params = []
+
+        if candidate_indices is not None:
+            # Ranking already reduces the search space to a small URL set
+            # (`n_results` is 800 from the web app). Applying substring/regex
+            # filters to that set avoids scanning every `pages.parsed`/`url`.
+            candidate_urls = [self.index[int(i)] for i in candidate_indices]
+            matched_indices = []
+
+            # Keep a comfortable margin below SQLite builds that still use the
+            # historical 999-bound-parameter limit.
+            max_candidate_params = max(1, 900 - len(sql_params))
+
+            for start in range(0, len(candidate_urls), max_candidate_params):
+                chunk = candidate_urls[start:start + max_candidate_params]
+                placeholders = ", ".join(["(?)" for _ in chunk])
+                query = f"""
+                    WITH candidate_urls(candidate_url) AS (VALUES {placeholders})
+                    SELECT pages.url
+                    FROM candidate_urls
+                    JOIN pages ON pages.url = candidate_urls.candidate_url
+                    {sql_query}
+                """
+                params = [*chunk, *sql_params]
+                cursor = db.execute(query, params)
+                matched_indices.extend(self.url_to_index[row[0]] for row in cursor.fetchall())
+
+            return matched_indices
+
         query = f"""
             SELECT url
             FROM pages
@@ -694,7 +754,7 @@ class Indexer():
         return self.ranker.get_scores(symbolic_tokens)
 
     @timeit()
-    def rank_ai(self, tokens: list[str], fast: bool = False) -> np.ndarray:
+    def rank_ai(self, tokens: list[str], fast: bool = False, clip: bool = True) -> np.ndarray:
 
         if fast:
             # The following seems very close to the next in terms of results.
@@ -718,8 +778,18 @@ class Indexer():
                     vector = self.normalize_pc(vector)
                     aggregate += np.nan_to_num(np.dot(self.vectors, vector))
                     weights += 1.
-
-            return aggregate / weights
+                else:
+                    print(f"token {token} was not found in embedding vocabulary")
+            
+            # Cosine similarity is bounded in [-1; 1].
+            # 0 means unrelated or orthogonal.
+            # Negative means we are in the opposite direction to the request.
+            # In that case, let BM25+ weighting take over and don't over-penalize
+            # results.
+            if clip:
+                return np.clip(aggregate / weights if weights > 0. else aggregate, 0., 1.)
+            else:
+                return aggregate / weights if weights > 0. else aggregate
         
 
     def rrf(self, ranks_1: np.ndarray, ranks_2: np.ndarray, coeff: float = 60) -> np.ndarray:
@@ -799,7 +869,10 @@ class Indexer():
         if sql_query != "":
             # Get the intersection of the indices above with the indices from SQL query
             # but keep the ordering from the ranking above
-            mask = np.isin(best_indices, self.filter_contents(db, sql_query, sql_params))
+            mask = np.isin(
+                best_indices,
+                self.filter_contents(db, sql_query, sql_params, candidate_indices=best_indices)
+            )
             best_indices = best_indices[mask]
 
         best_indices = best_indices[-n_results:]
@@ -814,8 +887,7 @@ class Indexer():
             ranked = self.find_query_pattern(indexed_query, ranked)
 
         return sorted([(index, page, similarity)
-                       for index, page, similarity in ranked
-                       if similarity > 0.], key=lambda x:x[2], reverse=True)
+                       for index, page, similarity in ranked], key=lambda x:x[2], reverse=True)
 
 
     def get_related(self, tokens: list[str], n: int = 15, k: int = 5) -> list:
