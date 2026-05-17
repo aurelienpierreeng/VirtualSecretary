@@ -1704,3 +1704,193 @@ class Classifier(nltk.classify.SklearnClassifier):
 
         # Finally, return label and probability only for the max proba of each element
         return (max(output, key=output.get), max(output.values()))
+
+
+def _process_document(args):
+    sentences, lang, tokenizer = args
+    counter = Counter()
+
+    for sentence in sentences:
+        for token in sentence:
+            stem = tokenizer.normalize_token(token, lang, meta_tokens=True, stem=True, normalize=True, remove_stopwords=True)
+            if not stem or not token:
+                continue
+
+            counter[(stem, token)] += 1
+
+    return counter
+
+
+class StemTokenIndex:
+    """
+    Reverse normalized stem -> token lookup index.
+    """
+
+    def __init__(self, db: sqlite3.Connection, tokenizer: Tokenizer):
+        self.tokenizer = tokenizer
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS stem_tokens (
+                stem        TEXT NOT NULL,
+                token       TEXT NOT NULL,
+                occurrences INTEGER NOT NULL DEFAULT 0,
+
+                PRIMARY KEY (stem, token)
+            ) WITHOUT ROWID
+        """)
+
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stem_tokens_stem_freq
+            ON stem_tokens(stem, occurrences DESC)
+        """)
+
+        db.commit()
+
+    @timeit()
+    def build(self, db: sqlite3.Connection, chunksize: int = 512):
+        num_cpu = os.cpu_count() or 1
+        batch_size = num_cpu * chunksize
+
+        db.execute("DELETE FROM stem_tokens")
+        cursor = db.execute("SELECT tokenized, lang FROM pages")
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpu) as executor:
+            while True:
+                batch = cursor.fetchmany(batch_size)
+
+                if not batch:
+                    break
+
+                counters = executor.map(
+                    _process_document, 
+                    ( (row[0], row[1], self.tokenizer) for row in batch ),
+                    chunksize=chunksize
+                )
+
+                merged = Counter()
+
+                for counter in counters:
+                    merged.update(counter)
+
+                rows = [(stem, token, count) for (stem, token), count in merged.items()]
+
+                db.executemany("""
+                    INSERT INTO stem_tokens(
+                        stem,
+                        token,
+                        occurrences
+                    )
+                    VALUES (?, ?, ?)
+
+                    ON CONFLICT(stem, token)
+                    DO UPDATE SET
+                        occurrences =
+                            occurrences + excluded.occurrences
+                """, rows)
+
+                db.commit()
+
+    @timeit()
+    def sanitize(self, db: sqlite3.Connection, min_occurences: int = 5, aggressive: bool = False):
+        # 1. Remove all entries associated to stems where the most probable
+        # token is the stem itself. If the stem doesn't exist in DB, 
+        # self.most_probable_token returns its input.
+        db.execute("""
+            DELETE FROM stem_tokens
+            WHERE stem IN (
+                SELECT t.stem
+                FROM (
+                    SELECT
+                        st1.stem AS stem,
+                        st1.token AS token,
+                        MAX(st1.occurrences) AS max_occ
+                    FROM stem_tokens st1
+                    GROUP BY st1.stem
+                ) t
+                JOIN stem_tokens st2
+                ON st2.stem = t.stem
+                AND st2.occurrences = t.max_occ
+                WHERE st2.token = t.stem
+            )
+        """)
+
+        # 2. Remove rare tokens
+        db.execute(f"""
+            DELETE FROM stem_tokens
+            WHERE occurrences < {min_occurences}
+        """)
+
+        # 3. In aggressive mode, keep only the most probable stem/token couple
+        if aggressive:
+            db.execute("""
+                DELETE FROM stem_tokens
+                WHERE rowid NOT IN (
+                    SELECT rowid
+                    FROM (
+                        SELECT
+                            rowid,
+                            stem,
+                            token,
+                            occurrences,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY stem
+                                ORDER BY occurrences DESC
+                            ) AS rn
+                        FROM stem_tokens
+                    )
+                    WHERE rn = 1
+                )
+            """)
+
+        db.commit()
+
+    @timeit()
+    def most_probable_token(self, db: sqlite3.Connection, stem: str) -> str:
+        """Return the most probable original token associated to the stem.
+        If the stem doesn't exist in the database, it is returned as-is.
+        """
+        row = db.execute("""
+            SELECT token
+            FROM stem_tokens
+            WHERE stem = ?
+            ORDER BY occurrences DESC
+            LIMIT 1
+        """, (stem,)).fetchone()
+
+        return row[0] if row else stem
+    
+
+    @timeit()
+    def most_probable_tokens(self, db: sqlite3.Connection, stems: list[str]) -> list[str]:
+        """
+        Return the most probable original token for each stem.
+
+        Stems not found in DB are returned unchanged.
+        """
+
+        rows = db.execute(f"""
+            SELECT stem, token
+            FROM stem_tokens
+            WHERE stem IN ({ ",".join("?" for _ in stems) })
+            ORDER BY stem, occurrences DESC
+        """, stems).fetchall()
+
+        # Keep best token per stem (first after ordering)
+        best = {}
+        for stem, token in rows:
+            if stem not in best:
+                best[stem] = token
+
+        # Map back to original list (preserve order, identity fallback)
+        return [best.get(stem, stem) for stem in stems]
+
+
+    def top_tokens(self, db: sqlite3.Connection, stem: str, limit: int = 10) -> list[str] | None:
+        return db.execute("""
+            SELECT token, occurrences
+            FROM stem_tokens
+            WHERE stem = ?
+            ORDER BY occurrences DESC
+            LIMIT ?
+        """, (stem, limit)).fetchall()
+    
