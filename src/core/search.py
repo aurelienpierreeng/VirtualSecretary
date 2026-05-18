@@ -12,7 +12,7 @@ from collections import Counter
 from sklearn.decomposition import PCA
 
 from .utils import get_models_folder, timeit
-from .nlp import Word2Vec
+from .nlp import Lexicon, Word2Vec
     
 class BM25PlusCSR:
     """
@@ -157,23 +157,40 @@ class search_methods(IntEnum):
 class Indexer():
     SEARCH_TABLE_COLUMNS = {
         "id": "INTEGER PRIMARY KEY",
-        "doc_index": "list",
-        "vectors": "array",
+        "doc_index_pickle": "BLOB",
+        "vectors_raw": "BLOB",
+        "vectors_shape": "list",
         "bm25_k1": "REAL",
         "bm25_b": "REAL",
         "bm25_delta": "REAL",
         "bm25_corpus_size": "INTEGER",
         "bm25_avgdl": "REAL",
-        "bm25_doc_lens": "array",
-        "bm25_denom_const": "array",
-        "bm25_idf": "array",
-        "bm25_doc_ids": "array",
-        "bm25_tfs": "array",
-        "bm25_indptr": "array",
+        "bm25_doc_lens_raw": "BLOB",
+        "bm25_denom_const_raw": "BLOB",
+        "bm25_idf_raw": "BLOB",
+        "bm25_doc_ids_raw": "BLOB",
+        "bm25_tfs_raw": "BLOB",
+        "bm25_indptr_raw": "BLOB",
         "w2v_index_to_key": "list",
-        "w2v_vectors": "array",
-        "w2v_syn1": "array",
-        "w2v_syn1neg": "array",
+        "w2v_vectors_raw": "BLOB",
+        "w2v_vectors_shape": "list",
+        "tokenizer_supports_ngrams": "INTEGER",
+        "tokenizer_ngrams_trie": "BLOB",
+        "tokenizer_vocabulary_counts": "BLOB",
+    }
+
+    LEGACY_SEARCH_COLUMNS = {
+        "doc_index",
+        "vectors",
+        "bm25_doc_lens",
+        "bm25_denom_const",
+        "bm25_idf",
+        "bm25_doc_ids",
+        "bm25_tfs",
+        "bm25_indptr",
+        "w2v_vectors",
+        "w2v_syn1",
+        "w2v_syn1neg",
     }
 
     @timeit()
@@ -209,6 +226,8 @@ class Indexer():
         """Word2Vec embedding language model"""
         
         self.init_search_table(db)
+        self.init_stats_table(db)
+        self.init_categories_table(db)
         self.init_pages_search_indexes(db)
 
         # TODO
@@ -285,8 +304,10 @@ class Indexer():
         #   2. we freeze the whole state of the NLP stack (vocabulary, language model, document embeddings)
         #      in a single, consistent place, so there is no version mismatches anymore:
         #      the database is an unit of processing.
+        self.clear_search_cache(db)
         self.save_search_vectors(db, self.vectors) # those have principal components already removed
         self.save_search_word2vec(db)
+        self.save_search_tokenizer(db)
         self.save_search_ranker(db, self.ranker)
 
         # Storing a pre-built index list as a single BLOB in database is 2.5 times faster
@@ -302,8 +323,12 @@ class Indexer():
         ###############
         # 4. Misc stats
         ###############
-        self.words = len(word2vec.wv)
-        self.pages = self.ranker.corpus_size
+        self.stats = self.build_stats(db)
+        self.words = self.stats["words"]
+        self.pages = self.stats["pages"]
+
+        self.save_search_stats(db, self.stats)
+        self.save_categories_index(db, self.stats["category_counts"])
 
         # 5. Save the pickled object to disk for reuse
         self.save(name)
@@ -324,6 +349,12 @@ class Indexer():
             del word2vec.syn1
         if hasattr(word2vec, "syn1neg"):
             del word2vec.syn1neg
+
+        if hasattr(word2vec, "tokenizer"):
+            tokenizer = copy.copy(word2vec.tokenizer)
+            tokenizer.ngrams_trie = {}
+            tokenizer.vocabulary = Lexicon()
+            word2vec.tokenizer = tokenizer
 
         state["word2vec"] = word2vec
         state["db"] = None
@@ -348,6 +379,52 @@ class Indexer():
         for name, kind in self.SEARCH_TABLE_COLUMNS.items():
             if name not in existing_columns:
                 cursor.execute(f"ALTER TABLE search ADD COLUMN {name} {kind}")
+
+        for name in self.LEGACY_SEARCH_COLUMNS & existing_columns:
+            cursor.execute(f"ALTER TABLE search DROP COLUMN {name}")
+
+        db.commit()
+
+
+    def init_stats_table(self, db: sqlite3.Connection):
+        """
+        Create or migrate the plain-SQLite stats table.
+
+        Scalar stats use `item = ''`. Grouped stats use `name` for the metric
+        family and `item` for the domain/category/language key.
+        """
+        cursor = db.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stats (
+                name TEXT NOT NULL,
+                item TEXT NOT NULL DEFAULT '',
+                value_integer INTEGER,
+                value_real REAL,
+                value_text TEXT,
+                PRIMARY KEY (name, item)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_stats_name
+            ON stats(name)
+        """)
+
+        db.commit()
+
+
+    def init_categories_table(self, db: sqlite3.Connection):
+        """
+        Create a queryable catalog of all page categories.
+        """
+        cursor = db.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                category TEXT PRIMARY KEY,
+                pages INTEGER NOT NULL
+            )
+        """)
 
         db.commit()
 
@@ -404,6 +481,36 @@ class Indexer():
         db.commit()
 
 
+    def clear_search_cache(self, db: sqlite3.Connection):
+        """
+        Clear current heavy cache values before writing the refreshed cache.
+        """
+        heavy_columns = [
+            "doc_index_pickle",
+            "vectors_raw",
+            "vectors_shape",
+            "bm25_doc_lens_raw",
+            "bm25_denom_const_raw",
+            "bm25_idf_raw",
+            "bm25_doc_ids_raw",
+            "bm25_tfs_raw",
+            "bm25_indptr_raw",
+            "w2v_vectors_raw",
+            "w2v_vectors_shape",
+            "tokenizer_ngrams_trie",
+            "tokenizer_vocabulary_counts",
+        ]
+
+        cursor = db.cursor()
+        cursor.execute("INSERT OR IGNORE INTO search (id) VALUES (1)")
+        cursor.execute(f"""
+            UPDATE search
+            SET {", ".join(f"{column} = NULL" for column in heavy_columns)}
+            WHERE id = 1
+        """)
+        db.commit()
+
+
     def get_search_values(self, db: sqlite3.Connection, columns: list[str]) -> any:
         """
         Fetch one or more precomputed search cache values from the database.
@@ -426,11 +533,32 @@ class Indexer():
         return row
 
 
+    def get_legacy_search_values(self, db: sqlite3.Connection, columns: list[str]) -> any:
+        """
+        Fetch legacy cache columns when loading an old DB before migration.
+        """
+        unknown_columns = set(columns) - (self.LEGACY_SEARCH_COLUMNS | set(self.SEARCH_TABLE_COLUMNS))
+        if unknown_columns:
+            raise ValueError("Unknown legacy search cache columns: %s" % sorted(unknown_columns))
+
+        cursor = db.cursor()
+        return cursor.execute(f"""
+            SELECT {", ".join(columns)}
+            FROM search
+            WHERE id = 1
+        """).fetchone()
+
+
     def save_search_index(self, db: sqlite3.Connection, index: list[str]):
         """
         Store the URL lookup table into `search.doc_index`.
         """
-        self.save_search_values(db, {"doc_index": index})
+        self.save_search_values(db, {
+            "doc_index_pickle": sqlite3.Binary(pickle.dumps(
+                index,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )),
+        })
 
 
     def save_search_ranker(self, db: sqlite3.Connection, ranker: BM25PlusCSR):
@@ -443,12 +571,12 @@ class Indexer():
             "bm25_delta": float(ranker.delta),
             "bm25_corpus_size": ranker.corpus_size,
             "bm25_avgdl": float(ranker.avgdl),
-            "bm25_doc_lens": ranker.doc_lens,
-            "bm25_denom_const": ranker.denom_const,
-            "bm25_idf": ranker.idf,
-            "bm25_doc_ids": ranker.doc_ids,
-            "bm25_tfs": ranker.tfs,
-            "bm25_indptr": ranker.indptr,
+            "bm25_doc_lens_raw": self.array_to_raw(ranker.doc_lens),
+            "bm25_denom_const_raw": self.array_to_raw(ranker.denom_const),
+            "bm25_idf_raw": self.array_to_raw(ranker.idf),
+            "bm25_doc_ids_raw": self.array_to_raw(ranker.doc_ids),
+            "bm25_tfs_raw": self.array_to_raw(ranker.tfs),
+            "bm25_indptr_raw": self.array_to_raw(ranker.indptr),
         })
 
 
@@ -456,7 +584,10 @@ class Indexer():
         """
         Store the single global vector matrix into `search.vectors`.
         """
-        self.save_search_values(db, {"vectors": vectors})
+        self.save_search_values(db, {
+            "vectors_raw": self.array_to_raw(vectors),
+            "vectors_shape": list(vectors.shape),
+        })
 
 
     def save_search_word2vec(self, db: sqlite3.Connection):
@@ -465,10 +596,189 @@ class Indexer():
         """
         self.save_search_values(db, {
             "w2v_index_to_key": list(self.word2vec.wv.index_to_key),
-            "w2v_vectors": self.word2vec.wv.vectors,
-            "w2v_syn1": getattr(self.word2vec, "syn1", None),
-            "w2v_syn1neg": getattr(self.word2vec, "syn1neg", None),
+            "w2v_vectors_raw": self.array_to_raw(self.word2vec.wv.vectors),
+            "w2v_vectors_shape": list(self.word2vec.wv.vectors.shape),
         })
+
+
+    def save_search_tokenizer(self, db: sqlite3.Connection):
+        """
+        Store the tokenizer's large n-gram state in the search cache.
+        """
+        tokenizer = self.word2vec.tokenizer
+
+        self.save_search_values(db, {
+            "tokenizer_supports_ngrams": int(tokenizer.supports_ngrams),
+            "tokenizer_ngrams_trie": sqlite3.Binary(pickle.dumps(
+                tokenizer.ngrams_trie,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )),
+            "tokenizer_vocabulary_counts": sqlite3.Binary(pickle.dumps(
+                tokenizer.vocabulary.counts,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )),
+        })
+
+
+    def save_search_stats(self, db: sqlite3.Connection, stats: dict):
+        """
+        Store cheap display and diagnostic metadata in plain SQLite rows.
+        """
+        rows = []
+
+        def append(name: str, value, item: str = ""):
+            if isinstance(value, bool):
+                rows.append((name, item, int(value), None, None))
+            elif isinstance(value, int):
+                rows.append((name, item, value, None, None))
+            elif isinstance(value, float):
+                rows.append((name, item, None, value, None))
+            elif value is None:
+                rows.append((name, item, None, None, None))
+            else:
+                rows.append((name, item, None, None, str(value)))
+
+        scalar_keys = (
+            "words",
+            "pages",
+            "domains",
+            "categories",
+            "most_recent_datetime",
+            "oldest_datetime",
+            "total_content_length",
+            "average_content_length",
+            "max_content_length",
+        )
+
+        for key in scalar_keys:
+            append(key, stats[key])
+
+        for domain, pages in stats["domain_counts"].items():
+            append("domain_pages", pages, domain)
+
+        for category, pages in stats["category_counts"].items():
+            append("category_pages", pages, category)
+
+        for lang, pages in stats["language_counts"].items():
+            append("language_pages", pages, lang)
+
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM stats")
+        cursor.executemany("""
+            INSERT INTO stats (name, item, value_integer, value_real, value_text)
+            VALUES (?, ?, ?, ?, ?)
+        """, rows)
+        db.commit()
+
+
+    def save_categories_index(self, db: sqlite3.Connection, category_counts: dict[str, int]):
+        """
+        Store all existing non-empty categories and their page counts.
+        """
+        rows = [
+            (category, pages)
+            for category, pages in category_counts.items()
+            if category != "(none)"
+        ]
+
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM categories")
+        cursor.executemany("""
+            INSERT INTO categories (category, pages)
+            VALUES (?, ?)
+        """, rows)
+        db.commit()
+
+
+    def build_stats(self, db: sqlite3.Connection) -> dict:
+        """
+        Compute index metadata while the database is writable/prepared.
+        """
+        cursor = db.cursor()
+
+        pages = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+        domains = cursor.execute("""
+            SELECT COUNT(DISTINCT COALESCE(NULLIF(domain, ''), url))
+            FROM pages
+        """).fetchone()[0]
+        categories = cursor.execute("""
+            SELECT COUNT(DISTINCT category)
+            FROM pages
+            WHERE category IS NOT NULL
+              AND category != ''
+        """).fetchone()[0]
+        most_recent_datetime = cursor.execute("""
+            SELECT MAX(datetime)
+            FROM pages
+            WHERE datetime IS NOT NULL
+        """).fetchone()[0]
+        oldest_datetime = cursor.execute("""
+            SELECT MIN(datetime)
+            FROM pages
+            WHERE datetime IS NOT NULL
+        """).fetchone()[0]
+        length_stats = cursor.execute("""
+            SELECT COALESCE(SUM(length), 0),
+                   COALESCE(AVG(length), 0),
+                   COALESCE(MAX(length), 0)
+            FROM pages
+            WHERE length IS NOT NULL
+        """).fetchone()
+        domain_counts = cursor.execute("""
+            SELECT COALESCE(NULLIF(domain, ''), url) AS domain,
+                   COUNT(*) AS pages
+            FROM pages
+            GROUP BY COALESCE(NULLIF(domain, ''), url)
+            ORDER BY pages DESC, domain ASC
+        """).fetchall()
+        category_counts = cursor.execute("""
+            SELECT COALESCE(NULLIF(category, ''), '(none)') AS category,
+                   COUNT(*) AS pages
+            FROM pages
+            GROUP BY COALESCE(NULLIF(category, ''), '(none)')
+            ORDER BY pages DESC, category ASC
+        """).fetchall()
+        language_counts = cursor.execute("""
+            SELECT COALESCE(NULLIF(lang, ''), '(unknown)') AS lang,
+                   COUNT(*) AS pages
+            FROM pages
+            GROUP BY COALESCE(NULLIF(lang, ''), '(unknown)')
+            ORDER BY pages DESC, lang ASC
+        """).fetchall()
+
+        return {
+            "words": len(self.word2vec.wv),
+            "pages": pages,
+            "domains": domains,
+            "categories": categories,
+            "most_recent_datetime": most_recent_datetime,
+            "oldest_datetime": oldest_datetime,
+            "total_content_length": length_stats[0],
+            "average_content_length": length_stats[1],
+            "max_content_length": length_stats[2],
+            "domain_counts": dict(domain_counts),
+            "category_counts": dict(category_counts),
+            "language_counts": dict(language_counts),
+        }
+
+
+    @staticmethod
+    def array_to_raw(array: np.ndarray) -> sqlite3.Binary:
+        """
+        Store arrays without the `.npy` wrapper used by SQLite converters.
+        Raw contiguous blobs hydrate faster with `np.frombuffer()` at runtime.
+        """
+        return sqlite3.Binary(np.ascontiguousarray(array).tobytes())
+
+
+    @staticmethod
+    def raw_to_array(blob: bytes, dtype: np.dtype, shape: tuple[int, ...] | None = None) -> np.ndarray:
+        array = np.frombuffer(blob, dtype=dtype)
+
+        if shape is not None:
+            array = array.reshape(shape)
+
+        return array
 
 
     @timeit()
@@ -491,7 +801,16 @@ class Indexer():
 
     @timeit()
     def get_index(self, db: sqlite3.Connection):
-        self.index = self.get_search_values(db, ["doc_index"])[0]
+        try:
+            row = self.get_search_values(db, ["doc_index_pickle"])
+        except sqlite3.OperationalError:
+            row = None
+
+        if row is not None and row[0] is not None:
+            self.index = pickle.loads(row[0])
+            return
+
+        self.index = self.get_legacy_search_values(db, ["doc_index"])[0]
 
 
     @timeit()
@@ -499,12 +818,54 @@ class Indexer():
         # Note: `nlp.Word2Vec.get_features`` already normalizes output,
         # so this is assumed vectorized if using our internal workflows
         # through `batching.batch_vectorize`.
-        self.vectors = self.get_search_values(db, ["vectors"])[0]
+        try:
+            row = self.get_search_values(db, ["vectors_raw", "vectors_shape"])
+        except sqlite3.OperationalError:
+            row = None
+
+        if row is not None and row[0] is not None and row[1] is not None:
+            self.vectors = self.raw_to_array(row[0], np.float32, tuple(row[1]))
+            return
+
+        self.vectors = self.get_legacy_search_values(db, ["vectors"])[0]
 
 
     @timeit()
     def get_ranker(self, db: sqlite3.Connection):
-        row = self.get_search_values(db, [
+        try:
+            row = self.get_search_values(db, [
+                "bm25_k1",
+                "bm25_b",
+                "bm25_delta",
+                "bm25_corpus_size",
+                "bm25_avgdl",
+                "bm25_doc_lens_raw",
+                "bm25_denom_const_raw",
+                "bm25_idf_raw",
+                "bm25_doc_ids_raw",
+                "bm25_tfs_raw",
+                "bm25_indptr_raw",
+            ])
+        except sqlite3.OperationalError:
+            row = None
+
+        if row is not None and all(value is not None for value in row[5:]):
+            self.ranker = BM25PlusCSR.from_cache(
+                row[0],
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                self.raw_to_array(row[5], np.int32),
+                self.raw_to_array(row[6], np.float32),
+                self.raw_to_array(row[7], np.float32),
+                self.raw_to_array(row[8], np.int32),
+                self.raw_to_array(row[9], np.uint16),
+                self.raw_to_array(row[10], np.int32),
+            )
+            return
+
+        row = self.get_legacy_search_values(db, [
             "bm25_k1",
             "bm25_b",
             "bm25_delta",
@@ -523,25 +884,61 @@ class Indexer():
 
     @timeit()
     def get_word2vec(self, db: sqlite3.Connection):
-        row = self.get_search_values(db, [
-            "w2v_index_to_key",
-            "w2v_vectors",
-            "w2v_syn1",
-            "w2v_syn1neg",
-        ])
+        try:
+            row = self.get_search_values(db, [
+                "w2v_index_to_key",
+                "w2v_vectors_raw",
+                "w2v_vectors_shape",
+            ])
+        except sqlite3.OperationalError:
+            row = None
+
+        if row is None or row[0] is None or row[1] is None or row[2] is None:
+            index_to_key = self.get_search_values(db, ["w2v_index_to_key"])[0]
+            legacy_vectors = self.get_legacy_search_values(db, ["w2v_vectors"])
+            row = (
+                index_to_key,
+                legacy_vectors[0] if legacy_vectors is not None else None,
+            )
 
         if row is None or row[0] is None or row[1] is None:
             raise RuntimeError("Word2Vec embeddings were not inited")
 
         from gensim.models import KeyedVectors
 
-        self.word2vec.wv = KeyedVectors(vector_size=self.word2vec.vector_size)
-        self.word2vec.wv.add_vectors(row[0], row[1])
+        vectors = (
+            self.raw_to_array(row[1], np.float32, tuple(row[2]))
+            if len(row) > 2 and row[2] is not None
+            else row[1]
+        )
 
-        if row[2] is not None:
-            self.word2vec.syn1 = row[2]
-        if row[3] is not None:
-            self.word2vec.syn1neg = row[3]
+        self.word2vec.wv = KeyedVectors(vector_size=self.word2vec.vector_size)
+        self.word2vec.wv.add_vectors(row[0], vectors)
+
+        # The serving path only uses input embeddings. Loading syn1/syn1neg
+        # would decode another large BLOB for no runtime benefit.
+
+
+    @timeit()
+    def get_tokenizer(self, db: sqlite3.Connection):
+        try:
+            row = self.get_search_values(db, [
+                "tokenizer_supports_ngrams",
+                "tokenizer_ngrams_trie",
+                "tokenizer_vocabulary_counts",
+            ])
+        except sqlite3.OperationalError:
+            return
+
+        # Backward compatibility for search DBs created before tokenizer state
+        # was moved out of the joblib artifact.
+        if row is None or row[1] is None or row[2] is None:
+            return
+
+        tokenizer = self.word2vec.tokenizer
+        tokenizer.supports_ngrams = bool(row[0])
+        tokenizer.ngrams_trie = pickle.loads(row[1])
+        tokenizer.vocabulary = Lexicon(pickle.loads(row[2]))
 
 
     def normalize_pc(self, vector: np.ndarray) -> np.ndarray:
@@ -631,6 +1028,7 @@ class Indexer():
         
         # Reload all class properties from database
         model.get_word2vec(db)
+        model.get_tokenizer(db)
         model.get_ranker(db)
         model.get_doc_vectors(db)
         model.get_index(db)
