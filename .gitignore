@@ -137,6 +137,7 @@ src/user_scripts/.git
 models/*
 data/*
 src/web/*
+src/user_scripts/*
 *.ini
 
 # Heady stuff that has no business in codebase
