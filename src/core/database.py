@@ -662,12 +662,13 @@ class SQLitePageCorpus:
           `list[str]` (list of words)
     """
 
-    def __init__(self, db, query, params=(), atomic_types=(str, bytes), max_depth=None):
+    def __init__(self, db, query, params=(), atomic_types=(str, bytes), max_depth=None, yield_rows=False):
         self.db = db
         self.query = query
         self.params = params
         self.atomic_types = atomic_types
         self.max_depth = max_depth
+        self.yield_rows = yield_rows
 
         self._length = None
 
@@ -678,6 +679,10 @@ class SQLitePageCorpus:
 
         for row in cursor:
             if not row:
+                continue
+
+            if self.yield_rows:
+                yield row
                 continue
 
             for value in row:
