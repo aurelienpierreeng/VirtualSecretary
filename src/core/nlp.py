@@ -617,6 +617,8 @@ class Tokenizer():
         # This is mandatory since we use `_` as n-gram delimiter later.
         if not is_ngram:
             string = string.strip("_ ")
+            if len(string) == 0 or " " in string or "\n" in string:
+                return None
 
         # Last chance of identifying meta-tokens in an atomic way
         if meta_tokens and not is_ngram:
@@ -636,13 +638,16 @@ class Tokenizer():
             # Language-agnostic stopwords
             if self.stopwords and string in self.stopwords:
                 return None
-
-        # Lemmatize / Stem
-        if stem and not is_ngram:
-            string = self.lemmatize(string)
-
+            
         # Last chance to catch badly-hyphenated n-grams
         string = self.vocabulary.resolve_token(string)
+
+        # Lemmatize / Stem
+        if stem:
+            # For stemming, we collapse n-grams because our token resolution
+            # fails to identify some of them as existing singletons,
+            # so this helps generalization when training language models.
+            string = self.lemmatize(string.replace("_", ""))
             
         return string
 
