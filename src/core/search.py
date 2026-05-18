@@ -1037,7 +1037,7 @@ class Indexer():
         return model
 
 
-    def tokenize_query(self, query:str, language: str = None, meta_tokens: bool = True, n_grams: bool = True) -> list[str]:
+    def tokenize_query(self, query:str, language: str | None = None, meta_tokens: bool = True, n_grams: bool = True) -> list[str]:
         """Tokenize a query string, returning only tokens known to our vocabulary."""
         query = self.word2vec.tokenizer.normalize_text(query)
 
