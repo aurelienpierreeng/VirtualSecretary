@@ -1283,7 +1283,7 @@ class Word2Vec(gensim.models.Word2Vec):
         loss_logger = LossLogger()
         super().__init__(sentences, vector_size=vector_size, window=window, min_count=min_count, 
                          epochs=epochs, sample=sample, callbacks=[loss_logger], 
-                         compute_loss=True, sg=1, max_final_vocab=100000, hs=0, negative=20, alpha=0.020,
+                         compute_loss=True, sg=1, max_final_vocab=100000, hs=0,
                          workers=os.cpu_count() or 1, batch_words=100000, **kwargs)
         print("training done")
 
