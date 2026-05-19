@@ -69,6 +69,9 @@ class web_page(TypedDict):
     vectorized: np.ndarray
     """Precomputed vector representation of the tokenized content."""
 
+    wayback: str
+    """URL of the page accessed through web.archive.org/Wayback Machine, so we can store the canonical URL in the `url` key."""
+
 
 def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
     """Ensure existence and validity of `web_page` keys/values.
@@ -105,7 +108,7 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
         page["stemmed"] = None
 
     if "vectorized" not in page:
-        page["vectorized"] = np.empty(0, dtype=np.float32)
+        page["vectorized"] = None
 
     if "tokenized" not in page:
         page["tokenized"] = None
@@ -127,6 +130,9 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
 
     if "category" not in page:
         page["category"] = None
+
+    if "wayback" not in page:
+        page["wayback"] = None
 
     # Some fields here may be bytes when read from web crawling.
     page["title"] = str(page["title"])

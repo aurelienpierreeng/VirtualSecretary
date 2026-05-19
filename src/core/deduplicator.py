@@ -55,15 +55,24 @@ class Deduplicator():
         if cls.discard_post(elem["url"], urls_to_ignore):
             return None
         
-        url = patterns.split_url(elem["url"].rstrip("/"))
+        input_url = elem["url"].rstrip("/")
+
+        # Check if this is a Web archive URL
+        canonical = patterns.wayback_extract_url(input_url)
+        if canonical:
+            elem["wayback"] = input_url
+            input_url = canonical
+        
+        # Parse the actual URL
+        url = patterns.split_url(input_url)
         if not url:
             return None
-
+        
         protocol, domain, page, params, anchor = url
 
         # See if an https variant of the http page is available.
         # This avoids http/https duplicates.
-        if fix_urls and protocol == "http":
+        if fix_urls and protocol == "http" and not canonical:
             test_url = "https://" + domain + page + params + anchor
             try:
                 response = requests.head(test_url, timeout=2, allow_redirects=True, impersonate="chrome120")
