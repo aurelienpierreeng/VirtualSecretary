@@ -64,6 +64,30 @@ URLs are captured if they are:
  will need to be parsed ahead.
  """
 
+
+def split_url(url: str) -> tuple[str, str, str, str, str] | None:
+    """Split a well-formed URL following [RFC3986](https://www.rfc-editor.org/rfc/rfc3986#section-4.1)
+    into base elements.
+
+    Returns:
+      a tuple of `(protocol, domain, page, parameters, anchor)`. 
+      Empty/missing fields are inited with empty strings so there is no need for individual `None` checks.
+      If the `url` input doesn't match an URL format, return `None`.
+    
+    """
+    address = URL_PATTERN.search(url, concurrent=True)
+    if not address:
+       return None
+
+    protocol = address.group(1) if address.group(1) else "https"
+    domain = address.group(2) # No domain: let it fail with error
+    page = address.group(3) if address.group(3) else ""
+    params = address.group(4) if address.group(4) else ""
+    anchor = address.group(5) if address.group(5) else ""
+
+    return (protocol, domain, page, params, anchor)
+
+
 MEMBERS_PATTERN = re.compile(r"(?<=[a-z])(\.)(?=[a-z])", re.IGNORECASE)
 """Domain patterns without leading protocol like `cdn.company.com`
 or class members in object-oriented programming languages like `params.cookies.client`."""

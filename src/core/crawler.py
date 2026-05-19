@@ -620,14 +620,14 @@ class Crawler(DelayedClass):
             return output
 
         for nextURL in links:
-            current_address = patterns.URL_PATTERN.search(nextURL, concurrent=True)
-            if not current_address or nextURL in self.crawled_URL:
+            if nextURL in self.crawled_URL:
                 continue
 
-            current_protocol = current_address.group(1) if current_address.group(1) else "https"
-            current_domain = current_address.group(2)
-            current_page = current_address.group(3)
-            current_params = current_address.group(4) if current_address.group(4) else ""
+            current_address = patterns.split_url(nextURL)
+            if not current_address:
+                continue
+
+            current_protocol, current_domain, current_page, current_params, current_anchor = current_address
 
             include = False
             if internal_links == "external":
@@ -735,12 +735,12 @@ class Crawler(DelayedClass):
             return output
 
         # Extract the domain name, to prepend it if we find relative URL while parsing
-        split_domain = patterns.URL_PATTERN.search(website)
-        if split_domain is None:
+        address = patterns.split_url(website)
+        if not address:
             print("%s can't be parsed as URL" % website)
             return output
 
-        domain = split_domain.group(2)
+        protocol, domain, page, params, anchor = address
         include = check_contains(contains_str, index_url)
         #print("processing", index_url, "include", include)
 
@@ -790,14 +790,14 @@ class Crawler(DelayedClass):
                     internal_urls = self.get_unique_internal_url(index, domain, index_url)
                     #print(internal_urls)
                     for currentURL in internal_urls:
-                        current_address = patterns.URL_PATTERN.search(currentURL)
-                        if not current_address or currentURL in self.crawled_URL:
+                        if currentURL in self.crawled_URL:
                             continue
 
-                        current_protocol = current_address.group(1) if current_address.group(1) else "https"
-                        current_domain = current_address.group(2)
-                        current_page = current_address.group(3)
-                        current_params = current_address.group(4) if current_address.group(4) else ""
+                        current_address = patterns.split_url(currentURL)
+                        if not current_address:
+                            continue
+
+                        current_protocol, current_domain, current_page, current_params, current_anchor = current_address
 
                         #print(current_page, current_page, current_params)
                         if not restrict_section and domain == current_domain:
@@ -916,8 +916,12 @@ class Crawler(DelayedClass):
             self.errors += list({index_url, new_url})
             return output
 
-        split_domain = patterns.URL_PATTERN.search(website)
-        domain = split_domain.group(2)
+        address = patterns.split_url(website)
+        if not address:
+            print("%s can't be parsed as URL" % website)
+            return output
+
+        protocol, domain, page, params, anchor = address
 
         # Sitemaps of sitemaps enclose elements in `<sitemap> </sitemap>`
         # While sitemaps of pages enclose them in `<url> </url>`.

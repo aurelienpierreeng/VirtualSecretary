@@ -52,76 +52,74 @@ class Deduplicator():
 
     @classmethod
     def prepare_posts_parallel(cls, elem, discard_params, urls_to_ignore, fix_urls):
-        url = patterns.URL_PATTERN.match(elem["url"].rstrip("/"), concurrent=True)
-        if url and not cls.discard_post(elem["url"], urls_to_ignore):
-            # Canonify the URL: remove params and anchors
-            protocol = url.group(1)
-            domain = url.group(2)
-            page = url.group(3)
-            params = url.group(4) if url.group(4) else ""
-            anchor = url.group(5) if url.group(5) else ""
+        if cls.discard_post(elem["url"], urls_to_ignore):
+            return None
+        
+        url = patterns.split_url(elem["url"].rstrip("/"))
+        if not url:
+            return None
 
-            # See if an https variant of the http page is available.
-            # This avoids http/https duplicates.
-            if fix_urls and protocol == "http":
-                test_url = "https://" + domain + page + params + anchor
-                try:
-                    response = requests.head(test_url, timeout=2, allow_redirects=True, impersonate="chrome120")
-                    if response.status_code == 200:
-                        # Found a valid page -> convert to https
-                        protocol = "https"
-                except:
-                    pass # timeout
+        protocol, domain, page, params, anchor = url
 
-            # Wikipedia mobile version: redirect to desktop version
-            domain = domain.replace(".m.wikipedia.org", ".wikipedia.org")
+        # See if an https variant of the http page is available.
+        # This avoids http/https duplicates.
+        if fix_urls and protocol == "http":
+            test_url = "https://" + domain + page + params + anchor
+            try:
+                response = requests.head(test_url, timeout=2, allow_redirects=True, impersonate="chrome120")
+                if response.status_code == 200:
+                    # Found a valid page -> convert to https
+                    protocol = "https"
+            except:
+                pass # timeout
 
-            # See if a non-www. variant of the domain is available
-            # This avoids www.domain.ext/domain.ext duplicates
-            if fix_urls and domain.startswith("www."):
-                test_url = protocol + domain.lstrip("www.") + page + params + anchor
-                try:
-                    response = requests.head(test_url, timeout=2, allow_redirects=True, impersonate="chrome120")
-                    if response.status_code == 200:
-                        # Found a valid page -> remove www.
-                        domain = domain.lstrip("www.")
-                except:
-                    pass # timeout
+        # Wikipedia mobile version: redirect to desktop version
+        domain = domain.replace(".m.wikipedia.org", ".wikipedia.org")
 
-            elem["domain"] = domain
+        # See if a non-www. variant of the domain is available
+        # This avoids www.domain.ext/domain.ext duplicates
+        if fix_urls and domain.startswith("www."):
+            test_url = protocol + domain.lstrip("www.") + page + params + anchor
+            try:
+                response = requests.head(test_url, timeout=2, allow_redirects=True, impersonate="chrome120")
+                if response.status_code == 200:
+                    # Found a valid page -> remove www.
+                    domain = domain.lstrip("www.")
+            except:
+                pass # timeout
 
-            if "/#/" in elem["url"]:
-                # Matrix chat links use # as a "page" and make anchor detection fail big time
-                new_url = elem["url"]
-            else:
-                new_url = protocol + "://" + domain + page
+        elem["domain"] = domain
 
-            if params and (params.startswith("?lang=") or params.startswith("?v=") \
-                or not discard_params):
-                # Non SEO-friendly way of translating pages and Youtube videos
-                # Need to keep it
-                new_url += params
+        if "/#/" in elem["url"]:
+            # Matrix chat links use # as a "page" and make anchor detection fail big time
+            new_url = elem["url"]
+        else:
+            new_url = protocol + "://" + domain + page
 
-            if anchor and anchor.startswith("#page="):
-                # Long PDF are indexed by page. Keep it.
-                new_url += anchor
+        if params and (params.startswith("?lang=") or params.startswith("?v=") \
+            or not discard_params):
+            # Non SEO-friendly way of translating pages and Youtube videos
+            # Need to keep it
+            new_url += params
 
-            # Replace URL by canonical stuff
-            elem["url"] = new_url
+        if anchor and anchor.startswith("#page="):
+            # Long PDF are indexed by page. Keep it.
+            new_url += anchor
 
-            # elem["parsed"] will need to have been prepared earlier
+        # Replace URL by canonical stuff
+        elem["url"] = new_url
 
-            if "length" not in elem or elem["length"] == 0:
-                elem["length"] = len(elem["parsed"])
+        # elem["parsed"] will need to have been prepared earlier
 
-            # Get datetime for age comparison
-            if "datetime" not in elem or elem["datetime"] is None:
-                elem["datetime"] = guess_date(elem["date"])
+        if "length" not in elem or elem["length"] == 0:
+            elem["length"] = len(elem["parsed"])
 
-            return elem
+        # Get datetime for age comparison
+        if "datetime" not in elem or elem["datetime"] is None:
+            elem["datetime"] = guess_date(elem["date"])
 
-        return None
-
+        return elem
+    
 
     @staticmethod
     def get_unique_urls_parallel(candidates):
@@ -268,10 +266,10 @@ class Deduplicator():
                             length = elements[idx]["length"]
                             vote = True
 
-                        if elements[idx]["datetime"] > date:
+                        if elements[idx]["datetime"] and elements[idx]["datetime"] > date:
                             date = elements[idx]["datetime"]
                             vote = True
-                        elif elements[idx]["datetime"] < date:
+                        elif elements[idx]["datetime"] and elements[idx]["datetime"] < date:
                             vote = False
 
                         if vote:

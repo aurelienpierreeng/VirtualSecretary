@@ -55,15 +55,10 @@ def _try_url(url, timeout=30, delay: DelayedClass = None) -> tuple[requests.requ
     # URL inside non-processed Markdown syntax can have an orphan/unmatched trailing )
     # But beware of Wikipedia links that can have non-orphan final ) for disambiguation
     url = patterns.remove_unmatched_parentheses(url).rstrip("/.,: ")
-    link = patterns.URL_PATTERN.match(url, concurrent=True)
+    link = patterns.split_url(url)
 
     if link is not None:
-        # Canonify the URL: remove params and anchors
-        protocol = link.group(1)
-        domain = link.group(2)
-        page = link.group(3)
-        params = link.group(4) if link.group(4) else ""
-        anchor = link.group(5) if link.group(5) else ""
+        protocol, domain, page, params, anchor = link
     else:
         # Couldn't parse URL, still try it just in case
         delay.get_sleep_delay()
