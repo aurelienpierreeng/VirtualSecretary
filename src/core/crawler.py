@@ -386,7 +386,7 @@ def get_date(html: BeautifulSoup):
     return date
 
 
-def get_lang(html: BeautifulSoup) -> str:
+def get_lang(html: BeautifulSoup) -> str | None:
     """Attempt to find the page language"""
 
     def method_0(html):
@@ -408,9 +408,9 @@ def get_lang(html: BeautifulSoup) -> str:
 
 
 def parse_page(page: BeautifulSoup, url: str,
-               lang: str, markup: str | list[str],
-               date: str = None,
-               category: str = None) -> list[web_page]:
+               lang: str | None, markup: str | list[str],
+               date: str | None = None,
+               category: str | None = None) -> list[web_page]:
     """Get the requested markup from the requested page URL.
 
     This chains in a single call:
@@ -487,6 +487,17 @@ def check_contains(contains_str: list[str] | str, url: str):
     raise TypeError("contains_str has a wrong type")
 
 
+def hash_with_category(data: str, category: str) -> str:
+    """Produce a unique identifier mixing data and category."""
+    hasher = hashlib.sha256()
+
+    hasher.update(category.encode("utf-8"))
+    hasher.update(b"\0")  # separator
+    hasher.update(data.encode("utf-8"))
+
+    return hasher.hexdigest()
+
+
 class Crawler(DelayedClass):
     no_follow: list[str] = [
         "api.whatsapp.com/share",
@@ -555,7 +566,13 @@ class Crawler(DelayedClass):
 
         """
         self.crawled_URL: list[str] = []
-        """List of URLs already visited"""
+        """List of { URL + category } hashes already visited.
+        Websites crawled from sitemap and also following internal links recursively will tag
+        recursively-crawled pages with an `external` category, which will later be considered
+        by [nlp.deduplicator.Deduplicator][] with a lower priority than any other category.
+        Sitemap crawling may restrict content to selected HTML tags and produce better-quality data,
+        with less noise. So we need to keep crawling everything from sitemap, whether or not it was
+        already crawled from internal links earlier, and dedup will sort it out."""
         
         self.crawled_content: list[str] = []
         """List of hashes of content already known"""
@@ -607,10 +624,10 @@ class Crawler(DelayedClass):
 
         Args:
             internal_links: defines what to do with links found inside the HTML page body/content:
-                - `any`: follow and include all links found in page, no matter what domain they point to,
-                - `internal`: follow and include links found in page only if they point to the same domain as the current page,
-                - `external`: follow and include links found in page only if they point to a different domain than the current page,
-                - `ignore`: don't follow internal links
+                - `any`: follow and include all links found in page content, no matter what domain they point to,
+                - `internal`: follow and include links found in page content only if they point to the same domain as the current page,
+                - `external`: follow and include links found in page content only if they point to a different domain than the current page,
+                - `ignore`: don't follow links found in page content.
 
         Returns:
             list of links targets content
@@ -620,7 +637,7 @@ class Crawler(DelayedClass):
             return output
 
         for nextURL in links:
-            if nextURL in self.crawled_URL:
+            if hash_with_category(nextURL, category) in self.crawled_URL:
                 continue
 
             current_address = patterns.split_url(nextURL)
@@ -654,7 +671,7 @@ class Crawler(DelayedClass):
         return output
 
 
-    def update_link(self, old_link: str, new_link: str, found: bool, error: bool) -> str:
+    def update_link(self, old_link: str, new_link: str, category: str, found: bool, error: bool) -> str:
         """Update target link with possible HTTP redirections
 
         Arguments:
@@ -666,10 +683,10 @@ class Crawler(DelayedClass):
             because of encoding errors, connection errors or unauthorized.
         """
 
-        self.crawled_URL.append(old_link)
+        self.crawled_URL.append(hash_with_category(old_link, category))
 
         if new_link != old_link:
-            self.crawled_URL.append(new_link)
+            self.crawled_URL.append(hash_with_category(new_link, category))
 
         if not found:
             self.notfound += list({new_link, old_link})
@@ -726,7 +743,7 @@ class Crawler(DelayedClass):
             return output
 
         # Abort now if the page was already crawled or recursion level reached
-        if index_url in self.crawled_URL:
+        if hash_with_category(index_url, category) in self.crawled_URL:
             #print("already crawled")
             return output
 
@@ -746,7 +763,7 @@ class Crawler(DelayedClass):
 
         # Fetch and parse current (top-most) page
         content_type, status, new_url, custom_header = get_content_type(index_url, self)
-        index_url = self.update_link(index_url, new_url, status, False)
+        index_url = self.update_link(index_url, new_url, category, status, False)
 
         if self.discard_link(index_url) or not status:
             #print("no follow")
@@ -765,7 +782,7 @@ class Crawler(DelayedClass):
             and "json" not in content_type:
 
             index, new_url = get_page_content(index_url, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
-            index_url = self.update_link(index_url, new_url, status, index is None)
+            index_url = self.update_link(index_url, new_url, category, status, index is None)
             
             # Valid HTML response
             if index and index.body:
@@ -773,7 +790,7 @@ class Crawler(DelayedClass):
                 # since some URL params may change while still pointing to the same content,
                 # though some URL params may query a different content.
                 # Can't get any more clever with URLs, so we check content hash here.
-                content_hash = hashlib.sha256(index.body.encode()).hexdigest()
+                content_hash = hash_with_category(index.body, category)
                 if content_hash in self.crawled_content:
                     return output
                 else:
@@ -790,7 +807,7 @@ class Crawler(DelayedClass):
                     internal_urls = self.get_unique_internal_url(index, domain, index_url)
                     #print(internal_urls)
                     for currentURL in internal_urls:
-                        if currentURL in self.crawled_URL:
+                        if hash_with_category(currentURL, category) in self.crawled_URL:
                             continue
 
                         current_address = patterns.split_url(currentURL)
@@ -898,14 +915,14 @@ class Crawler(DelayedClass):
 
         index_url = website + sitemap
 
-        self.crawled_URL.append(index_url)
+        self.crawled_URL.append(hash_with_category(index_url, category))
         content_type, status, new_url, custom_header = get_content_type(index_url, self)
 
         if not status:
             self.notfound += list({index_url, new_url})
 
         if new_url != index_url:
-            self.crawled_URL.append(new_url)
+            self.crawled_URL.append(hash_with_category(new_url, category))
             index_url = new_url
 
         if not status:
@@ -949,7 +966,8 @@ class Crawler(DelayedClass):
         links = {relative_to_absolute(url, domain, currentURL) for url in page.links}
 
         # Get URLs that are neither already crawled or already on the list nor PDF
-        return list({url for url in links.difference(set(self.crawled_URL))
+        return list({url 
+                     for url in links
                      if not self.discard_link(url) and ".pdf" not in url.lower()})
 
 
@@ -970,15 +988,15 @@ class Crawler(DelayedClass):
         if self.discard_link(currentURL):
             return output
 
-        self.crawled_URL.append(currentURL)
+        self.crawled_URL.append(hash_with_category(currentURL, category))
         content_type, status, new_url, custom_header = get_content_type(currentURL, self)
-        currentURL = self.update_link(currentURL, new_url, status, False)
+        currentURL = self.update_link(currentURL, new_url, category, status, False)
 
         if not status:
             return output
 
         page, new_url = get_page_content(currentURL, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
-        currentURL = self.update_link(currentURL, new_url, status, page is None)
+        currentURL = self.update_link(currentURL, new_url, category, status, page is None)
 
         if page is not None:
             # We got a proper web page, parse it
@@ -987,7 +1005,12 @@ class Crawler(DelayedClass):
             output += self._parse_internal_pdfs(page, domain, currentURL, default_lang, category)
 
             # Follow internal and external links found in body
-            output += self.get_immediate_links(self.get_unique_internal_url(page, domain, currentURL), domain, default_lang, langs, category, contains_str, internal_links=internal_links, mine_pdf=mine_pdf)
+            # Since this is recursion from whithin page links, we have to flag the category as "external"
+            # to distinguish from pages crawled from the sitemap in case we get both flavours.
+            # The rationale is pages crawled from sitemap may target selective (clean) HTML tags, and produce better quality
+            # data/content than external recursively-crawled pages, that fetch the whole <body> 
+            # (including non-data/formatting, like sidebars, nav menus, etc.).
+            output += self.get_immediate_links(self.get_unique_internal_url(page, domain, currentURL), domain, default_lang, langs, "external", contains_str, internal_links=internal_links, mine_pdf=mine_pdf)
 
         return output
 
@@ -1012,14 +1035,14 @@ class Crawler(DelayedClass):
 
             if link_tag and "href" in link_tag and link_tag["href"]:
                 translatedURL = relative_to_absolute(link_tag["href"], domain, current_url)
+                self.crawled_URL.append(hash_with_category(translatedURL, category))
 
-                self.crawled_URL.append(translatedURL)
                 content_type, status, new_url, custom_header = get_content_type(translatedURL, self.delay)
-                translatedURLURL = sget_unique_internal_urlelf.update_link(translatedURL, new_url, status, False)
+                translatedURL = self.update_link(translatedURL, new_url, category, status, False)
 
                 if "text" in content_type and status:
                     translated_page, new_url = get_page_content(translatedURL, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
-                    translatedURLURL = self.update_link(translatedURL, new_url, status, translated_page is None)
+                    translatedURL = self.update_link(translatedURL, new_url, category, status, translated_page is None)
 
                     if translated_page is not None:
                         output += self._parse_original(translated_page, translatedURL, lang, markup, date, category)
@@ -1031,12 +1054,12 @@ class Crawler(DelayedClass):
     def _parse_internal_pdfs(self, page, domain, current_url, default_lang, category):
         output = []
         pdfs = [relative_to_absolute(url, domain, current_url) for url in page.links]
-        pdfs = [url for url in set(pdfs).difference(set(self.crawled_URL))
+        pdfs = [url for url in set(pdfs)
                 if ".pdf" in url.lower() and not self.discard_link(url)]
 
         for currentURL in pdfs:
             content_type, status, new_url, custom_header = get_content_type(currentURL, self)
-            currentURL = self.update_link(currentURL, new_url, status, False)
+            currentURL = self.update_link(currentURL, new_url, category, status, False)
 
             if status and "pdf" in content_type:
                 output += self._parse_pdf_content(currentURL, default_lang, category=category, custom_header=custom_header, delay=self)
