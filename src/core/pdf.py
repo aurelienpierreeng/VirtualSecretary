@@ -4,11 +4,15 @@
 """
 
 from io import BytesIO
-import fitz
 import pytesseract
 import cv2
 import pdf2image
 import requests
+
+import pymupdf
+pymupdf.TOOLS.set_icc(False)
+
+import fitz
 
 from PIL import Image
 import numpy as np
