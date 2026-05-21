@@ -12,6 +12,7 @@ import copy
 import hashlib
 
 from urllib.parse import urljoin
+from charset_normalizer import from_bytes
 
 import requests
 import regex as re
@@ -109,14 +110,15 @@ def radical_url(URL: str) -> str:
 @utils.exit_after(120)
 def get_content(url, custom_header, backend, driver, wait, delay: callable = None) -> tuple[str, str, int]:
     content, url, status, encoding, apparent_encoding = get_url(url, timeout=30, custom_header=custom_header, backend=backend, driver=driver, wait=wait, delay=delay)
-    if(status != 200):
+    if content is None:
         raise(Exception("No page found"))
 
     if isinstance(content, bytes):
+        result = from_bytes(content).best()
         # Of course some institutionnal websites don't use UTF-8, so let's guess
         try:
             # Try UTF-8. Note that the Selenium backend doesn't return encoding.
-            content = content.decode()
+            content = str(result) if result else content.decode()
         except (UnicodeDecodeError, AttributeError):
             try:
                 content = content.decode(apparent_encoding)
