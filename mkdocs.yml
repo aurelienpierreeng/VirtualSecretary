@@ -116,13 +116,11 @@ plugins:
     enabled: !ENV [ENABLE_MKDOCSTRINGS, true]
     default_handler: python
     enable_inventory: true
-    watch:
-      - src
     handlers:
       python:
         paths: [src]
         load_external_modules: true
-        import:
+        inventories:
         - https://docs.python.org/3/objects.inv
         - https://numpy.org/doc/1.24/objects.inv
         - https://www.nltk.org/objects.inv
