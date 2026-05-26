@@ -22,6 +22,7 @@ from datetime import datetime
 from .types import web_page
 from .network import get_url, DelayedClass
 from .patterns import HYPHENIZED
+from .utils import clean_whitespaces
 
 def ocr_pdf(document: bytes, 
             output_images: bool = False, 
@@ -177,6 +178,7 @@ def _extract_text_from_page(page: fitz.Page, min_chars: int = 20) -> str:
 
 def get_pdf_content(url: str,
                     lang: str,
+                    delay: DelayedClass,
                     file_path: str = None,
                     process_outline: bool = True,
                     category: str = None,
@@ -184,7 +186,6 @@ def get_pdf_content(url: str,
                     max_size: int = 20,
                     max_pages: int = 20,
                     custom_header: dict = {},
-                    delay: DelayedClass = None,
                     **kwargs) -> list[web_page]:
     """Retrieve a PDF document through the network with HTTP GET or from the local filesystem, and parse its text content, using OCR if needed. This needs a functionnal network connection if `file_path` is not provided.
 
@@ -213,7 +214,7 @@ def get_pdf_content(url: str,
         # Open the document from local or remote storage
         document : BytesIO
         if not file_path:
-            content, url, status, encoding, apparent_encoding = get_url(url, timeout=30, custom_header=custom_header, backend="requests", delay=delay)
+            content, url, status, encoding, apparent_encoding = get_url(url, delay, timeout=60, custom_header=custom_header)
 
             if status != 200:
                 print("couldn't download %s" % url)
@@ -266,7 +267,7 @@ def get_pdf_content(url: str,
     # Check if the PDF contains text. Use a robust per-page extractor that
     # falls back to blocks/words then per-page OCR when necessary.
     try:
-        content = "\n".join([_extract_text_from_page(page) for page in doc]).strip("\n ")
+        content = clean_whitespaces("\n".join([_extract_text_from_page(page) for page in doc]).strip("\n "))
     except:
         try:
             doc.close()
@@ -278,7 +279,7 @@ def get_pdf_content(url: str,
         if pdf_size <= max_pdf_size and doc.page_count <= max_pages:
             # No text, retry with OCR
             try:
-                content = ocr_pdf(blob, path=file_path, **kwargs)
+                content = clean_whitespaces(ocr_pdf(blob, path=file_path, **kwargs))
             except Exception as e:
                 print(e)
         else:
@@ -315,7 +316,7 @@ def get_pdf_content(url: str,
                 parts = []
                 for p in range(n_start, n_end):
                     parts.append(_extract_text_from_page(doc.load_page(p)))
-                chapter_content = "\n".join(parts).strip("\n ")
+                chapter_content = clean_whitespaces("\n".join(parts).strip("\n "))
                 chapter_content = HYPHENIZED.sub("", chapter_content, concurrent=True)
 
                 if chapter_content:
@@ -339,7 +340,7 @@ def get_pdf_content(url: str,
 
         else:
             # Whether or not text comes from OCR, if we save it in one chunk, do it now and exit.
-            content = HYPHENIZED.sub("", content)
+            content = clean_whitespaces(HYPHENIZED.sub("", content))
 
             if content:
                 result = web_page(title=title,
@@ -356,7 +357,7 @@ def get_pdf_content(url: str,
                 return [result]
     except:
         # Whether or not text comes from OCR, if we save it in one chunk, do it now and exit.
-        content = HYPHENIZED.sub("", content)
+        content = clean_whitespaces(HYPHENIZED.sub("", content))
 
         if content:
             result = web_page(title=title,

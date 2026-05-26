@@ -13,6 +13,8 @@ charset_normalizer
 requests
 requests-oauthlib
 curl_cffi
+protego
+httpx
 
 # High-perf linear algebra and machine learning
 numba==0.61.0

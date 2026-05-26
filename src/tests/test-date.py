@@ -7,7 +7,7 @@ sys.path.append(os.path.dirname(SCRIPT_DIR))
 from core import crawler
 
 def basic_fetch(url):
-  response = crawler.get_page_content(url)
+  response = crawler.get_page_content(url, cr)
   print(response)
   page = crawler.parse_page(response[0], url, "en", "body")[0]
   print(url, page["date"])

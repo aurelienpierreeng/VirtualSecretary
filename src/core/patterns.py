@@ -396,7 +396,7 @@ def remove_unmatched_parentheses(input:str) -> str:
 def remove_www(input: str) -> str:
   return re.sub(r'^www\.', '', input, concurrent=True)
 
-WAYBACK_RE = re.compile(r"https?://web\.archive\.org/web/\d+/(https?://.+)")
+WAYBACK_RE = re.compile(r"https?://web\.archive\.org/web/[^/]+/(https?://.+)")
 """Find the canonical URL from web.archive.org (Wayback Machine) URLs"""
 
 def wayback_extract_url(url: str) -> str | None:

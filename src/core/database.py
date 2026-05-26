@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .utils import get_models_folder
 from .types import web_page, sanitize_web_page
+from .patterns import *
 
 # Define codecs for numpy arrays with SQLite types
 def adapt_array(arr: np.ndarray):
@@ -725,3 +726,51 @@ class SQLitePageCorpus:
             return
 
         yield obj
+
+
+def normalize_wayback_urls(db):
+    cur = db.cursor()
+
+    cur.execute("""
+        SELECT url, title, datetime
+        FROM pages
+        WHERE url LIKE '%web.archive.org/%'
+    """)
+
+    wayback_rows = cur.fetchall()
+
+    for old_url, title, dt in wayback_rows:
+        original_url = wayback_extract_url(old_url)
+        if not original_url:
+            continue
+
+        # --- derive domain from canonical URL ---
+        address = split_url(original_url)
+        if not address:
+            continue
+
+        protocol, domain, page, params, anchor = address
+
+        # --- check if canonical URL already exists ---
+        cur.execute(
+            "SELECT 1 FROM pages WHERE url = ?",
+            (original_url,)
+        )
+        exists = cur.fetchone()
+
+        if exists:
+            # conflict: keep canonical, delete archive
+            cur.execute(
+                "DELETE FROM pages WHERE url = ?",
+                (old_url,)
+            )
+            continue
+
+        # --- otherwise replace archive row with canonical ---
+        cur.execute("""
+            UPDATE pages
+            SET url = ?, domain = ?, title = ?
+            WHERE url = ?
+        """, (original_url, domain, title, old_url))
+
+    db.commit()

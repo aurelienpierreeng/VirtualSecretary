@@ -18,15 +18,15 @@ import requests
 import regex as re
 import numpy as np
 
-from bs4 import BeautifulSoup
 
 from . import patterns, utils
 from .pdf import get_pdf_content
 from .types import web_page
 from .network import try_url, get_url, DelayedClass
+from .parser import ParsedHTML
 
 
-def get_content_type(url: str, delay: callable) -> tuple[str, bool, str, dict]:
+def get_content_type(url: str, delay: DelayedClass, bypass_robots_txt=False) -> tuple[str, bool, str, dict | None, int]:
     """Probe an URL for HTTP headers only to see what type of content it returns.
     Try to sanitize partly-invalid URLs, like when protocols are not handled/redirected
     (`http` vs `https`), or invalid trailing characters, URL parameters and anchors are passed.
@@ -43,13 +43,21 @@ def get_content_type(url: str, delay: callable) -> tuple[str, bool, str, dict]:
             - `False` if the URL raises an HTTP 404 error (not found).
 
         response_url (str): the actual target URL, sanitized and possibly redirected.
+        states (int): HTTP return code
     """
     try:
-        response, header, new_url = try_url(url, timeout=10, delay=delay)
-        return response.headers['content-type'], (response.status_code != 404), new_url, header
+        response, header, new_url = try_url(url, delay, timeout=20, bypass_robots_txt=bypass_robots_txt)
+        if response and response.headers and 'content-type' in response.headers:
+            return (response.headers['content-type'], 
+                    (response.status_code > 0 and response.status_code < 400), 
+                    new_url, 
+                    header, 
+                    response.status_code)
+        else:
+            return ("", False, new_url, header, -1)
     except Exception as e:
         print("Header error:", url, e)
-        return "", False, url, {}
+        return ("", False, url, None, -1)
 
 
 def relative_to_absolute(URL: str, domain: str, current_page: str) -> str:
@@ -108,8 +116,8 @@ def radical_url(URL: str) -> str:
 
 
 @utils.exit_after(120)
-def get_content(url, custom_header, backend, driver, wait, delay: callable = None) -> tuple[str, str, int]:
-    content, url, status, encoding, apparent_encoding = get_url(url, timeout=30, custom_header=custom_header, backend=backend, driver=driver, wait=wait, delay=delay)
+def get_content(url, custom_header, delay: DelayedClass) -> tuple[str, str, int]:
+    content, url, status, encoding, apparent_encoding = get_url(url, delay, timeout=60, custom_header=custom_header)
     if content is None:
         raise(Exception("No page found"))
 
@@ -130,12 +138,10 @@ def get_content(url, custom_header, backend, driver, wait, delay: callable = Non
     return content, url, status
 
 
-def try_content(url, content, custom_header, backend, driver, wait, delay: callable = None):
-    if content is None and url is not None:
-        content, url, status = get_content(url, custom_header, backend, driver, wait, delay=delay)
 
+def parse_content(content: str) -> ParsedHTML:
     # Minified HTML doesn't have line breaks after block-level tags.
-    # This is going to make sentence tokenization a nightmare because BeautifulSoup doesn't add them in get_text()
+    # This is going to make sentence tokenization a nightmare because ParsedHTML doesn't add them in get_text()
     # Re-introduce here 2 carriage-returns after those tags to create paragraphs.
     unminified = re.sub(r"(\<\/(?:div|section|main|section|aside|header|footer|nav|time|article|h[1-6]|p|ol|ul|li|details|pre|dl|dt|dd|table|tr|th|td|blockquote|style|img|audio|video|iframe|embed|figure|canvas|fieldset|hr|caption|figcaption|address|form|noscript|select)\>)",
                         r"\1\n\n\n\n", content, timeout=60)
@@ -143,42 +149,14 @@ def try_content(url, content, custom_header, backend, driver, wait, delay: calla
     unminified = re.sub(r"(\<\/(?:a|span|time|sup|abbr|b|i|em|strong|code|dfn|big|kbd|label|textarea|input|option|var|q|tt)\>)",
                         r"\1 ", unminified, timeout=60)
 
-    handler = BeautifulSoup(unminified, "html5lib")
-
-    # In case of recursive crawling, we need to milk the links out before we remove <nav> at the next step
-    handler.links = list({url["href"] for url in handler.find_all('a', href=True) if url["href"]})
-
-    # Same with h1 because we will remove <header> and that's where it might be
-    # Doe h2 as well since we are at it.
-    handler.h1 = copy.deepcopy({tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h1")})
-    handler.h2 = copy.deepcopy({tag.get_text().strip(" \n\t\r#↑🔗") for tag in handler.find_all("h2")})
-
-    # Same with date: sometimes put in <header>
-    handler.date = get_date(handler)
-
-    # Mostly intended for YouTube that stores important video info into JSON stored into script
-    scripts = []
-    for element in handler.select('script'):
-        scripts.append(element.decode_contents())
-    handler.scripts = copy.deepcopy(scripts)
-
-    # Remove any kind of machine code and symbols from the HTML doctree because we want natural language only
-    # That will also make subsequent parsing slightly faster.
-    # Remove blockquotes too because they can duplicate internal content of forum pages.
-    # Basically, the goal is to get only the content body of the article/page.
-    for element in handler.select('pre, math, style, script, svg, img, picture, audio, video, iframe, embed, aside, nav, input, header, button, form, fieldset, footer, summary, dialog, textarea, select, option, sup'):
-        element.decompose()
-
-    # Remove inline style and useless attributes too
-    for attribute in ["data", "style", "media"]:
-        for tag in handler.find_all(attrs={attribute: True}):
-            del tag[attribute]
-
-    return handler, url
+    return ParsedHTML.from_html(unminified)
 
 
-def get_page_content(url: str, content: str = None, custom_header={}, backend="requests", driver=None, wait=None, delay: callable = None) -> [BeautifulSoup | None, str]:
-    """Request an (x)HTML page through the network with HTTP GET and feed its response to a BeautifulSoup handler. This needs a functionnal network connection.
+def get_page_content(url: str | None, 
+                     delay: DelayedClass,
+                     content: str | None = None, 
+                     custom_header={}) -> tuple[ParsedHTML | None, str | None, int]:
+    """Request an (x)HTML page through the network with HTTP GET and feed its response to a ParsedHTML handler. This needs a functionnal network connection.
 
     The DOM is pre-filtered as follow to keep only natural language and avoid duplicate strings:
 
@@ -192,225 +170,32 @@ def get_page_content(url: str, content: str = None, custom_header={}, backend="r
     Arguments:
         url: a valid URL that can be fetched with an HTTP GET request.
         content: a string buffer used as HTML source. If this argument is passed, we don't fetch `url` from network and directly use this input.
-        backend: `"requests"` uses the Python package requests and is the fastest option for pure HTML websites but doesn't support Javascript.
 
     Returns:
         a tuple with:
-            1. [bs4.BeautifulSoup][] object initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached. The list of URLs found in page before removing meaningless markup is stored as a list of strings in the `object.links` member. `object.h1` and `object.h2` contain a set of headers 1 and 2 found in the page before removing any markup. `object.date` contains the best-guess for the date.
+            1. [bs4.ParsedHTML][] object initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached. The list of URLs found in page before removing meaningless markup is stored as a list of strings in the `object.links` member. `object.h1` and `object.h2` contain a set of headers 1 and 2 found in the page before removing any markup. `object.date` contains the best-guess for the date.
             2. the final URL of the retrieved page, which might be different from the input URL if HTTP redirections happened,
     """
 
     try:
-        return try_content(url, content, custom_header, backend, driver, wait, delay=delay)
+        status = 200
+
+        if content is None and url is not None:
+            content, url, status = get_content(url, custom_header, delay)
+
+        if not content:
+            return None, url, -1
+        else:
+            return parse_content(content), url, status
+    
     except Exception as e:
         print("Page content error", e)
-        return None, url
+        return None, url, -1
 
 
-def get_page_markup(page: BeautifulSoup, markup: str|tuple|list[str]|list[tuple]|None) -> str:
-    """Extract the text content of an HTML page DOM by targeting only the specific tags.
-
-    Arguments:
-        page: a [bs4.BeautifulSoup][] handler with pre-filtered DOM,
-        markup: any kind of tags supported by [bs4.BeautifulSoup.find_all][]:
-
-            - (str): the single tag to select. For example, `"body"` will select `<body>...</body>`.
-            - (tuple): the tag and properties to select. For example, `("div", { "class": "right" })` will select `<div class="right">...</div>`.
-            - all combinations of the above can be chained in lists.
-            - None: don't parse the page internal content. Links,
-            h1 and h2 headers will still be parsed.
-
-    Returns:
-        The text content of all instances of all tags in markup as a single string, if any, else an empty string.
-
-    Examples:
-        >>> get_page_markup(page, "article")
-
-        >>> get_page_markup(page, ["h1", "h2", "h3", "article"])
-
-        >>> get_page_markup(page, [("div", {"id": "content"}), "details", ("div", {"class": "comment-reply"})])
-    """
-    output = ""
-
-    if markup is None:
-        return output
-
-    if not isinstance(markup, list):
-        markup = [markup]
-
-    for item in markup:
-        if isinstance(item, tuple):
-            # Unroll additional params (classes, ids, etc.)
-            elements = page.find_all(item[0], item[1])
-        else:
-            elements = page.find_all(item)
-
-        print(f"found {len(elements)} {item}")
-
-        if elements:
-            # Get the inner text
-            results = [tag.get_text() for tag in elements]
-            output += "\n\n".join(results)
-
-    return output
-
-
-def get_excerpt(html: BeautifulSoup) -> str | None:
-    """Find HTML tags possibly containing the shortened version of the page content.
-
-    Looks for HTML tags:
-
-    - `<meta name="description" content="...">`
-    - `<meta property="og:description" content="...">`
-
-    Arguments:
-        page: a [bs4.BeautifulSoup][] handler with pre-filtered DOM,
-
-    Returns:
-        The content of the meta tag if any.
-    """
-
-    excerpt_options = [ ("meta", {"property": "og:description"}),
-                        ("meta", {"name": "description"}) ]
-
-    excerpt = None
-    i = 0
-
-    while not excerpt and i < len(excerpt_options):
-        excerpt = html.find(excerpt_options[i][0], excerpt_options[i][1])
-        i += 1
-
-    return excerpt["content"] if excerpt and "content" in excerpt else None
-
-
-def get_date(html: BeautifulSoup):
-    """Find HTML tags possibly containing the page date.
-
-    Looks for HTML tags:
-
-    - `<meta name="date" content="...">`
-    - `<meta name="publishDate" content="...">`
-    - `<meta property="article:published_time" content="...">`
-    - `<meta property="article:modified_time" content="...">`
-    - `<meta name="dc.date" content="...">`
-    - `<time datetime="...">`
-    - `<relative-time datetime="...">`
-    - `<div class="dateline">...</div>`
-    - `<script type="application/ld+json">{"dateModified":"...", }</script>` (Wikipedia)
-
-    Arguments:
-        page: a [bs4.BeautifulSoup][] handler with pre-filtered DOM,
-
-    Returns:
-        The content of the meta tag if any.
-    """
-    def method_0(html: BeautifulSoup):
-        test = html.find("meta", {"name": "date", "content": True})
-        return test["content"] if test else None
-
-    def method_1(html: BeautifulSoup):
-        test = html.find("meta", {"name": "publishDate", "content": True})
-        return test["content"] if test else None
-
-    def method_2(html: BeautifulSoup):
-        test = html.find("meta", {"property": "article:modified_time", "content": True})
-        return test["content"] if test else None
-
-    def method_3(html: BeautifulSoup):
-        test = html.find("meta", {"property": "article:published_time", "content": True})
-        return test["content"] if test else None
-
-    def method_4(html: BeautifulSoup):
-        test = html.find("meta", {"name": "dc.date", "content": True})
-        return test["content"] if test else None
-
-    def method_5(html: BeautifulSoup):
-        test = html.find("time", {"datetime": True})
-        return test["datetime"] if test else None
-
-    def method_6(html: BeautifulSoup):
-        test = html.find("relative-time", {"datetime": True})
-        return test["datetime"] if test else None
-
-    def method_7(html):
-        test = html.find("div", {"class": "dateline"})
-        return test.get_text() if test else None
-
-    def method_9(html):
-        # Rich snippets
-        test = html.find("span", {"class": "updated rich-snippet-hidden"})
-        return test.get_text() if test else None
-
-    def method_8(html):
-        """
-        Wikipedia example JSON:
-        ```
-        {
-            "@context":"https://schema.org",
-            "@type":"Article",
-            "name":"Purple fringing","url":"https://en.wikipedia.org/wiki/Purple_fringing",
-            "sameAs":"http://www.wikidata.org/entity/Q1154488",
-            "mainEntity":"http://www.wikidata.org/entity/Q1154488",
-            "author":{
-                "@type":"Organization",
-                "name":"Contributors to Wikimedia projects"
-            },
-            "publisher":{
-                "@type":"Organization",
-                "name":"Wikimedia Foundation, Inc.",
-                "logo":{
-                    "@type":"ImageObject",
-                    "url":"https://www.wikimedia.org/static/images/wmf-hor-googpub.png"
-                }
-            },
-            "datePublished":"2005-10-07T04:26:05Z",
-            "dateModified":"2023-11-30T04:38:53Z",
-            "image":"https://upload.wikimedia.org/wikipedia/commons/c/c1/Purple_fringing.jpg",
-            "headline":"type of chromatic aberration in photography"
-         }
-         ```
-         """
-        test = html.find("script", {"type": "application/ld+json"})
-        if test:
-            inner = json.loads(test.contents[0])
-            if "dateModified" in inner:
-                return inner["dateModified"]
-        return None
-
-    date = None
-    bag_of_methods = (method_0, method_1, method_2, method_3, method_4, method_5, method_6, method_7, method_8, method_9)
-
-    i = 0
-    while not date and i < len(bag_of_methods):
-        date = bag_of_methods[i](html)
-        i += 1
-
-    return date
-
-
-def get_lang(html: BeautifulSoup) -> str | None:
-    """Attempt to find the page language"""
-
-    def method_0(html):
-        return html.html["lang"] if "lang" in html.html and html.html["lang"] else None
-
-    def method_1(html):
-        test = html.find("meta", {"property": "og:locale", "content": True})
-        return test["content"] if test else None
-
-    lang = None
-    bag_of_methods = (method_0, method_1)
-
-    i = 0
-    while not lang and i < len(bag_of_methods):
-        lang = bag_of_methods[i](html)
-        i += 1
-
-    return lang
-
-
-def parse_page(page: BeautifulSoup, url: str,
-               lang: str | None, markup: str | list[str],
+def parse_page(page: ParsedHTML, 
+               url: str,
+               lang: str | None, markup: str|tuple|list[str]|list[tuple]|None,
                date: str | None = None,
                category: str | None = None) -> list[web_page]:
     """Get the requested markup from the requested page URL.
@@ -422,7 +207,7 @@ def parse_page(page: BeautifulSoup, url: str,
     - [core.crawler.get_excerpt][]
 
     Arguments:
-        page: a [bs4.BeautifulSoup][] handler with pre-filtered DOM,
+        page: a [bs4.ParsedHTML][] handler with pre-filtered DOM,
         url: the valid URL accessible by HTTP GET request of the page
         lang: the provided or guessed language of the page,
         markup: the markup to search for. See [core.crawler.get_page_markup][] for details.
@@ -432,14 +217,6 @@ def parse_page(page: BeautifulSoup, url: str,
     Returns:
         The content of the page, including metadata, in a [core.crawler.web_page][] singleton.
     """
-    # Get excerpt in metadata - hard : several ways of declaring it.
-    excerpt = get_excerpt(page)
-
-    # Get date - hard if no sitemap with timestamps.
-    if not date:
-        date = page.date
-
-    # Get content - easy : user-request
     if ".wikipedia.org" in url and markup == "body":
         # Wikipedia is massive enough to appear in at least one external link.
         # For external links, the default behaviour is to get the whole <body>.
@@ -447,29 +224,20 @@ def parse_page(page: BeautifulSoup, url: str,
         # TODO: is this portable to all pages generated by MediaWiki ?
         markup = ("div", {"id": "mw-content-text"})
 
-    content = get_page_markup(page, markup=markup)
-    lang = get_lang(page)
+    # Parse everything in one go from the content markup
+    page.parse(markup)
 
-    # Get title - easy : it's standard
-    title = page.find("title")
-    if title:
-        title = title.get_text()
-    elif len(page.h1) > 0:
-        title = list(page.h1)[0]
-    elif len(content) > 50:
-        title = content[0:50]
-
-    if content and title:
-        result = web_page(title=title,
+    if page.content and page.title:
+        result = web_page(title=page.title,
                           url=url,
-                          date=date,
-                          content=content,
-                          excerpt=excerpt,
+                          date=page.date or date,
+                          content=page.content,
+                          excerpt=page.excerpt,
                           h1=page.h1,
                           h2=page.h2,
-                          lang=lang,
+                          lang=page.lang or lang,
                           category=category)
-        #print(result)
+        print(result)
         return [result]
     else:
         return []
@@ -590,25 +358,18 @@ class Crawler(DelayedClass):
         """URLs returning error 404 - not found"""
 
 
-    def get_sleep_delay(self) -> float:
-        """Get the time to wait until next request to respect the delay since the previous request"""
-        time_elapsed = datetime.datetime.now().timestamp() - self.last_request
-
-        if time_elapsed < self.delay:
-            time.sleep(self.delay - time_elapsed)
-
-        self.last_request = datetime.datetime.now().timestamp()
-
-
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         print("PROCESSED URLS:", len(set(self.crawled_URL)))
         print("404 ERRORS:", len(set(self.notfound)))
+        for error in set(self.notfound):
+            print(error)
+
         print("OTHER ERRORS:", len(set(self.errors)))
-        print(set(self.errors))
-        print(set(self.notfound))
+        for error in set(self.errors):
+            print(error)
 
 
     def discard_link(self, url):
@@ -673,7 +434,7 @@ class Crawler(DelayedClass):
         return output
 
 
-    def update_link(self, old_link: str, new_link: str, category: str, found: bool, error: bool) -> str:
+    def update_link(self, old_link: str, new_link: str | None, category: str, status_code: int) -> str:
         """Update target link with possible HTTP redirections
 
         Arguments:
@@ -687,16 +448,15 @@ class Crawler(DelayedClass):
 
         self.crawled_URL.append(hash_with_category(old_link, category))
 
-        if new_link != old_link:
+        if new_link and new_link != old_link:
             self.crawled_URL.append(hash_with_category(new_link, category))
 
-        if not found:
+        if status_code == 404:
             self.notfound += list({new_link, old_link})
+        elif status_code == -1 or status_code >= 400:
+            self.errors += list({new_link, old_link, status_code})
 
-        if error:
-            self.errors += list({new_link, old_link})
-
-        return new_link
+        return new_link or old_link
 
 
 
@@ -708,7 +468,7 @@ class Crawler(DelayedClass):
                                   markup: str = "body",
                                   contains_str: str | list[str] = "",
                                   max_recurse_level: int = -1,
-                                  category: str = None,
+                                  category: str = "",
                                   restrict_section: bool = False,
                                   mine_pdf: bool = False,
                                   _recursion_level: int = 0,
@@ -763,9 +523,13 @@ class Crawler(DelayedClass):
         include = check_contains(contains_str, index_url)
         #print("processing", index_url, "include", include)
 
+        # Init global robots.txt only at the root of the recursion
+        if _recursion_level == 0 and _mainthread:
+            super().__init__(protocol, domain, self.delay, 30)
+
         # Fetch and parse current (top-most) page
-        content_type, status, new_url, custom_header = get_content_type(index_url, self)
-        index_url = self.update_link(index_url, new_url, category, status, False)
+        content_type, status, new_url, custom_header, status_code = get_content_type(index_url, self)
+        index_url = self.update_link(index_url, new_url, category, status_code)
 
         if self.discard_link(index_url) or not status:
             #print("no follow")
@@ -783,8 +547,8 @@ class Crawler(DelayedClass):
             and "css" not in content_type \
             and "json" not in content_type:
 
-            index, new_url = get_page_content(index_url, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
-            index_url = self.update_link(index_url, new_url, category, status, index is None)
+            index, new_url, status_code = get_page_content(index_url, self, custom_header=custom_header)
+            index_url = self.update_link(index_url, new_url, category, status_code)
             
             # Valid HTML response
             if index and index.body:
@@ -792,7 +556,7 @@ class Crawler(DelayedClass):
                 # since some URL params may change while still pointing to the same content,
                 # though some URL params may query a different content.
                 # Can't get any more clever with URLs, so we check content hash here.
-                content_hash = hash_with_category(index.body, category)
+                content_hash = hash_with_category(index.body.text, category)
                 if content_hash in self.crawled_content:
                     return output
                 else:
@@ -858,7 +622,7 @@ class Crawler(DelayedClass):
                     output += self._parse_internal_pdfs(index, domain, index_url, default_lang, category)
                     
             else:
-                # No index, aka no BeautifulSoup HTML content.
+                # No index, aka no ParsedHTML HTML content.
                 # Some websites display PDF in web applets on pages
                 # advertising content-type=text/html but UTF8 codecs
                 # fail to decode because it's actually not HTML but PDF.
@@ -884,7 +648,7 @@ class Crawler(DelayedClass):
                                  sitemap: str = "/sitemap.xml",
                                  langs: tuple[str] = ("en", "fr"),
                                  markup: str | tuple[str] = "body",
-                                 category: str = None,
+                                 category: str = "",
                                  contains_str: str | list[str] = "",
                                  internal_links: str = "any",
                                  mine_pdf: bool = False,
@@ -917,22 +681,15 @@ class Crawler(DelayedClass):
 
         index_url = website + sitemap
 
-        self.crawled_URL.append(hash_with_category(index_url, category))
-        content_type, status, new_url, custom_header = get_content_type(index_url, self)
-
-        if not status:
-            self.notfound += list({index_url, new_url})
-
-        if new_url != index_url:
-            self.crawled_URL.append(hash_with_category(new_url, category))
-            index_url = new_url
+        content_type, status, new_url, custom_header, status_code = get_content_type(index_url, self, bypass_robots_txt=True)
+        index_url = self.update_link(index_url, new_url, category, status_code)
 
         if not status:
             return output
 
-        index_page, new_url = get_page_content(index_url, custom_header=custom_header, backend="requests", driver=None, wait=None, delay=self)
+        index_page, new_url, status_code = get_page_content(index_url, self, custom_header=custom_header)
         if index_page is None:
-            self.errors += list({index_url, new_url})
+            self.update_link(index_url, new_url, category, status_code)
             return output
 
         address = patterns.split_url(website)
@@ -941,6 +698,7 @@ class Crawler(DelayedClass):
             return output
 
         protocol, domain, page, params, anchor = address
+        super().__init__(protocol, domain, self.delay, 30)
 
         # Sitemaps of sitemaps enclose elements in `<sitemap> </sitemap>`
         # While sitemaps of pages enclose them in `<url> </url>`.
@@ -962,7 +720,7 @@ class Crawler(DelayedClass):
         return output
 
 
-    def get_unique_internal_url(self, page: BeautifulSoup, domain: str, currentURL:str) -> list[str]:
+    def get_unique_internal_url(self, page: ParsedHTML, domain: str, currentURL:str) -> list[str]:
         """Grab the internal links found in page, except PDF, and return only the ones we don't already know"""
         # Get a set of unique absolute URLs
         links = {relative_to_absolute(url, domain, currentURL) for url in page.links}
@@ -986,19 +744,20 @@ class Crawler(DelayedClass):
         date = date.get_text() if date else None
 
         currentURL = relative_to_absolute(url.get_text(), domain, website + sitemap)
+        include = check_contains(contains_str, currentURL)
 
         if self.discard_link(currentURL):
             return output
 
         self.crawled_URL.append(hash_with_category(currentURL, category))
-        content_type, status, new_url, custom_header = get_content_type(currentURL, self)
-        currentURL = self.update_link(currentURL, new_url, category, status, False)
+        content_type, status, new_url, custom_header, status_code = get_content_type(currentURL, self, bypass_robots_txt=True)
+        currentURL = self.update_link(currentURL, new_url, category, status_code)
 
         if not status:
             return output
 
-        page, new_url = get_page_content(currentURL, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
-        currentURL = self.update_link(currentURL, new_url, category, status, page is None)
+        page, new_url, status_code = get_page_content(currentURL, self, custom_header=custom_header)
+        currentURL = self.update_link(currentURL, new_url, category, status_code)
 
         if page is not None:
             # We got a proper web page, parse it
@@ -1017,7 +776,7 @@ class Crawler(DelayedClass):
         return output
 
 
-    def _parse_pdf_content(self, link, default_lang, category="", custom_header={}, delay: DelayedClass = None):
+    def _parse_pdf_content(self, link, default_lang, delay: DelayedClass, category="", custom_header={}, ):
         return get_pdf_content(link, default_lang, category=category, custom_header=custom_header, delay=delay)
 
 
@@ -1039,12 +798,12 @@ class Crawler(DelayedClass):
                 translatedURL = relative_to_absolute(link_tag["href"], domain, current_url)
                 self.crawled_URL.append(hash_with_category(translatedURL, category))
 
-                content_type, status, new_url, custom_header = get_content_type(translatedURL, self.delay)
-                translatedURL = self.update_link(translatedURL, new_url, category, status, False)
+                content_type, status, new_url, custom_header, status_code = get_content_type(translatedURL, self, bypass_robots_txt=True)
+                translatedURL = self.update_link(translatedURL, new_url, category, status_code)
 
                 if "text" in content_type and status:
-                    translated_page, new_url = get_page_content(translatedURL, backend="requests", custom_header=custom_header, driver=None, wait=None, delay=self)
-                    translatedURL = self.update_link(translatedURL, new_url, category, status, translated_page is None)
+                    translated_page, new_url, status_code = get_page_content(translatedURL, self, custom_header=custom_header)
+                    translatedURL = self.update_link(translatedURL, new_url, category, status_code)
 
                     if translated_page is not None:
                         output += self._parse_original(translated_page, translatedURL, lang, markup, date, category)
@@ -1060,8 +819,8 @@ class Crawler(DelayedClass):
                 if ".pdf" in url.lower() and not self.discard_link(url)]
 
         for currentURL in pdfs:
-            content_type, status, new_url, custom_header = get_content_type(currentURL, self)
-            currentURL = self.update_link(currentURL, new_url, category, status, False)
+            content_type, status, new_url, custom_header, status_code = get_content_type(currentURL, self)
+            currentURL = self.update_link(currentURL, new_url, category, status_code)
 
             if status and "pdf" in content_type:
                 output += self._parse_pdf_content(currentURL, default_lang, category=category, custom_header=custom_header, delay=self)
