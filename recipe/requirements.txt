@@ -43,6 +43,12 @@ pycryptodome
 pdf2image
 pillow==10.4.0
 pytesseract
+# Pin pypdf to an older version because newer pypdf releases
+# (>=6.x) change internal object implementations and can trigger
+# recursive attribute access when unpickling legacy pickles created
+# with older pypdf versions. See repository issue: legacy pickle
+# compatibility. Downgrade to 3.8.1 to allow safe dataset loading.
+pypdf==3.8.1
 
 # Text parsing (HTML, XML, JSON)
 beautifulsoup4
