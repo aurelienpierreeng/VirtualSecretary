@@ -34,6 +34,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
 from fast_langdetect import detect
+# Ensure we download the model out of multi-threading
+detect("", model="full")
+
 import blingfire
 import langcodes
 import pycountry

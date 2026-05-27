@@ -8,3 +8,7 @@ nltk.download('punkt')
 nltk.download('punkt_tab')
 nltk.download('wordnet')
 nltk.download('omw-1.4')
+
+from fast_langdetect import detect
+# Ensure we download the model out of multi-threading
+detect("", model="full")
