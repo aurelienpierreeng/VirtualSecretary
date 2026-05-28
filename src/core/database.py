@@ -384,6 +384,19 @@ def populate_db(db: sqlite3.Connection, pages: list[web_page], batch_size: int =
             execute(query, batch)
 
 
+def db_to_list(db: sqlite3.Connection) -> list[web_page]:
+    """Extract all `web_page` rows from the `pages` table in `db` as a list of `web_page`"""   
+
+    fields = web_page.__annotations__.keys()
+    
+    query = f"""
+    SELECT {",".join(fields)}
+    FROM pages
+    """
+ 
+    return [web_page(**dict(zip(fields, row))) for row in db.execute(query)]
+
+
 def migrate_url_to_primary_key(db: sqlite3.Connection):
     """Rebuild the `pages` table using `url` as PRIMARY KEY
     for older databases that didn't use a primary key.
