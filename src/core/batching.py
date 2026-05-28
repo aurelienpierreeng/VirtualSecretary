@@ -18,6 +18,9 @@ from .deduplicator import *
 from concurrent import futures
 import unicodedata as ud
 import multiprocessing
+import sqlite3
+import os
+from datetime import datetime
 
 
 TOKENIZER: nlp.Tokenizer | None = None
@@ -66,61 +69,117 @@ def _init_batch_normalize_worker(tokenizer):
     TOKENIZER = tokenizer
 
 
-def _batch_normalize_worker(batch) -> list[tuple[int, str, str, str, any]]:
-    normalize = TOKENIZER.normalize_text
-    out: list[tuple[int, str, str, str, any]] = []
 
-    for i, doc in batch:
-        title = clean_whitespaces(sanitize_unicode(doc["title"]))
-        content = clean_whitespaces(sanitize_unicode(doc["content"]))
+SHARED_DB: sqlite3.Connection | None = None
+SHARED_TABLE_NAME: str | None = None
+
+
+def _init_batch_normalize_process_worker(tokenizer, db_path: str, table_name: str = "pages"):
+    """Initializer for process pool workers: set tokenizer and open read-only sqlite DB."""
+    global TOKENIZER, SHARED_DB
+    TOKENIZER = tokenizer
+    # Open a separate connection per process
+    SHARED_DB = sqlite3.connect(db_path, check_same_thread=False, detect_types=sqlite3.PARSE_DECLTYPES)
+    SHARED_DB.row_factory = sqlite3.Row
+    SHARED_DB.execute("PRAGMA temp_store = MEMORY")
+    # Enable WAL and set a busy timeout so readers wait instead of failing when writes occur
+    SHARED_DB.execute("PRAGMA journal_mode = WAL")
+    SHARED_DB.execute("PRAGMA busy_timeout = 5000")
+    # store table name for worker in module variable
+    global SHARED_TABLE_NAME
+    SHARED_TABLE_NAME = table_name
+
+
+def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, str, str, None | datetime, None | str]]:
+    """Worker that reads documents from the shared sqlite DB by index, normalizes and returns results."""
+    global SHARED_DB, TOKENIZER
+    cur = SHARED_DB.cursor()
+    out: list[tuple[int, str, str, str, 'None | datetime', None | str]] = []
+
+    normalize = TOKENIZER.normalize_text
+
+    table = SHARED_TABLE_NAME or 'docs'
+    for i in indices:
+        cur.execute(f'SELECT title, content, date, lang FROM {table} WHERE rowid=?', (i,))
+        row = cur.fetchone()
+        if row is None:
+            continue
+
+        title = clean_whitespaces(sanitize_unicode(row['title']))
+        content = clean_whitespaces(sanitize_unicode(row['content']))
         parsed = normalize(f"{title}\n\n{content}")
-        datetime = guess_date(doc["date"])
-        out.append((i, title, content, parsed, datetime))
+        datetime = guess_date(row['date'])
+        lang = parse_lang_to_iso639_1(row['lang'])
+
+        if lang is None:   
+            lang = detect_language(parsed)
+
+        out.append((i, title, content, parsed, datetime, lang))
 
     return out
 
 
 @timeit()
-def batch_parse_web_page(documents: list[web_page], tokenizer: Tokenizer, chunksize: int = 512, cores: int | bool = False):
-    """High-performance parallel parsing for [src.core.types.web_page] objects
+def batch_parse_web_page(documents: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 512, cores: int | None = None):
+    """High-performance parallel parsing for [src.core.types.web_page][] objects
     
     This function is meant to cleanup text encoding issues and multi-spacings in `web_page` title and content.
-    It prepares the `web_page["parsed"]` field from title and content for the next stages of tokenization.
+    It prepares the `web_page["parsed"]` field from title and content for the next stages of tokenization,
+    and updates language (using declared ISO code or machine-learned detection).
     
     It is needed to call it before [src.core.deduplicator.Deduplicator.dedup()][], so the content duplication
     has a clean parsed version to compare web pages.
-    """
-    num_cpu = cores or os.cpu_count() or 1
 
-    # Pre-batch work to drastically reduce IPC overhead
+    Arguments:
+        documents: any database having [src.core.types.web_page][] rows stored in a `pages` table
+        tokenizer: we only use it for the the [src.core.nlp.Tokenizer.normalize_text][] method
+        chunksize: number of SQLite rows to process at once, too many is not helpful since some batches
+            may take longer than others, depending on text length.
+        cores: CPU cores to use for parallel processing.
+    """
+    # Determine number of worker threads/processes
+    if cores is None or cores is True:
+        num_workers = os.cpu_count() or 1
+    else:
+        num_workers = int(cores)
+
+    cursor = documents.cursor()
+
+    # collect rowids in chunks to avoid large memory usage
+    rowid_cursor = cursor.execute('SELECT rowid FROM pages ORDER BY rowid')
     batches = []
     current = []
-
-    for i, doc in enumerate(documents):
-        current.append((i, doc))
-
+    for row in rowid_cursor:
+        current.append(row[0])
         if len(current) >= chunksize:
-            batches.append(current)
-            current = []
+            batches.append(list(current))
+            current.clear()
 
     if current:
-        batches.append(current)
+        batches.append(list(current))
 
     ctx = multiprocessing.get_context("fork")
 
     with futures.ProcessPoolExecutor(
-        max_workers=num_cpu,
+        max_workers=num_workers,
         mp_context=ctx,
-        initializer=_init_batch_normalize_worker,
-        initargs=(tokenizer,),
+        initializer=_init_batch_normalize_process_worker,
+        initargs=(tokenizer, database.get_db_filename(documents), 'pages'),
     ) as executor:
-        for results in executor.map(_batch_normalize_worker, batches):
-            for i, title, content, parsed, datetime in results:
-                doc = documents[i]
-                doc["title"] = title
-                doc["content"] = content
-                doc["parsed"] = parsed
-                doc["datetime"] = datetime
+        # Collect updates and commit in batches to minimize write-lock churn
+        pending_updates = []
+        for results in executor.map(_batch_normalize_process_worker, batches):
+            for rowid, title, content, parsed, datetime, lang in results:
+                pending_updates.append((title, content, parsed, datetime, lang, rowid))
+
+                if len(pending_updates) >= 2048:
+                    cursor.executemany('UPDATE pages SET title=?, content=?, parsed=?, datetime=?, lang=? WHERE rowid=?', pending_updates)
+                    documents.commit()
+                    pending_updates.clear()
+
+        if pending_updates:
+            cursor.executemany('UPDATE pages SET title=?, content=?, parsed=?, datetime=?, lang=? WHERE rowid=?', pending_updates)
+            documents.commit()
 
     return documents
 
@@ -134,6 +193,9 @@ def _batch_tokenize_worker(inputs: tuple[int, str, str | None]) -> tuple[str | N
     # Unroll SQL params
     rowid, parsed, lang = inputs
     lang = parse_lang_to_iso639_1(lang)
+
+    if lang is None:
+        lang = detect_language(parsed)
 
     # Tokenize without stemming/lemmatization and keep stopwords
     tokenized = TOKENIZER.tokenize_document_per_sentence(parsed, lang, n_grams=False,

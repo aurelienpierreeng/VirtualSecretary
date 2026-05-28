@@ -13,10 +13,20 @@ import json
 from datetime import datetime
 from collections.abc import Iterable
 from pathlib import Path
+import os
+import shutil
 
 from .utils import get_models_folder
 from .types import web_page, sanitize_web_page
 from .patterns import *
+
+type_map = {
+    str: "TEXT",
+    int: "INTEGER",
+    datetime: "DATETIME",
+    np.ndarray: "ARRAY",
+    list: "LIST",
+}
 
 # Define codecs for numpy arrays with SQLite types
 def adapt_array(arr: np.ndarray):
@@ -62,14 +72,6 @@ def create_db(name: str) -> sqlite3.Connection:
     
     cursor = connector.cursor()
 
-    type_map = {
-        str: "TEXT",
-        int: "INTEGER",
-        datetime: "DATETIME",
-        np.ndarray: "ARRAY",
-        list: "LIST",
-    }
-
     keys = list(web_page.__annotations__.items())
 
     # Create initial schema
@@ -114,6 +116,81 @@ def create_db(name: str) -> sqlite3.Connection:
     return connector
 
 
+def cleanup_temp_db():
+    base = Path.home().joinpath('.virtualsecretary')
+    base.mkdir(parents=True, exist_ok=True)
+
+    # Remove stale temp DB files to free space if any
+    for old in base.glob('tmp-*.db*'):
+        try:
+            old.unlink()
+        except Exception:
+            pass
+
+
+def create_temp_db(min_free=2.0) -> sqlite3.Connection:
+    """Create a temporary SQLite database file (in /dev/shm when available) and
+    initialize the `pages` table according to `web_page` annotations.
+    
+    Arguments:
+        min_free: 
+            minimum available disk space in GiB required to create the temporary database.
+            This is checked at runtime and the function will raise an error if the condition is not met.
+
+
+    Returns:
+        the sqlite3.Connection opened in bulk mode.
+
+    WARNING:
+        the temporary SQLite database doesn't use `web_page` URL as primary key, to allow
+        later deduplication.
+    """
+    # Remove old temp DB if any
+    cleanup_temp_db()
+
+    # Prefer a per-user location to avoid /tmp diskspace issues on production systems.
+    base = Path.home().joinpath('.virtualsecretary')
+    base.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    fname = f'tmp-{os.getpid()}-{timestamp}.db'
+    path = base.joinpath(fname)
+
+    # Ensure the target filesystem has at least a safety margin of free space.
+    total, used, free = shutil.disk_usage(str(base))
+    if free < min_free * 1024 * 1024 * 1024 :
+        raise RuntimeError(f"Not enough free space in {base} ({free} bytes). Please free space or change your `min_free` setting.")
+
+    # Create connection with bulk pragmas
+    # Enable WAL and tune timeouts to allow many concurrent readers with one writer.
+    db = sqlite3.connect(path, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30)
+    db.execute("PRAGMA journal_mode = WAL")
+    db.execute("PRAGMA synchronous = NORMAL")
+    db.execute("PRAGMA temp_store = MEMORY")
+    db.execute("PRAGMA cache_size = -200000")
+    db.execute("PRAGMA mmap_size = 8000000000")
+    db.execute("PRAGMA busy_timeout = 30000")
+    db.execute("PRAGMA auto_vacuum = INCREMENTAL;")
+
+    cursor = db.cursor()
+    keys = list(web_page.__annotations__.items())
+
+    # Create initial schema
+    columns = []
+
+    for key, value in keys:
+        sql_type = type_map.get(value)
+
+        if sql_type is None:
+            continue
+
+        columns.append(f"{key} {sql_type}")
+
+    cursor.execute(f"CREATE TABLE IF NOT EXISTS pages ({', '.join(columns)})")
+    db.commit()
+
+    return db
+
+
 def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
     """Open an SQLite database with workload-specific optimizations.
 
@@ -155,7 +232,8 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
     elif mode == "bulk":
         db = sqlite3.connect(path, **common_kwargs)
 
-        db.execute("PRAGMA journal_mode = TRUNCATE")
+        db.execute("PRAGMA journal_mode = WAL")
+        db.execute("PRAGMA busy_timeout = 5000")
         db.execute("PRAGMA synchronous = NORMAL")
         db.execute("PRAGMA temp_store = MEMORY")
 
@@ -164,8 +242,6 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
 
         # Larger mmap can help indexing workloads too
         db.execute("PRAGMA mmap_size = 8000000000")
-
-        # db.execute("VACUUM")
 
     elif mode == "rw":
         db = sqlite3.connect(path, **common_kwargs)
@@ -176,6 +252,9 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
 
     else:
         raise ValueError(f"Invalid SQLite mode: {mode!r}")
+    
+    db.execute("PRAGMA auto_vacuum = INCREMENTAL;")
+    db.commit()
 
     # Add regex support to SQLite3
     def regexp(pattern, string):
@@ -186,9 +265,70 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
     return db
 
 
+def get_db_filename(db: sqlite3.Connection) -> str:
+    return db.execute("PRAGMA database_list").fetchone()[2]
+
+
 def close_db(db: sqlite3.Connection):
-   db.execute("ANALYZE")
+   db.execute("PRAGMA incremental_vacuum;")
+   db.commit()
    db.close()
+
+
+def compress_db(db: sqlite3.Connection, delete_query: str | None = None, delete_params: tuple | None = None, delete_columns: list[str] | None = None):
+    """
+    Optionally delete rows, then reclaim SQLite disk space.
+
+    Args:
+        db: SQLite connection
+        delete_query: full DELETE SQL query
+        delete_params: optional SQL parameters
+    """        
+
+    if delete_query:
+        cursor = db.cursor()
+        cursor.execute(f"DELETE from pages WHERE {delete_query}", delete_params or ())
+        deleted = cursor.rowcount
+        db.commit()
+        print(f"Deleted {deleted} rows WHERE {delete_query}")
+
+    if delete_columns:
+        # validate columns exist (important for safety)
+        cur = db.execute("PRAGMA table_info(pages)")
+        valid_columns = {row[1] for row in cur.fetchall()}
+        columns = [c for c in delete_columns if c in valid_columns]
+
+        if columns:
+            set_clause = ", ".join(f"{col} = NULL" for col in columns)
+            db.execute(f"UPDATE pages SET {set_clause}")
+            db.commit()
+            print(f"Deleted columns {", ".join(columns)}")
+
+    # Memory-friendly vacuum
+    db.execute("PRAGMA incremental_vacuum;")
+    db.commit()
+
+    # For some reason, the above is not enough to really remove old stuff.
+    # Problem is, the following needs twice the size of the DB available on disk.
+    db.execute("PRAGMA VACUUM")
+    db.commit()
+
+
+def is_primary_key(db: sqlite3.Connection, table: str, column: str) -> bool:
+    """
+    Check whether `column` is part of the PRIMARY KEY of `table`.
+    """
+
+    cur = db.execute(f"PRAGMA table_info({table})")
+
+    for row in cur.fetchall():
+        name = row[1]
+        pk = row[5]
+
+        if name == column:
+            return pk > 0
+
+    return False
 
 
 def populate_db(db: sqlite3.Connection, pages: list[web_page], batch_size: int = 4096):
@@ -207,14 +347,25 @@ def populate_db(db: sqlite3.Connection, pages: list[web_page], batch_size: int =
     insert_columns = ",".join(keys)
     placeholders = ",".join("?" for _ in keys)
 
-    update_columns = ",".join(f"{k}=excluded.{k}" for k in keys if k != "url")
-
     query = f"""
         INSERT INTO pages ({insert_columns})
         VALUES ({placeholders})
-        ON CONFLICT(url) DO UPDATE SET
-        {update_columns}
     """
+
+    # If URL is the primary key, we update existing URL 
+    # to ensure unicity. Else we append everything
+    if is_primary_key(db, "pages", "url"):
+
+        update_columns = ",".join(
+            f"{k}=excluded.{k}"
+            for k in keys
+            if k != "url"
+        )
+
+        query += f"""
+            ON CONFLICT(url) DO UPDATE SET
+            {update_columns}
+        """
 
     batch = []
     append = batch.append
@@ -355,127 +506,6 @@ def merge_databases(old_db: sqlite3.Connection, new_db: sqlite3.Connection):
             pass
 
 
-def add_content_hash_column(db: sqlite3.Connection):
-    """
-    Add and populate/update `content_hash` column from the `parsed` column,
-    for content integrity and deduplication purposes.
-    """
-
-    import hashlib
-
-    cursor = db.cursor()
-
-    # Add column if missing
-    columns = { row[1] for row in cursor.execute("PRAGMA table_info(pages)") }
-
-    if "content_hash" not in columns:
-        cursor.execute("""
-            ALTER TABLE pages
-            ADD COLUMN content_hash TEXT
-        """)
-
-    # Stream rows to avoid RAM explosion
-    rows = cursor.execute("""
-        SELECT rowid, parsed
-        FROM pages
-    """)
-
-    updates = []
-
-    for rowid, content in rows:
-        digest = hashlib.sha1(content.encode("utf-8")).hexdigest()
-        updates.append((digest, rowid))
-
-        # batch updates
-        if len(updates) >= 1024:
-            cursor.executemany("""
-                UPDATE pages
-                SET content_hash = ?
-                WHERE rowid = ?
-            """, updates)
-
-            db.commit()
-            updates.clear()
-
-    if updates:
-        cursor.executemany("""
-            UPDATE pages
-            SET content_hash = ?
-            WHERE rowid = ?
-        """, updates)
-
-    db.commit()
-
-    # THIS index is cheap and scalable
-    cursor.execute("""
-        CREATE INDEX IF NOT EXISTS idx_pages_content_hash
-        ON pages(content_hash)
-    """)
-
-    db.commit()
-
-
-def deduplicate_pages(db: sqlite3.Connection):
-    """
-    Safely deduplicate identical contents in the database.
-
-    Keeps:
-        1. shortest URL
-        2. newest datetime
-        3. lowest rowid as deterministic final tie-breaker
-    """
-    add_content_hash_column(db)
-
-    cursor = db.cursor()
-    
-    before = cursor.execute("""
-        SELECT COUNT(*)
-        FROM pages
-    """).fetchone()[0]
-
-    cursor.execute("BEGIN")
-
-    try:
-        # Important: only rows with non-null hashes
-        cursor.execute("""
-            CREATE TEMP TABLE keep_rowids AS
-            SELECT MIN(rowid) AS rowid
-            FROM pages
-            WHERE content_hash IS NOT NULL
-            GROUP BY content_hash
-        """)
-
-        # Delete only rows NOT selected
-        # AND only among rows sharing same actual content
-        cursor.execute("""
-            DELETE FROM pages
-            WHERE rowid NOT IN (
-                SELECT rowid
-                FROM keep_rowids
-            )
-            AND content_hash IS NOT NULL
-        """)
-
-        after = cursor.execute("""
-            SELECT COUNT(*)
-            FROM pages
-        """).fetchone()[0]
-
-        removed = before - after
-
-        cursor.execute("""
-            DROP TABLE keep_rowids
-        """)
-
-        db.commit()
-
-        print(f"Removed {removed} duplicate rows.")
-
-    except Exception:
-        db.rollback()
-        raise
-
-
 def update_pages_from_database( target_db: sqlite3.Connection, source_db: sqlite3.Connection) -> list[str]:
     """
     Update rows in `target_db.pages` from `source_db.pages`
@@ -563,6 +593,7 @@ def update_pages_from_database( target_db: sqlite3.Connection, source_db: sqlite
         except sqlite3.OperationalError:
             pass
 
+
 def import_pages(source_db: str, destination_db: str, where_clause: str = "1=1", params: tuple = ()) -> int:
     """
     Import rows from one SQLite database into another.
@@ -614,6 +645,19 @@ def import_pages(source_db: str, destination_db: str, where_clause: str = "1=1",
             for row in db.execute("PRAGMA table_info(pages)")
         ]
 
+        # Discover source schema (attached as `source`). If the source
+        # database is missing some columns present in the destination,
+        # select NULL for those columns to keep the INSERT SELECT robust.
+        source_columns = {
+            row["name"]
+            for row in db.execute("PRAGMA source.table_info(pages)")
+        }
+
+        select_list = ", ".join(
+            (col if col in source_columns else f"NULL AS {col}")
+            for col in columns
+        )
+
         quoted_columns = ", ".join(columns)
 
         # Build ON CONFLICT update clause
@@ -625,7 +669,7 @@ def import_pages(source_db: str, destination_db: str, where_clause: str = "1=1",
 
         sql = f"""
             INSERT INTO pages ({quoted_columns})
-            SELECT {quoted_columns}
+            SELECT {select_list}
             FROM source.pages
             WHERE {where_clause}
             ON CONFLICT(url) DO UPDATE SET
@@ -637,7 +681,7 @@ def import_pages(source_db: str, destination_db: str, where_clause: str = "1=1",
         db.commit()
 
         db.execute("DETACH DATABASE source")
-        print(f"{cursor.rowcount} rows imported from {source_db} to {destination_db}")
+        print(f"Imported {cursor.rowcount} rows from {source_db} to {destination_db}")
         return cursor.rowcount
 
 
