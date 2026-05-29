@@ -16,11 +16,13 @@ import signal
 import numba
 import psutil
 import unicodedata
+import sqlite3
 from collections.abc import Iterable
 
 from typing import TypedDict
 from dateutil import parser
 from .patterns import MULTIPLE_SPACES, MULTIPLE_LINES, MULTIPLE_NEWLINES, INTERNAL_NEWLINE
+from .types import web_page
 
 import numpy as np
 import regex as re
@@ -581,54 +583,115 @@ def guess_date(string: str | datetime) -> datetime | None:
 
 ## Default files and pathes
 
-def get_data_folder(filename: str) -> str:
+def get_data_folder(filename: str, scheme: str, ext: str) -> str:
     """Resolve the path of a training data saved under `filename`. These are stored in `../../data/`.
-    The `.pickle` extension is added automatically to the filename.
 
     Warning:
         This does not check the existence of the file and root folder.
     """
     current_path = os.path.abspath(__file__)
-    install_path = os.path.dirname(
-                        os.path.dirname(
-                            os.path.dirname(current_path)))
+    install_path = os.path.dirname(os.path.dirname(os.path.dirname(current_path)))
     models_path = os.path.join(install_path, "data")
-    return os.path.abspath(os.path.join(models_path, filename + ".pickle.tar.gz"))
+    return os.path.abspath(os.path.join(models_path, f"{filename}.{scheme}.{ext}"))
 
 
-def save_data(data: list, filename: str):
+def save_data(data: list[web_page] | sqlite3.Connection, filename: str):
     """
     Save scraped data to a pickle file inside a tar.gz archive in data folder.
     Folder and file extension are handled automatically.
-    """
-    with tarfile.open(get_data_folder(filename), "w:gz") as tar:
-        # Pickle data first to get the exact size
-        pickled_data = pickle.dumps(data, pickle.HIGHEST_PROTOCOL)
-        content = io.BytesIO(pickled_data)
-        info = tarfile.TarInfo(filename + ".pickle")
 
+    Args:
+        data: the input data to save. List of `web_page` dictionnaries,
+        or SQLite3 open connections are supported.
+        Python objects are saved to `.pickle.tar.gz` files using pickling.
+        SQLite3 databases are saved to `.sql.tar.gz` files using SQL dumps.
+    """
+    if isinstance(data, list):
+        scheme = "pickle"
+    elif isinstance(data, sqlite3.Connection):
+        scheme = "sql"
+    else:
+        raise TypeError("Wrong input type for data, supports only Python list or SQLite3 database")
+
+    with tarfile.open(get_data_folder(filename, scheme, 'tar.gz'), "w:gz") as tar:
+        if scheme == "pickle":
+            # Pickle data first to get the exact size
+            content = io.BytesIO(pickle.dumps(data, pickle.HIGHEST_PROTOCOL))
+
+        elif scheme == "sql":
+            # Dump the existing database into the temp one
+            # to avoid copy/lock/naming issues, plus it's more efficiently gzipped
+            content = io.BytesIO("\n".join(data.iterdump()).encode())
+
+        else:
+            return # already raises an error above anyway
+        
         # Need to pass on the buffer size explicitly, tarfile sucks
+        info = tarfile.TarInfo(f"{filename}.{scheme}")
         info.size = content.getbuffer().nbytes
         tar.addfile(info, fileobj=content)
 
 
-def open_data(filename: str) -> list:
-    """Open scraped data from a pickle file inside a tar.gz archive stored in data folder. Folder and file extension are handled automatically.
-    An empty list is returned is the file does not exist.
+def open_data(filename: str, scheme: str = "auto") -> list[web_page] | sqlite3.Connection:
     """
-    path = get_data_folder(filename)
-    if os.path.exists(path):
-      with tarfile.open(path, "r:*") as tar:
-        content = tar.extractfile(tar.getmember(filename + ".pickle"))
-        dataset = pickle.loads(content.read())
+    Open data stored in a tar.gz archive. We probe for `sql` and `pickle` datasets, 
+    in this order, and return the first we find. 
+
+    Args:
+        - scheme: `sql` for data saved as SQL dumps, or `pickle` for data saved as lists of `web_page`.
+        `auto` will probe both in this order and return the first one found.
+
+    Returns:
+        - list of `web_pages` for pickle archives,
+        - sqlite3.Connection for database archives. The database lives in memory and 
+        will not be saved, so the caller needs to copy/dump it, and close the connection.
+
+    If the archive does not exist, returns an empty list.
+    """
+
+    if scheme == "auto":
+        schemes = ["sql", "pickle"]
     else:
-       dataset = []
-    return dataset
+        schemes = [scheme]
 
+    for scheme in schemes:
+        path = get_data_folder(filename, scheme, 'tar.gz')
 
-def append_data(data: list, filename: str):
-    dataset = open_data(filename) + data
-    save_data(dataset, filename)
+        if not os.path.exists(path):
+            continue
+
+        with tarfile.open(path, "r:*") as tar:
+            members = {member.name for member in tar.getmembers()}
+            member = f"{filename}.{scheme}"
+            if member not in members:
+                raise ValueError(f"Archive {path} does not contain {member}")
+
+            content = tar.extractfile(member)
+
+            if scheme == "pickle":
+                return pickle.loads(content.read())
+
+            elif scheme == "sql":
+                db = sqlite3.connect(":memory:")
+                db.executescript(content.read().decode())
+                return db
+
+    raise ValueError(f"No .pickle or .sql data archive could be found for {filename}")
+    
+
+def get_data_mtime(filename: str, scheme: str) -> datetime | None:
+    """
+    Return the modification date of the tar.gz archive.
+
+    Returns:
+        datetime of the archive modification time, or None if it does not exist.
+    """
+    path = get_data_folder(filename, scheme, 'tar.gz')
+
+    if not os.path.exists(path):
+        return None
+
+    return datetime.fromtimestamp(os.path.getmtime(path))
 
 
 def get_models_folder(filename: str) -> str:
