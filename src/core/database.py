@@ -128,7 +128,7 @@ def cleanup_temp_db():
             pass
 
 
-def create_temp_db(min_free=2.0) -> sqlite3.Connection:
+def create_temp_db(min_free=2.0, filename: str | None = None) -> sqlite3.Connection:
     """Create a temporary SQLite database file (in /dev/shm when available) and
     initialize the `pages` table according to `web_page` annotations.
     
@@ -136,8 +136,9 @@ def create_temp_db(min_free=2.0) -> sqlite3.Connection:
         min_free: 
             minimum available disk space in GiB required to create the temporary database.
             This is checked at runtime and the function will raise an error if the condition is not met.
-
-
+        filename: 
+            the full path and filename to save the temporary database, if it needs to be reused at some point.    
+        
     Returns:
         the sqlite3.Connection opened in bulk mode.
 
@@ -145,20 +146,21 @@ def create_temp_db(min_free=2.0) -> sqlite3.Connection:
         the temporary SQLite database doesn't use `web_page` URL as primary key, to allow
         later deduplication.
     """
-    # Remove old temp DB if any
-    cleanup_temp_db()
 
     # Prefer a per-user location to avoid /tmp diskspace issues on production systems.
-    base = Path.home().joinpath('.virtualsecretary')
-    base.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    fname = f'tmp-{os.getpid()}-{timestamp}.db'
-    path = base.joinpath(fname)
+    if filename:
+        path = Path(filename)
+    else:
+        base = Path.home().joinpath('.virtualsecretary')
+        base.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        fname = f'tmp-{os.getpid()}-{timestamp}.db'
+        path = base.joinpath(fname)
 
     # Ensure the target filesystem has at least a safety margin of free space.
-    total, used, free = shutil.disk_usage(str(base))
+    total, used, free = shutil.disk_usage(path.parent)
     if free < min_free * 1024 * 1024 * 1024 :
-        raise RuntimeError(f"Not enough free space in {base} ({free} bytes). Please free space or change your `min_free` setting.")
+        raise RuntimeError(f"Not enough free space in {path} ({free} bytes). Please free space or change your `min_free` setting.")
 
     # Create connection with bulk pragmas
     # Enable WAL and tune timeouts to allow many concurrent readers with one writer.
