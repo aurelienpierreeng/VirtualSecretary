@@ -21,6 +21,7 @@ import multiprocessing
 import sqlite3
 import os
 from datetime import datetime
+import hashlib
 
 
 TOKENIZER: nlp.Tokenizer | None = None
@@ -90,11 +91,11 @@ def _init_batch_normalize_process_worker(tokenizer, db_path: str, table_name: st
     SHARED_TABLE_NAME = table_name
 
 
-def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, str, str, None | datetime, None | str]]:
+def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, str, str, None | datetime, None | str, str, int]]:
     """Worker that reads documents from the shared sqlite DB by index, normalizes and returns results."""
     global SHARED_DB, TOKENIZER
     cur = SHARED_DB.cursor()
-    out: list[tuple[int, str, str, str, 'None | datetime', None | str]] = []
+    out: list[tuple[int, str, str, str, 'None | datetime', None | str, str, int]] = []
 
     normalize = TOKENIZER.normalize_text
 
@@ -108,13 +109,16 @@ def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, 
         title = clean_whitespaces(sanitize_unicode(row['title']))
         content = clean_whitespaces(sanitize_unicode(row['content']))
         parsed = normalize(f"{title}\n\n{content}")
+        length = len(parsed)
         datetime = guess_date(row['date'])
         lang = parse_lang_to_iso639_1(row['lang'])
 
         if lang is None:   
             lang = detect_language(parsed)
 
-        out.append((i, title, content, parsed, datetime, lang))
+        content_hash = hashlib.sha1(parsed.encode("utf-8")).hexdigest()
+        
+        out.append((i, title, content, parsed, datetime, lang, content_hash, length))
 
     return out
 
@@ -169,16 +173,16 @@ def batch_parse_web_page(documents: sqlite3.Connection, tokenizer: Tokenizer, ch
         # Collect updates and commit in batches to minimize write-lock churn
         pending_updates = []
         for results in executor.map(_batch_normalize_process_worker, batches):
-            for rowid, title, content, parsed, datetime, lang in results:
-                pending_updates.append((title, content, parsed, datetime, lang, rowid))
+            for rowid, title, content, parsed, datetime, lang, content_hash, length in results:
+                pending_updates.append((title, content, parsed, datetime, lang, content_hash, length, rowid))
 
                 if len(pending_updates) >= 2048:
-                    cursor.executemany('UPDATE pages SET title=?, content=?, parsed=?, datetime=?, lang=? WHERE rowid=?', pending_updates)
+                    cursor.executemany('UPDATE pages SET title=?, content=?, parsed=?, datetime=?, lang=?, content_hash=?, length=? WHERE rowid=?', pending_updates)
                     documents.commit()
                     pending_updates.clear()
 
         if pending_updates:
-            cursor.executemany('UPDATE pages SET title=?, content=?, parsed=?, datetime=?, lang=? WHERE rowid=?', pending_updates)
+            cursor.executemany('UPDATE pages SET title=?, content=?, parsed=?, datetime=?, lang=?, content_hash=?, length=? WHERE rowid=?', pending_updates)
             documents.commit()
 
     return documents
