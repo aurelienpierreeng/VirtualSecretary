@@ -375,7 +375,7 @@ def populate_db(db: sqlite3.Connection, pages: list[web_page], batch_size: int =
 
     with db:  # single transaction
         for page in pages:
-            row = sanitize_web_page(page, to_db=True)
+            row = sanitize_web_page(page)
             append(tuple(row[k] for k in keys))
 
             if len(batch) >= batch_size:
