@@ -1,6 +1,5 @@
 from typing import TypedDict
 from datetime import datetime as dt
-from .utils import guess_date
 import numpy as np
 import sys
 import copy
@@ -72,12 +71,15 @@ class web_page(TypedDict):
     wayback: str
     """URL of the page accessed through web.archive.org/Wayback Machine, so we can store the canonical URL in the `url` key."""
 
+    crawled: dt
+    """Date and time of the last crawling for this page."""
 
-def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
+    content_hash: str
+    """SHA1 hash of the parsed (normalized) content."""
+
+
+def sanitize_web_page(page: web_page) -> web_page:
     """Ensure existence and validity of `web_page` keys/values.
-
-    Params:
-        to_db: set to `True` to convert arrays of strings into semicolon-separated strings.
     """
     # Handle legacy code : h1 and h2 used to be sets, now they are lists
 
@@ -92,6 +94,8 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
             page["h1"] = []
         else:
             raise TypeError(f"Invalid type for h1: {type(page['h1'])}, {page['h1']}")
+    else:
+        page["h1"] = []
 
     if "h2" in page:
         if isinstance(page["h2"], list):
@@ -102,41 +106,52 @@ def sanitize_web_page(page: web_page, to_db: bool = False) -> web_page:
             page["h2"] = []
         else:
             raise TypeError(f"Invalid type for h2: {type(page['h2'])}")
+    else:
+        page["h2"] = []
+        
+    # Some fields here may be bytes when read from web crawling.
+    page["title"] = str(page["title"])
+    page["content"] = str(page["content"])
 
     # Handle legacy code : fields added recently
-    if "stemmed" not in page:
+    if "stemmed" not in page or page["stemmed"] == [[]]:
         page["stemmed"] = None
 
-    if "vectorized" not in page:
+    if "vectorized" not in page or page["vectorized"] == [[]]:
         page["vectorized"] = None
 
-    if "tokenized" not in page:
+    if "tokenized" not in page or page["tokenized"] == [[]]:
         page["tokenized"] = None
 
-    if "parsed" not in page:
+    if "parsed" not in page or page["parsed"] == "":
         page["parsed"] = None
 
-    if "domain" not in page:
+    if "domain" not in page or page["domain"] == "":
         page["domain"] = None
 
-    if "datetime" not in page:
+    if "datetime" not in page or page["date"] is None:
         page["datetime"] = None
 
-    if "length" not in page:
+    if "length" not in page or page["length"] == 0:
         page["length"] = None
 
-    if "excerpt" not in page or not page["excerpt"] or len(page["excerpt"]) < 800:
+    if "excerpt" not in page or page["excerpt"] == "":
         page["excerpt"] = str(page["content"])[0:min(len(page["content"]), 800)]
 
-    if "category" not in page:
+    if "category" not in page or page["category"] == "":
         page["category"] = None
 
     if "wayback" not in page:
         page["wayback"] = None
 
-    # Some fields here may be bytes when read from web crawling.
-    page["title"] = str(page["title"])
-    page["content"] = str(page["content"])
+    if "crawled" not in page:
+        page["crawled"] = None
+
+    if "content_hash" not in page:
+        page["content_hash"] = None
+    
+    if "lang" not in page:
+        page["lang"] = None
 
     # Dict are ordered starting with Python 3.7. Problem is, even for a typeddict,
     # the order is the one of key/value assignation. Re-order everything as in the
