@@ -541,7 +541,7 @@ class Tokenizer():
         at the benefit of generality. In case this does not suit your usecase, you may
         inherit the `Tokenizer` class, build a child class and re-implement this method
         """
-        return typography_undo(document.lower())
+        return clean_whitespaces(typography_undo(document.lower())).strip(" \n\r")
 
 
     def normalize_token(self, 
