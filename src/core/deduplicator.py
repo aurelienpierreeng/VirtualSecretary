@@ -889,7 +889,7 @@ class Deduplicator():
                 if key not in discard_list:
                     f.write(f"{key}: {value}\n")
 
-        return [sanitize_web_page(post, to_db=False) for post in posts]
+        return [sanitize_web_page(post) for post in posts]
 
     @timeit()
     def __call__(
