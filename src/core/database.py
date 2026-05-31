@@ -16,7 +16,7 @@ from pathlib import Path
 import os
 import shutil
 
-from .utils import get_models_folder
+from .utils import get_models_folder, timeit
 from .types import web_page, sanitize_web_page
 from .patterns import *
 
@@ -609,95 +609,228 @@ def update_pages_from_database( target_db: sqlite3.Connection, source_db: sqlite
             pass
 
 
-def import_pages(source_db: str, destination_db: str, where_clause: str = "1=1", params: tuple = ()) -> int:
+def _table_columns(
+    conn: sqlite3.Connection,
+    table: str,
+    schema: str | None = None,
+) -> list[str]:
+    """Column names for *table*, optionally inside an attached *schema*."""
+    pragma = (
+        f"PRAGMA {schema}.table_info({table})" if schema
+        else f"PRAGMA table_info({table})"
+    )
+    return [row[1] for row in conn.execute(pragma)]   # row[1] = name column
+
+
+def _table_pk(conn: sqlite3.Connection, table: str, schema: str | None = None) -> list[str]:
+    """Return Primary Key column names in key-sequence order (empty list if none)."""
+    pragma = (
+        f"PRAGMA {schema}.table_info({table})" if schema
+        else f"PRAGMA table_info({table})"
+    )
+    # PRAGMA row layout: (cid, name, type, notnull, dflt_value, pk)
+    # pk > 0  →  column is part of the PK; its value is the 1-based key position.
+    pairs = sorted(
+        (row[5], row[1])
+        for row in conn.execute(pragma)
+        if row[5] > 0
+    )
+    return [name for _, name in pairs]
+
+
+def _on_conflict_sql(columns: list[str], pk_cols: list[str]) -> str:
+    """
+    Build the trailing ON CONFLICT … fragment for an upsert.
+
+    Returns an empty string when *pk_cols* is empty (no PK → plain INSERT).
+    Returns DO NOTHING when all columns are part of the PK (nothing to update).
+    """
+    if not pk_cols:
+        return ""
+
+    non_pk = [col for col in columns if col not in pk_cols]
+    target = "(" + ", ".join(pk_cols) + ")"
+
+    if not non_pk:
+        return f"ON CONFLICT{target} DO NOTHING"
+
+    updates = ", ".join(f"{col}=excluded.{col}" for col in non_pk)
+    return f"ON CONFLICT{target} DO UPDATE SET {updates}"
+
+
+def _upsert_fragments(columns: list[str], pk: str = "url") -> tuple[str, str]:
+    """Return (quoted_column_list, ON-CONFLICT update clause)."""
+    quoted  = ", ".join(columns)
+    updates = ", ".join(
+        f"{col}=excluded.{col}" for col in columns if col != pk
+    )
+    return quoted, updates
+
+
+def _import_via_attach(
+    source_path: str,
+    dest: sqlite3.Connection,
+    where_clause: str,
+    params: tuple,
+) -> int:
+    dest.execute("ATTACH DATABASE ? AS _src", (source_path,))
+    cursor = None
+    try:
+        dest_cols = _table_columns(dest, "pages")
+        src_cols  = set(_table_columns(dest, "pages", schema="_src"))
+        pk_cols   = _table_pk(dest, "pages")
+
+        select_list = ", ".join(
+            col if col in src_cols else f"NULL AS {col}"
+            for col in dest_cols
+        )
+        quoted      = ", ".join(dest_cols)
+        on_conflict = _on_conflict_sql(dest_cols, pk_cols)
+
+        cursor = dest.execute(f"""
+            INSERT INTO pages ({quoted})
+            SELECT {select_list} FROM _src.pages WHERE {where_clause}
+            {on_conflict}
+        """, params)
+        return cursor.rowcount
+    finally:
+        # cursor.close() finalises the SQLite statement (statement-level resources).
+        # dest.commit() ends the implicit transaction that Python opened for the
+        # INSERT — that transaction holds a SHARED lock on _src at the *connection*
+        # level, which persists after the statement finishes and is the actual
+        # reason DETACH raises "database is locked".  Committing releases it.
+        # When import_pages owns the connection (both args are paths) the subsequent
+        # dest.commit() call in the caller becomes a harmless no-op.
+        if cursor is not None:
+            cursor.close()
+        dest.commit()
+        dest.execute("DETACH DATABASE _src")
+
+
+def _import_via_bridge(
+    source: sqlite3.Connection,
+    dest: sqlite3.Connection,
+    where_clause: str,
+    params: tuple,
+) -> int:
+    dest_cols = _table_columns(dest, "pages")
+    src_cols  = set(_table_columns(source, "pages"))
+    pk_cols   = _table_pk(dest, "pages")                              # ← dynamic
+
+    select_list = ", ".join(
+        col if col in src_cols else f"NULL AS {col}"
+        for col in dest_cols
+    )
+
+    rows = source.execute(
+        f"SELECT {select_list} FROM pages WHERE {where_clause}", params
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    quoted       = ", ".join(dest_cols)
+    placeholders = ", ".join("?" * len(dest_cols))
+    on_conflict  = _on_conflict_sql(dest_cols, pk_cols)               # ← dynamic
+
+    dest.executemany(f"""
+        INSERT INTO pages ({quoted})
+        VALUES ({placeholders})
+        {on_conflict}
+    """, rows)
+
+    return len(rows)
+
+
+@timeit()
+def import_pages(
+    source_db: str | sqlite3.Connection,
+    destination_db: str | sqlite3.Connection,
+    where_clause: str = "1=1",
+    params: tuple = ()
+) -> int:
     """
     Import rows from one SQLite database into another.
 
-    Rows are copied from `source.pages` into `destination.pages`.
-    Existing rows are updated on conflict of the `url` primary key.
+    Both *source_db* and *destination_db* may be either a filesystem
+    path (str) or an active ``sqlite3.Connection`` handle.  Passing a
+    Connection is the only way to target a ``:memory:`` database, since
+    those cannot be addressed by path.
 
-    All columns are automatically discovered from the destination
-    `pages` schema, so the function adapts automatically if the
-    schema evolves.
+    **Connection lifecycle**
+        - *Path supplied* – the function opens, commits, and closes the
+          connection itself (original behaviour).
+        - *Connection supplied* – the caller retains full control; the
+          connection is neither committed nor closed here, so the import
+          can participate in a larger transaction.
+
+    Rows are copied from ``source.pages`` into ``destination.pages``.
+    Existing rows are updated on conflict of the ``url`` primary key.
+    Columns present in the destination but absent from the source receive
+    NULL.  Both schemas are discovered at runtime, so the function adapts
+    automatically if either evolves.
 
     Args:
         source_db:
-            Path to the source SQLite database.
+            Path to, or an open connection for, the source SQLite database.
 
         destination_db:
-            Path to the destination SQLite database.
+            Path to, or an open connection for, the destination SQLite
+            database.
 
         where_clause:
-            SQL WHERE clause applied to `source.pages`.
-
-            Example:
-                "domain = ? AND date >= ?"
+            SQL WHERE clause applied to ``source.pages``.
+            Example: ``"domain = ? AND date >= ?"``
 
         params:
-            Optional SQL parameters used by the WHERE clause.
+            Positional parameters bound to *where_clause*.
 
     Returns:
         Number of affected rows.
 
-    Example:
-        import_pages(
-            source_db="old.db",
-            destination_db="new.db",
-            where_clause="domain = ?",
-            params=("example.com",)
-        )
+    Examples::
+
+        # File → file (unchanged from before)
+        import_pages("old.db", "new.db", "domain = ?", ("example.com",))
+
+        # In-memory source → file destination
+        import_pages(mem_conn, "new.db")
+
+        # File source → in-memory destination (e.g. for tests)
+        import_pages("prod.db", mem_conn, "date >= ?", ("2024-01-01",))
+
+        # Both in-memory
+        import_pages(src_conn, dst_conn)
     """
+    src_is_conn = isinstance(source_db, sqlite3.Connection)
+    dst_is_conn = isinstance(destination_db, sqlite3.Connection)
 
-    with sqlite3.connect(get_models_folder(destination_db)) as db:
-        db.row_factory = sqlite3.Row
+    dest = (
+        destination_db if dst_is_conn
+        else sqlite3.connect(get_models_folder(destination_db))
+    )
 
-        # Attach source DB under alias "source"
-        db.execute("ATTACH DATABASE ? AS source", (get_models_folder(source_db),))
+    try:
+        if src_is_conn:
+            # Live connections cannot be addressed via ATTACH; bridge through Python.
+            rowcount = _import_via_bridge(source_db, dest, where_clause, params)
+        else:
+            # File paths can be ATTACHed for a single-statement INSERT … SELECT.
+            rowcount = _import_via_attach(
+                get_models_folder(source_db), dest, where_clause, params
+            )
 
-        # Discover destination schema
-        columns = [
-            row["name"]
-            for row in db.execute("PRAGMA table_info(pages)")
-        ]
+        dest.commit()
+        compress_db(dest)
 
-        # Discover source schema (attached as `source`). If the source
-        # database is missing some columns present in the destination,
-        # select NULL for those columns to keep the INSERT SELECT robust.
-        source_columns = {
-            row["name"]
-            for row in db.execute("PRAGMA source.table_info(pages)")
-        }
+    finally:
+        if not dst_is_conn:
+            dest.close()
 
-        select_list = ", ".join(
-            (col if col in source_columns else f"NULL AS {col}")
-            for col in columns
-        )
-
-        quoted_columns = ", ".join(columns)
-
-        # Build ON CONFLICT update clause
-        updates = ", ".join(
-            f"{column}=excluded.{column}"
-            for column in columns
-            if column != "url"
-        )
-
-        sql = f"""
-            INSERT INTO pages ({quoted_columns})
-            SELECT {select_list}
-            FROM source.pages
-            WHERE {where_clause}
-            ON CONFLICT(url) DO UPDATE SET
-                {updates}
-        """
-
-        cursor = db.execute(sql, params)
-
-        db.commit()
-
-        db.execute("DETACH DATABASE source")
-        print(f"Imported {cursor.rowcount} rows from {source_db} to {destination_db}")
-        return cursor.rowcount
+    src_label = "<memory>" if src_is_conn else source_db
+    dst_label = "<memory>" if dst_is_conn else destination_db
+    print(f"Imported {rowcount} rows from {src_label} to {dst_label}")
+    return rowcount
 
 
 class SQLitePageCorpus:
