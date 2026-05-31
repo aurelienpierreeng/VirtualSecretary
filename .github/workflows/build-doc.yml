@@ -32,6 +32,7 @@ jobs:
           pip install -r recipe/requirements.txt
           pip install -r recipe/requirements-dev.txt
           pip install -r recipe/requirements-email.txt
+          python download.py
 
       - name: Build documentation
         run: mkdocs build --strict
