@@ -1,5 +1,4 @@
 import sys
-import importlib
 import ast
 import pkgutil
 from pathlib import Path
@@ -14,15 +13,19 @@ BASE_MODULES = ["core", "protocols"]
 
 nav = mkdocs_gen_files.Nav()
 
-def iter_modules(pkg_name: str):
-    pkg = importlib.import_module(pkg_name)
-    yield pkg_name
-    if hasattr(pkg, "__path__"):
-        for m in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
-            yield m.name
+def iter_modules(base: str):
+    base_path = SRC_ROOT / base
+
+    for module in pkgutil.walk_packages(
+        [str(base_path)],
+        prefix=f"{base}."
+    ):
+        yield module.name
+
 
 def display_name(base: str, full: str) -> str:
     return full[len(base) + 1:] if full.startswith(base + ".") else full
+
 
 def get_module_doc(module_name: str) -> str:
     parts = module_name.split(".")
