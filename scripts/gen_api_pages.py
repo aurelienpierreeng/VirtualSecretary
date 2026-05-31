@@ -1,12 +1,14 @@
 import sys
 import importlib
+import ast
 import pkgutil
 from pathlib import Path
 
 import mkdocs_gen_files
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+SRC_ROOT = ROOT / "src"
+sys.path.insert(0, SRC_ROOT)
 
 BASE_MODULES = ["core", "protocols"]
 
@@ -23,9 +25,21 @@ def display_name(base: str, full: str) -> str:
     return full[len(base) + 1:] if full.startswith(base + ".") else full
 
 def get_module_doc(module_name: str) -> str:
-    mod = importlib.import_module(module_name)
-    doc = (mod.__doc__ or "").strip()
-    return doc.split("\n")[0] if doc else ""
+    parts = module_name.split(".")
+    path = SRC_ROOT.joinpath(*parts).with_suffix(".py")
+
+    try:
+        source = path.read_text(encoding="utf-8")
+        module = ast.parse(source)
+        doc = ast.get_docstring(module)
+
+        if doc:
+            return doc.strip().splitlines()[0]
+
+    except Exception:
+        pass
+
+    return ""
 
 # -----------------------
 # Generate module pages
