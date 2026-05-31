@@ -1,10 +1,8 @@
 # Crawler
 
-::: core.crawler
-
 <style>
-/* Hide core.crawler.web_page attributes in TOC */
-li a[href^='#core.crawler.web_page.'] { display: none; }
+/* Hide core.types.web_page attributes in TOC */
+li a[href^='#core.types.web_page.'] { display: none; }
 </style>
 
 ## Examples
@@ -66,7 +64,7 @@ utils.save_data(output, "ansel")
     In the above example, we reuse the `cr` object between the "sitemap" and the "recurse" calls. It means that the second call will inherit the [Crawler.crawled_URL][core.crawler.Crawler.crawled_URL] list from the previous, which contains all the URLs already processed. All URLs from this list will be ignored in the next calls. This can be good to avoid duplicates, but can be bad for some use cases. For those cases, instantiate a new `Crawler` object instead of reusing the previous one.
 
 
-The [core.utils.save_data][] method will directly save the list of [core.crawler.web_page][] objects as a [pickle][] file compressed in a `.tar.gz` archive, into the `VirtualSecretary/data` folder. To re-open, decompress and decode it later, use [core.utils.open_data][]:
+The [core.utils.save_data][] method will directly save the list of [core.types.web_page][] objects as a [pickle][] file compressed in a `.tar.gz` archive, into the `VirtualSecretary/data` folder. To re-open, decompress and decode it later, use [core.utils.open_data][]:
 
 ```python
 # Boilerplate stuff to access src/core from src/user_scripts

@@ -78,7 +78,7 @@ class Server(ABC, ServerType):
     self.logfile = logfile
 
     self.secretary = secretary
-    """Back-reference to the main [secretary.Secretary][] handler"""
+    """Back-reference to the main [core.secretary.Secretary][] handler"""
 
     self.connection_inited: bool = False
     """Set to `True` in server implementation when a connection to the server has been inited, that is the DNS/IP has been resolved, server has been contacted and responded, credentials have been sent, and valid login session is active.

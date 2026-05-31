@@ -37,7 +37,7 @@ Attributes:
 """
 
 filter_bank = dict[int, filter_entry]
-"""Dictionnary type of [utils.filter_entry][] elements associated with their priority in the bank.
+"""Dictionnary type of [core.utils.filter_entry][] elements associated with their priority in the bank.
 
 Attributes:
   key (int): priority
@@ -597,15 +597,26 @@ def get_data_folder(filename: str, scheme: str, ext: str) -> str:
 
 def save_data(data: list[web_page] | sqlite3.Connection, filename: str):
     """
-    Save scraped data to a pickle file inside a tar.gz archive in data folder.
-    Folder and file extension are handled automatically.
+    Save scraped data to a compressed archive.
+
+    The destination folder and file extension are handled automatically.
 
     Args:
-        data: the input data to save. List of `web_page` dictionnaries,
-        or SQLite3 open connections are supported.
-        Python objects are saved to `.pickle.tar.gz` files using pickling.
-        SQLite3 databases are saved to `.sql.tar.gz` files using SQL dumps.
+        data:
+            Data to save.
+
+            Supported types:
+
+            - `list[web_page]`: saved as a `.pickle.tar.gz` archive using
+              Python pickling.
+            - `sqlite3.Connection`: saved as a `.sql.tar.gz` archive using
+              an SQLite SQL dump.
+
+        filename:
+            Base filename to use. The output extension is added
+            automatically depending on the type of `data`.
     """
+
     if isinstance(data, list):
         scheme = "pickle"
     elif isinstance(data, sqlite3.Connection):
@@ -638,8 +649,13 @@ def open_data(filename: str, scheme: str = "auto") -> list[web_page] | sqlite3.C
     in this order, and return the first we find. 
 
     Args:
-        - scheme: `sql` for data saved as SQL dumps, or `pickle` for data saved as lists of `web_page`.
-        `auto` will probe both in this order and return the first one found.
+        filename:
+            Extension-less name of the dataset (no path).
+        
+        scheme: 
+            - `sql` for data saved as SQL dumps, 
+            - `pickle` for data saved as lists of `web_page`.
+            - `auto` will probe both in this order and return the first one found.
 
     Returns:
         - list of `web_pages` for pickle archives,
@@ -710,7 +726,7 @@ def get_models_folder(filename: str) -> str:
 
 def get_stopwords_file(filename: str) -> dict:
     """Get a dictionnary file containing lines of "word: frequency" stored in `../../models/`.
-    By default, [core.nlp.Word2Vec.__init__][] stores a such file when the word embedding is learned.
+    By default, [core.nlp.Word2Vec][] stores a such file when the word embedding is learned.
     Manually-validated files can be used for search engine purposes, since stopwords add noise to the searches.
     """
     path = get_models_folder(filename)
@@ -723,7 +739,8 @@ def timeit(runs: int = 1):
     """Provide a `@timeit` decorator to profile the wall performance of a function.
 
     Args:
-      - runs: how many times the function should be re-executed. Runtimes will give average and standard deviation.
+      runs: 
+        how many times the function should be re-executed. Runtimes will give average and standard deviation.
     """
     def decorate(func):
         def wrapper(*args, **kwargs):
@@ -751,8 +768,6 @@ def exit_after(s: int):
     Args:
         s: number of seconds
 
-    Returns:
-        the output of the function or None if it timed out.
     """
     def outer(fn):
         def inner(*args, **kwargs):

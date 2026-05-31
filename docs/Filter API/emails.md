@@ -24,14 +24,6 @@ The IMAP UID of an email is only the positional order of reception of the email 
 
 The [RFC 822](https://www.rfc-editor.org/rfc/rfc822) defines the `Message-ID` header, that is indeed an unique identifier set when sending an email, like `abcdef@mailserver.com`, where `abcdef` is a random hash. The problem is this ID is set at the discretion of the email sender, and spam/spoofed emails don't have one.
 
-To circumvent this issue, the [protocols.imap_object.EMail.create_hash][] method creates a truly unique and persistent hash, using the data available in the email, like its date, sender and `Message-ID` header, in order to identify emails in logs through their moves between mailboxes.
+To circumvent this issue, the [protocols.imap_object.EMail.create_hash][protocols.imap_object.EMail.create_hash] `protocols.imap_object.EMail.create_hash` method creates a truly unique and persistent hash, using the data available in the email, like its date, sender and `Message-ID` header, in order to identify emails in logs through their moves between mailboxes.
 
 Unfortunately, IMAP actions still have to use the IMAP UID.
-
-## API
-
-::: protocols.imap_server.Server
-
-::: protocols.imap_object.EMail
-
-::: protocols.smtp_server.Server

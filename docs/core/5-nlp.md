@@ -1,7 +1,5 @@
 # NLP
 
-::: core.nlp
-
 ## Examples
 
 
@@ -85,7 +83,7 @@ for url, similarity in results[0:25]:
 
 ```
 
-The [Indexer][core.nlp.Indexer] object is automatically saved to `VirtualSecretary/models` as a compressed [joblib][] object containing its own [Word2Vec][core.nlp.Word2Vec] language model, so the indexer is standalone. To retrieve it later, use:
+The [Indexer][core.search.Indexer] object is automatically saved to `VirtualSecretary/models` as a compressed [joblib][] object containing its own [Word2Vec][core.nlp.Word2Vec] language model, so the indexer is standalone. To retrieve it later, use:
 
 ```python
 # Boilerplate stuff to access src/core from src/user_scripts

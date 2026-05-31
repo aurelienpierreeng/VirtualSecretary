@@ -18,7 +18,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
     This class inherits from the Python standard class [imaplib.IMAP4_SSL][], so all the method are available, although most of them are re-wrapped here for direct and higher-level data handling.
 
-    The connection credentials are passed from [secretary.Secretary.load_connectors][] from the `settings.ini` file of the current config subfolder.
+    The connection credentials are passed from [core.secretary.Secretary.load_connectors][] from the `settings.ini` file of the current config subfolder.
 
     Examples:
         Mandatory content of the `settings.ini` file to declare IMAP connection credentials:
@@ -179,7 +179,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def get_objects(self, mailbox: str, n_messages=-1):
-        """Get the n last emails in a mailbox. Update the [Server.objects][connectors.Server.objects] list.
+        """Get the n last emails in a mailbox. Update the [Server.objects][core.connectors.Server.objects] list.
 
         Processed email get logged with the number
 
@@ -446,7 +446,7 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
 
 
     def init_connection(self, params: dict):
-        # High-level method to login to a server in one shot. The parameters are passed by the `secretary.Secretary.load_connectors()` caller.
+        # High-level method to login to a server in one shot. The parameters are passed by the `core.secretary.Secretary.load_connectors()` caller.
         self.n_messages = int(params["entries"]) if not self.secretary.number else self.secretary.number
         self.server = params["server"]
         self.user = params["user"]
@@ -553,15 +553,26 @@ class Server(connectors.Server[imap_object.EMail], imaplib.IMAP4_SSL):
         return super().create(self.encode_imap_folder(mailbox))
 
     def append(self, mailbox: str, flags: str, email: email.message.EmailMessage) -> str:
-        """Add an arbitrary email to the specified mailbox. The email doesn't need to have been actually sent, it can be generated programmatically or be a copy of a sent email.
+        r"""
+        Add an arbitrary email to the specified mailbox.
 
-        Arguments:
-            mailbox (str): the name of the target mailbox (folder or subfolder).
-            flags (str): IMAP flags, standard (like `'(\\Seen)'` to mark as read, or `'(\\Flagged)'` to mark as important) or custom (can be any string not starting with `\`).
-            email (email.message.EmailMessage): a proper `EmailMessage` object with initialized content, ready to send.
+        Args:
+            mailbox (str):
+                Name of the target mailbox.
+
+            flags (str):
+                IMAP flags (RFC 3501 style), e.g.:
+
+                - `(\\Seen)` → mark as read
+                - `(\\Flagged)` → mark as important
+
+                Custom flags are allowed as long as they do not start with `\`.
+
+            email (email.message.EmailMessage):
+                Fully constructed email message ready for storage.
 
         Returns:
-            status (str)
+            str: status
         """
         self.__reinit_connection()
         self.create_folder(mailbox)

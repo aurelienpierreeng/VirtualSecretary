@@ -125,18 +125,18 @@ def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, 
 
 @timeit()
 def batch_parse_web_page(documents: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 512, cores: int | None = None):
-    """High-performance parallel parsing for [src.core.types.web_page][] objects
+    """High-performance parallel parsing for [core.types.web_page][] objects
     
     This function is meant to cleanup text encoding issues and multi-spacings in `web_page` title and content.
     It prepares the `web_page["parsed"]` field from title and content for the next stages of tokenization,
     and updates language (using declared ISO code or machine-learned detection).
     
-    It is needed to call it before [src.core.deduplicator.Deduplicator.dedup()][], so the content duplication
+    It is needed to call it before [core.deduplicator.Deduplicator][], so the content duplication
     has a clean parsed version to compare web pages.
 
     Arguments:
-        documents: any database having [src.core.types.web_page][] rows stored in a `pages` table
-        tokenizer: we only use it for the the [src.core.nlp.Tokenizer.normalize_text][] method
+        documents: any database having [core.types.web_page][] rows stored in a `pages` table
+        tokenizer: we only use it for the the [core.nlp.Tokenizer.normalize_text][] method
         chunksize: number of SQLite rows to process at once, too many is not helpful since some batches
             may take longer than others, depending on text length.
         cores: CPU cores to use for parallel processing.
@@ -227,9 +227,12 @@ def batch_tokenize(db: sqlite3.Connection,
         from joining back the list of tokens.
 
     Arguments:
-        urls: list of URLs to tokenize. If None, the whole database is processed.
-        only_none: stem only the new entries that have not been tokenized already. If `False`,
-        force-update the whole database. It has no effect when `urls` are explicitely specified
+        urls: 
+            list of URLs to tokenize. If None, the whole database is processed.
+
+        only_none: 
+            stem only the new entries that have not been tokenized already. If `False`,
+            force-update the whole database. It has no effect when `urls` are explicitely specified
     """
 
     num_cpu = os.cpu_count()
@@ -298,13 +301,16 @@ def batch_stem(db: sqlite3.Connection,
     """Tokenize and stem a list of `web_pages` in parallel, in a RAM-friendly way, directly in database.
 
     Populate the `stemmed` database column from the `tokenized` column. This needs to run after
-    [core.batching.batch_tokenized][]. The tokenization is destructive and apply stemming,
+    [core.batching.batch_tokenize][]. The tokenization is destructive and apply stemming,
     stopwords removal, normalization and n-grams if available.
 
     Arguments:
-        urls: list of URLs to tokenize. If None, the whole database is processed.
-        only_none: stem only the new entries that have not been stemmed already. If `False`,
-        force-update the whole database. It has no effect when `urls` are explicitely specified
+        urls: 
+            list of URLs to tokenize. If None, the whole database is processed.
+            
+        only_none: 
+            stem only the new entries that have not been stemmed already. If `False`,
+            force-update the whole database. It has no effect when `urls` are explicitely specified
     """
 
     num_cpu = os.cpu_count()

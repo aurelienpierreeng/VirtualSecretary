@@ -128,7 +128,7 @@ def cleanup_temp_db():
             pass
 
 
-def create_temp_db(min_free=2.0, filename: str | None = None) -> sqlite3.Connection:
+def create_temp_db(min_free: float = 2.0, filename: str | None = None) -> sqlite3.Connection:
     """Create a temporary SQLite database file (in /dev/shm when available) and
     initialize the `pages` table according to `web_page` annotations.
     

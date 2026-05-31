@@ -203,15 +203,24 @@ class Indexer():
         """Search engine based on word similarity.
 
         Arguments:
-            training_set (list): list of Data elements. If the list is empty, it will try to find a pre-trained model matching the `path` name.
-            path : path to save the trained model for reuse, as a Python joblib.
-            name (str): name under which the model will be saved for la ter reuse.
-            word2vec (Word2Vec): the instance of word embedding model.
-            strip_collocations: remove the matrix of collocations in documents, which is the list of word tokens represented by their index in the
-            word2vec dictionnary. It is used for [core.nlp.Indexer.find_query_patterns][], which is optional and significatively slower
-            (but not significatively better), so if you don't plan on using it, removing collocations saves some RAM and I/O.
-            principal_components (int): number of principal components to compute and remove from the index dataset. 
-            This helps to make queries more selective and specific in the presence of boilerplate text and formatting language in the sampling.
+            db:
+                Opened SQLite database containing at least a `pages` table of [core.types.web_page][]
+                items saved as database.
+            
+            name: 
+                name under which the model will be saved for la ter reuse.
+
+            word2vec: 
+                the instance of word embedding model.
+
+            strip_collocations: 
+                remove the matrix of collocations in documents, which is the list of word tokens represented by their index in the
+                word2vec dictionnary. It is used for [core.search.Indexer.find_query_pattern][], which is optional and significatively slower
+                (but not significatively better), so if you don't plan on using it, removing collocations saves some RAM and I/O.
+
+            principal_components: 
+                number of principal components to compute and remove from the index dataset. 
+                This helps to make queries more selective and specific in the presence of boilerplate text and formatting language in the sampling.
 
         NOTE:
             The class is optimized to run online, on server: load fast when spawning a new server-side worker,
@@ -951,9 +960,10 @@ class Indexer():
         Sanjeev Arora, Yingyu Liang, Tengyu Ma. https://openreview.net/pdf?id=SyK00v5xx
 
         Arguments:
-            vector: can be a single vector (1D) or a document-wise stack of vectors (2D).
-            We always consider the embedding vector to be on the last axis, document-wise
-            vectors should be vertically stacked.
+            vector: 
+                can be a single vector (1D) or a document-wise stack of vectors (2D).
+                We always consider the embedding vector to be on the last axis, document-wise
+                vectors should be vertically stacked.
         Return:
             normalized vector
         """
@@ -1073,7 +1083,7 @@ class Indexer():
     def find_query_pattern(self,
                            indexed_query: np.ndarray[np.int32],
                            documents: list[tuple[int, str, float]],
-                           fast=False) -> list[tuple[int, str, float]]:
+                           fast: bool = False) -> list[tuple[int, str, float]]:
         """The rankers methods treat documents as continuous bag of words (CBOW).
         As such, they are good for topic extraction (aboutness), but they do not care about words colocations
         and ordering, therefore they loose syntactical meaning.
@@ -1087,13 +1097,18 @@ class Indexer():
         to refine a previous ranking.
 
         Parameters:
-            indexed_query: the search query tokens translated into their integer indices in the Word2Vec vocabulary.
-            Use [core.nlp.Word2Vec.tokens_to_indices][] to convert the tokenized query.
-            documents: a symbolic list of documents, as a `(index, url, similarity)` tuple.
-            fast: if `True`, uses a simplified variant that is 6 times faster and only uses local averages.
-            Results from this method are rather inaccurate, for example, for a request like `token_1 token_2`,
-            sentences repeating `token_1` twice will score as much as sentences containing the desired sequence
-            `token_1 token_2`. If `False`, use the convolutional filter.
+            indexed_query: 
+                the search query tokens translated into their integer indices in the Word2Vec vocabulary.
+                Use [core.nlp.Word2Vec.tokens_to_indices][] to convert the tokenized query.
+
+            documents: 
+                a symbolic list of documents, as a `(index, url, similarity)` tuple.
+
+            fast: 
+                if `True`, uses a simplified variant that is 6 times faster and only uses local averages.
+                Results from this method are rather inaccurate, for example, for a request like `token_1 token_2`,
+                sentences repeating `token_1` twice will score as much as sentences containing the desired sequence
+                `token_1 token_2`. If `False`, use the convolutional filter.
 
         References:
             Text Matching as Image Recognition, Liang Pang, Yanyan Lan, Jiafeng Guo, Jun Xu, Shengxian Wan, and Xueqi Cheng. (2016).
@@ -1209,31 +1224,44 @@ class Indexer():
         """Apply a label on a post based on the trained model.
 
         Arguments:
-            db: the SQLite database holding the indexed set of document. This database must absolutely be up-to-date
-            with the one used to instanciate this class, regarding row ordering of documents,
-            otherwise rowid mismatches are to be expected between fuzzy, AI and regex searches.
-            tokens: the tokenized query.
-            method (str): `ai`, `fuzzy` or `grep`. `ai` use word embedding and meta-tokens with dual-embedding space, `fuzzy` uses meta-tokens with BM25Okapi stats model, `grep` uses direct string and regex search.
-            filter_callback (callable): a function returning a boolean to filter in/out the results of the ranker. Its first argument will be a [core.crawler.web_page][] object from the list [core.nlp.Indexer.index][], the next arguments will be passed through from `**kargs` directly.
-            pattern: optional pattern/text search to add on top of AI search
-            n_results: number of results to retain
-            fine_search: optionally refine the search using a 2D interaction matrix. See [1]
-            sql_query: SQL query to narrow-down the search, for example `WHERE field = value`. Supports PCRE regex with `WHERE field REGEXP 'pattern'`.
-            sql_params: the SQL parameters such that:
-            ```python
-                cursor = db.execute(
-                f"SELECT url FROM pages {sql_query}",
-                sql_params
-            )
-            ```
-            where each `sql_params` item is matched in the `sql_query` by a `?`. For example:
-            ```sql
-                SELECT url              // imposed by the search API
-                FROM pages              // imposed by the search API
-                WHERE instr(url, ?) > 0 // implementation-side `sql_query`
-                ORDER BY url            // imposed by the search API
-            ```
-            and `sql_params = ['google.com']` will filter all URLs from Google.
+            db: 
+                the SQLite database holding the indexed set of document. This database must absolutely be up-to-date
+                with the one used to instanciate this class, regarding row ordering of documents,
+                otherwise rowid mismatches are to be expected between fuzzy, AI and regex searches.
+                tokens: the tokenized query.
+
+            method: 
+                `ai`, `fuzzy` or `grep`:
+                    - `ai` use word embedding and meta-tokens with dual-embedding space, 
+                    - `fuzzy` uses meta-tokens with BM25Okapi stats model, 
+                    - `grep` uses direct string and regex search.
+
+            n_results: 
+                number of results to retain
+
+            fine_search: 
+                optionally refine the search using a 2D interaction matrix. See [1]
+
+            sql_query: 
+                SQL query to narrow-down the search, for example `WHERE field = value`. Supports PCRE regex with `WHERE field REGEXP 'pattern'`.
+            
+            sql_params: 
+                the SQL parameters such that:
+                ```python
+                    cursor = db.execute(
+                    f"SELECT url FROM pages {sql_query}",
+                    sql_params
+                )
+                ```
+                where each `sql_params` item is matched in the `sql_query` by a `?`. For example:
+                ```sql
+                    SELECT url              // imposed by the search API
+                    FROM pages              // imposed by the search API
+                    WHERE instr(url, ?) > 0 // implementation-side `sql_query`
+                    ORDER BY url            // imposed by the search API
+                ```
+                and `sql_params = ['google.com']` will filter all URLs from Google.
+
         Note:
             Both SQL search into the database and Python filtering into the index are supported,
             and can be combined. The local index is a partial copy of the database and is already

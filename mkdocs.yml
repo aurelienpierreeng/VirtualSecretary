@@ -3,7 +3,11 @@ site_name: Virtual Secretary Documentation
 repo_url: https://github.com/aurelienpierreeng/VirtualSecretary
 repo_name: aurelienpierreeng/VirtualSecretary
 edit_uri: blob/main/docs/
-copyright: Copyright &copy; 2022-2023 Aurélien PIERRE
+copyright: Copyright &copy; 2022-2026 Aurélien PIERRE
+
+watch:
+  - src
+  - scripts
 
 nav:
   - Home: index.md
@@ -15,6 +19,8 @@ nav:
     - Example filters: starting/4-example-filters.md
     - Writing custom filters: starting/5-writing-filters.md
     - Crawling pages: starting/6-crawling-pages.md
+    - Build your own search engine: starting/7-build-your-own-search-engine.md
+  - API: api/index.md
   - Filter API:
     - Emails: Filter API/emails.md
     - CardDAV: Filter API/carddav.md
@@ -112,6 +118,10 @@ plugins:
 - search
 - autorefs
 - offline
+- gen-files:
+    scripts:
+      - scripts/gen_api_pages.py
+- literate-nav
 - mkdocstrings:
     enabled: !ENV [ENABLE_MKDOCSTRINGS, true]
     default_handler: python
@@ -130,8 +140,11 @@ plugins:
         - https://joblib.readthedocs.io/en/stable/objects.inv
         options:
           show_root_heading: true
-          show_root_full_path: false
-          show_object_full_path: false
+          show_root_toc_entry: true
+          show_symbol_type_heading: true
+          show_symbol_type_toc: true
+          show_root_full_path: true
+          show_object_full_path: true
           show_category_heading: yes
           group_by_category: true
           docstring_style: google

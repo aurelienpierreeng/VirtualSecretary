@@ -48,10 +48,10 @@ class Secretary(object):
 
   def filters(self, filters: utils.filter_bank):
     """
-    Process the loop over `Content` objects from the implementation of [connectors.Server.run_filters][] for each filter.
+    Process the loop over `Content` objects from the implementation of [core.connectors.Server.run_filters][] for each filter.
 
     Arguments:
-      filters (utils.filter_bank): iterable of available filters. See [utils.filter_bank][].
+      filters (utils.filter_bank): iterable of available filters. See [core.utils.filter_bank][].
     """
     for key in sorted(filters.keys()):
       filter = filters[key]["filter"]
@@ -85,17 +85,17 @@ class Secretary(object):
     Load all connector modules from `protocols`.
 
     Arguments:
-      subfolder_path (str): the current folder of filters
+      subfolder_path: the current folder of filters
       server_mode: enable or disable the server mode, which makes processing slower to better share limited resources on a server.
       number: override the number of items to process defined in config file. `-1` honors config files settings.
       force: ignore logs and reprocess items already processed.
 
     Attributes:
-      protocols (dict of str: connectors.Server): available [connectors.Server][] implementations for server protocols. They are exposed to user filters in `globals()`.
+      protocols (dict of str: connectors.Server): available [core.connectors.Server][] implementations for server protocols. They are exposed to user filters in `globals()`.
 
       config_file (configparser.ConfigParser): object handling the `settings.ini` content for the current config folder.
 
-      log_file (io.TextIOWrapper): object handling the main `sync.log` for the whole application, where every action on [connectors.Content][] will be logged.
+      log_file (io.TextIOWrapper): object handling the main `sync.log` for the whole application, where every action on [core.connectors.Content][] will be logged.
     """
 
     self.protocols: typing.Dict[str, connectors.Server] = { }

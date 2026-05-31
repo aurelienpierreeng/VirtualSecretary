@@ -663,22 +663,29 @@ class Tokenizer():
                       meta_tokens: bool = True, 
                       stem: bool = True,
                       remove_stopwords: bool = True) -> list[str]:
-        """Split an arbitrary text into normalized word tokens and meta-tokens.
-        No sentence or paragraph detection will be attempted.
+        """
+        Split text into normalized word tokens and meta-tokens.
 
-        Arguments:
-            sentence: the input single sentence.
-            n_grams: apply n-grams detection and collapsing on tokens. Need to have trained the 
-            n-grams model with [self.train_ngrams][]
-            others: see [core.nlp.Tokenizer.normalize_token][] arguments
+        No sentence or paragraph boundary detection is performed.
+
+        Args:
+            sentence:
+                Input text to tokenize.
+
+            n_grams:
+                Whether to detect and collapse n-grams.
+
+                Requires a trained n-gram model generated with
+                `train_ngrams()`.
 
         Note:
-            the language is detected internally if not provided
+            The parameters `language`, `normalize`, `meta_tokens`, `stem`,
+            and `remove_stopwords` are forwarded to
+            `normalize_token()` and have the same meaning.
 
         Returns:
-            tokens (list[str]): the list of normalized tokens as a bag of words.
+            List of normalized tokens represented as a bag of words.
         """
-
         if n_grams and self.supports_ngrams:
             # First pass needs basic tokenization so the N-gram detection can pick up
             tokens = self.post_filter_tokens(tokenize_document_to_words(sentence, 
@@ -717,10 +724,24 @@ class Tokenizer():
                            stem: bool = False,
                            normalize: bool = False,
                            remove_stopwords: bool = False) -> list[str]:
-        """Apply a post-processing step (normalization, etc.) on an existing list of tokens.
-        
-        Arguments:
-            See [core.nlp.Tokenizer.normalize_token][]
+        """
+        Apply post-processing operations to an existing token stream.
+
+        This method applies token normalization, stemming, stopword removal,
+        and meta-token handling without performing tokenization.
+
+        Args:
+            tokens:
+                List of input tokens to process.
+
+        Note:
+            The parameters `language`, `meta_tokens`, `stem`,
+            `normalize`, and `remove_stopwords` are forwarded to
+            [`normalize_token()`][core.nlp.Tokenizer.normalize_token]
+            and have the same meaning.
+
+        Returns:
+            List of processed tokens.
         """
         normalize_token = self.normalize_token
 
@@ -753,8 +774,8 @@ class Tokenizer():
         The document text needs to have been prepared and cleaned, which means :
 
         - lowercased (optional but recommended) with `str.lower()`,
-        - translated from Unicode to ASCII (optional but recommended) with [utils.typography_undo()][],
-        - cleaned up for sequences of whitespaces with [utils.cleanup_whitespaces()][]
+        - translated from Unicode to ASCII (optional but recommended) with [core.utils.typography_undo][],
+        - cleaned up for sequences of whitespaces with [core.utils.clean_whitespaces][]
 
         Note:
             the language is detected internally if not provided as an optional argument. When processing a single sentence extracted from a document, instead of the whole document, it is more accurate to run the language detection on the whole document, ahead of calling this method, and pass on the result here.
@@ -762,10 +783,12 @@ class Tokenizer():
         Arguments:
             document (str): the text of the document to tokenize
             n_grams (bool): see [core.nlp.Tokenizer.tokenize_text][]
-            others: see [core.nlp.Tokenizer.normalize_token][] arguments
 
         Note:
-            the language is detected internally if not provided. The text is prefiltered with [self.prefilter][].
+            The parameters `language`, `meta_tokens`, `stem`,
+            `normalize`, and `remove_stopwords` are forwarded to
+            [`normalize_token()`][core.nlp.Tokenizer.normalize_token]
+            and have the same meaning.
 
         Returns:
             tokens (list[str]): a 1D list of normalized tokens and meta-tokens.
@@ -789,16 +812,18 @@ class Tokenizer():
         The document text needs to have been prepared and cleaned, which means :
 
         - lowercased (optional but recommended) with `str.lower()`,
-        - translated from Unicode to ASCII (optional but recommended) with [utils.typography_undo()][],
-        - cleaned up for sequences of whitespaces with [utils.cleanup_whitespaces()][]
+        - translated from Unicode to ASCII (optional but recommended) with [core.utils.typography_undo][],
+        - cleaned up for sequences of whitespaces with [core.utils.clean_whitespaces][]
 
         Arguments:
             document (str): the text of the document to tokenize
             n_grams (bool): see [core.nlp.Tokenizer.tokenize_text][]
-            others: see [core.nlp.Tokenizer.normalize_token][] arguments
 
         Note:
-            the language is detected internally if not provided. The text is prefiltered with [self.prefilter][]
+            The parameters `language`, `meta_tokens`, `stem`,
+            `normalize`, and `remove_stopwords` are forwarded to
+            [`normalize_token()`][core.nlp.Tokenizer.normalize_token]
+            and have the same meaning.
 
         Returns:
             tokens: a 2D list of sentences (1st axis), each containing a list of normalized tokens and meta-tokens (2nd axis).
@@ -823,8 +848,8 @@ class Tokenizer():
         The document text needs to have been prepared and cleaned, which means :
 
         - lowercased (optional but recommended) with `str.lower()`,
-        - translated from Unicode to ASCII (optional but recommended) with [utils.typography_undo()][],
-        - cleaned up for sequences of whitespaces with [utils.cleanup_whitespaces()][]
+        - translated from Unicode to ASCII (optional but recommended) with [core.utils.typography_undo][],
+        - cleaned up for sequences of whitespaces with [core.utils.clean_whitespaces][]
 
         Arguments:
             document (str): the text of the document to tokenize
@@ -851,20 +876,52 @@ class Tokenizer():
                  stopwords: set[str] | None = None,
                  lang_stopwords: dict[str, set[str]] | None = None,
                  backend: str = "blingfire"):
-        """Pre-processing pipeline and tokenizer, splitting a string into normalized word tokens.
+        """
+        Pre-processing pipeline and tokenizer.
 
-        Arguments:
-            meta_token: the pipeline of regular expressions to replace with meta-tokens in documents.
-            Keys must be `re.Pattern` declared with `re.compile()`, values must be meta-tokens assumed to be nested in underscores. 
-            The pipeline dictionnary will be processed in the order of declaration, which relies on using Python >= 3.8 (making `dict` ordered by default). 
-            If not provided, it is inited by default with a pipeline suitable for bilingual English/French language processing on technical writings (see notes).
-            abbreviations (dict[str: str]): pipeline of abbreviations to replace, as `to_replace: replacement` dictionnary. 
-            Will be processed in order of declaration.
-            replacements: dictionnary used to replace 1:1 `key` with `value` as strings in tokens.
-            stopwords: flat list of language-agnostic stopwords to remove from tokens.
-            lang_stopwords: language-specific stopwords as a dictionnary. Keys have to be ISO 639-1 language code, and values the set of stopwords.
-            backend: `blingfire` or `nltk`, choose which Python library will perform the actual tokenization.
-            `blingfire` uses Microsoft Blingfire default tokenizer (pattern-based), while `nltk` uses Punkt. 
+        Splits a string into normalized word tokens after applying a series
+        of configurable text transformations.
+
+        Args:
+            meta_tokens:
+                Pipeline of regular-expression substitutions used to replace
+                document fragments with meta-tokens.
+
+                Keys must be compiled `re.Pattern` objects and values must be
+                meta-token strings, typically enclosed in underscores.
+
+                Transformations are applied in declaration order. This relies
+                on Python's ordered dictionaries (Python 3.7+).
+
+                If not provided, a default pipeline suitable for bilingual
+                English/French technical documents is used.
+
+            abbreviations:
+                Pipeline of abbreviation replacements as a
+                `{to_replace: replacement}` dictionary.
+
+                Replacements are applied in declaration order.
+
+            replacements:
+                Dictionary of token-level substitutions applied as
+                `{key: value}` string replacements.
+
+            stopwords:
+                Language-agnostic stopwords to remove from the token stream.
+
+            lang_stopwords:
+                Language-specific stopwords.
+
+                Keys must be ISO 639-1 language codes and values must be sets
+                of stopwords associated with each language.
+
+            backend:
+                Tokenization backend to use.
+
+                Supported values are:
+
+                - `"blingfire"`: Microsoft BlingFire tokenizer (pattern-based).
+                - `"nltk"`: NLTK Punkt tokenizer.
         """
         self.backend = backend
 
@@ -1005,26 +1062,53 @@ class Tokenizer():
     def train_ngrams(self, 
                      sentences: list[str], 
                      connector_words: str = "", 
-                     min_count=10,
-                     threshold=0.7,
-                     scoring="npmi"):
-        """Train an n-gram model for bigrams and trigrams, detecting phrases like `New York City`
-        as one single token.
+                     min_count: int = 10,
+                     threshold: float = 0.7,
+                     scoring: str = "npmi"):
+        """
+        Train an n-gram model (bigrams and trigrams).
 
-        Arguments:
-            sentences: training corpus,
-            connector_words: a flat string of space-separated connector words that are allowed
-            to join bigrams and trigrams in the target language, like `by` in `piece by piece`,
-            others: see [gensim.models.phrases.Phrases][] documentation.
+        Detects common phrases such as "New York City" and merges them into
+        single tokens using a statistical phrase model.
+
+        Args:
+            sentences:
+                Training corpus. Must be a list of tokenized sentences.
+
+            connector_words:
+                Space-separated list of connector words allowed inside phrases
+                (e.g. "by" in "piece by piece").
+
+                These words are treated as valid bridges when forming n-grams.
+
+            min_count:
+                Minimum number of occurrences required for a phrase to be
+                considered.
+
+                See `gensim.models.phrases.Phrases` for details.
+
+            threshold:
+                Phrase detection sensitivity threshold.
+
+                See `gensim.models.phrases.Phrases`.
+
+            scoring:
+                Scoring function used for phrase detection.
+
+                See `gensim.models.phrases.Phrases`.
 
         Warning:
-            N-gram training needs to run on single sentences, tokenized in a non-destructive way,
-            meaning without stemming and punctuation removal. See [core.nlp.Tokenizer.normalize_token][] arguments.
+            N-gram training must be performed on *lightly processed* tokenized
+            sentences. Do not apply stemming, stopword removal, or punctuation
+            stripping before training.
+
+            See `Tokenizer.normalize_token()` for required preprocessing options.
 
         Note:
-            - output an `ngrams` log file in the models folder containing the list of all n-grams found.
-            - this can safely be called several time, for example once for each language. n-grams are appended to the existing list.
-
+            - Writes an `ngrams` log file in the models directory containing
+            discovered phrases.
+            - Can be executed multiple times (e.g. per language); results are
+            appended to the existing model.
         """
         print(f"Training n-grams with {len(sentences)} sentences.")
 
@@ -1098,7 +1182,7 @@ class Tokenizer():
 
     def replace_ngrams(self, tokens: list[str]) -> list[str]:
         """Identify n-grams among tokens and collapse them into single tokens.
-        N-grams should have been trained before, with [self.train_ngrams][].
+        N-grams should have been trained before, with [core.nlp.Tokenizer.train_ngrams][].
 
         Returns:
             the collapsed list of strings, or the original list if no n-grams
@@ -1221,22 +1305,56 @@ class Word2Vec(gensim.models.Word2Vec):
                  sample: float = 0.0005, 
                  tokenizer: Tokenizer = None,
                  compute_idf: bool = False,
-                 **kwargs):
-        """Train, re-train or retrieve an existing word2vec word embedding model
-
-        Arguments:
-            documents (list[list[str]]): the pre-tokenized training data. The outermost list is the documents, aka a list of sentences. Each sentence is a list of tokens.
-            name (str): filename of the model to save and retrieve. If the model exists already, we automatically load it. Note that this will override the `vector_size` with the parameter defined in the saved model.
-            vector_size (int): number of dimensions of the word vectors
-            epochs (int): number of iterations of training for the machine learning. Small corpora need 2000 and more epochs. Increases the learning time.
-            window (int): size of the token collocation window to detect
-            min_count (int): remove all words used fewer times than this from the vocabulary
-            sample (float):
-            tokenizer: instance of tokenization.
-            compute_idf: compute and store corpus IDF data for SIF weighting. Disable it
-                to keep saved model artifacts smaller when `use_sif` is not needed.
-            kwargs: passed directly through to `gensim.Word2Vec.__init__()`
+                 **kwargs: dict[str, Any]):
         """
+        Train, re-train, or load a Word2Vec embedding model.
+
+        If a model with the given `name` already exists, it is automatically
+        loaded instead of re-trained. Note that in this case, `vector_size`
+        will be overridden by the saved model configuration.
+
+        Args:
+            documents:
+                Pre-tokenized training corpus.
+
+                Structure:
+                - outer list: documents
+                - inner list: tokenized sentences
+
+            name:
+                Name of the model file used for saving/loading.
+
+            vector_size:
+                Dimensionality of word embeddings.
+
+            epochs:
+                Number of training iterations.
+
+                Higher values improve quality on small corpora but increase
+                training time.
+
+            window:
+                Context window size for word co-occurrence.
+
+            min_count:
+                Minimum frequency threshold for vocabulary filtering.
+
+            sample:
+                Subsampling rate for frequent words.
+
+            tokenizer:
+                Tokenizer instance used for preprocessing (if applicable).
+
+            compute_idf:
+                Whether to compute and store IDF statistics for SIF weighting.
+
+                Disable to reduce model size when SIF is not used.
+
+            **kwargs:
+                Additional parameters forwarded directly to
+                `gensim.models.Word2Vec`.
+        """
+
         self.tokenizer = tokenizer if tokenizer is not None else Tokenizer()
         """Tokenizer used to train the model. We store it to be sure to use the same when using it."""
 
@@ -1437,7 +1555,7 @@ class Word2Vec(gensim.models.Word2Vec):
         Arguments:
             word: the word to convert to a vector.
             embed:
-                - `IN` uses the input embedding matrix [gensim.models.Word2Vec.wv][], useful to vectorize queries and documents for classification training.
+                - `IN` uses the input embedding matrix [gensim.models.word2vec.wv][], useful to vectorize queries and documents for classification training.
                 - `OUT` uses the output embedding matrix [gensim.models.Word2Vec.syn1neg], useful for the dual-space embedding scheme, to train search engines. [^1]
 
         [^1]: A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana https://arxiv.org/pdf/1602.01137.pdf
@@ -1477,11 +1595,19 @@ class Word2Vec(gensim.models.Word2Vec):
         """Calls [core.nlp.Word2Vec.get_wordvec][] over a list of tokens and returns a single vector representing the whole list.
 
         Arguments:
-            tokens: list of text tokens.
-            embed: see [core.nlp.Word2Vec.get_wordvec][]
-            use_sif: Use SIF weighting on each term when embedding a full sentence
-            or document. See [core.nlp.Word2Vec.SIF][].
-            sif_smoothing: The SIF smoothing coefficient.
+            tokens: 
+                list of text tokens.
+
+            embed: 
+                see [core.nlp.Word2Vec.get_wordvec][]
+
+            use_sif: 
+                Use SIF weighting on each term when embedding a full sentence
+                or document. See [core.nlp.Word2Vec.SIF][].
+
+            sif_smoothing: 
+                The SIF smoothing coefficient.
+
         Returns:
             the normalized centroid of word embedding vectors associated with the input tokens 
             (aka the average vector), or the null vector if no word from the list was found in dictionnary.
@@ -1604,19 +1730,47 @@ class Classifier(nltk.classify.SklearnClassifier):
                  word2vec: Word2Vec,
                  validate: bool = True,
                  variant: str = "svm"):
-        """Handle the word2vec and SVM machine-learning
+        """
+        Initialize a Word2Vec + SVM classification pipeline.
 
-        Arguments:
-            training_set (list[Data]): list of Data elements. If the list is empty, it will try to find a pre-trained model matching the `path` name.
-            path : path to save the trained model for reuse, as a Python joblib.
-            name (str): name under which the model will be saved for la ter reuse.
-            word2vec (Word2Vec): the instance of word embedding model.
-            validate (bool): if `True`, split the `feature_list` between a training set (95%) and a testing set (5%) and print in terminal the predictive performance of the model on the testing set. This is useful to choose a classifier.
-            variant (str):
-                - `svm`: use a Support Vector Machine with a radial-basis kernel. This is a well-rounded classifier, robust and stable, that performs well for all kinds of training samples sizes.
-                - `linear svm`: uses a linear Support Vector Machine. It runs faster than the previous and may generalize better for high numbers of features (high dimensionality).
-                - `forest`: Random Forest Classifier, which is a set of decision trees. It runs about 15-20% faster than linear SVM but tends to perform marginally better in some contexts, however it produces very large models (several GB to save on disk, where SVM needs a few dozens of MB).
-            features (int): the number of model features (dimensions) to retain. This sets the number of dimensions for word vectors found by word2vec, which will also be the dimensions in the last training layer.
+        This class wraps a Word2Vec embedding model with a downstream
+        machine-learning classifier (SVM or alternatives).
+
+        Args:
+            training_set:
+                List of `Data` samples used for training.
+
+                If empty, the system will attempt to load a pre-trained model
+                using `name`.
+
+            name:
+                Identifier used to save and reload the trained model.
+
+            word2vec:
+                Word embedding model used to generate feature vectors.
+
+            validate:
+                If True, splits the dataset into training (95%) and testing
+                (5%) subsets and prints evaluation metrics.
+
+                Useful for classifier selection and sanity checking.
+
+            variant:
+                Type of classifier to use:
+
+                - `svm`: RBF-kernel Support Vector Machine (default).
+                Robust and stable across general datasets.
+
+                - `linear svm`: Linear Support Vector Machine.
+                Faster and often better for high-dimensional features.
+
+                - `forest`: Random Forest classifier.
+                Faster than linear SVM in some cases, but produces
+                larger models.
+
+        Note:
+            The previous documentation mentioned `path` and `features`,
+            but these are not part of the current signature and were removed.
         """
         print("init")
 

@@ -236,7 +236,7 @@ def get_page(url, timeout, headers=None) -> HTTPResponse:
 
 
 @utils.exit_after(120)
-def try_url(url, delay: DelayedClass, timeout=30, bypass_robots_txt=False) -> tuple[HTTPResponse | None, dict | None, str]:
+def try_url(url, delay: DelayedClass, timeout: int | float = 30, bypass_robots_txt: bool = False) -> tuple[HTTPResponse | None, dict | None, str]:
     """Probe the URL head, without getting the content.
 
     This will:

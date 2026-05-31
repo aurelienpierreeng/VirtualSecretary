@@ -55,3 +55,5 @@ beautifulsoup4
 html5lib
 jsonschema
 markdown
+
+PySide6

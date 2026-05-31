@@ -186,29 +186,51 @@ def get_pdf_content(url: str,
                     max_size: int = 20,
                     max_pages: int = 20,
                     custom_header: dict = {},
-                    **kwargs) -> list[web_page]:
+                    **kwargs: dict) -> list[web_page]:
     """Retrieve a PDF document through the network with HTTP GET or from the local filesystem, and parse its text content, using OCR if needed. This needs a functionnal network connection if `file_path` is not provided.
 
     Arguments:
-        url: the online address of the document, or the downloading page if the doc is not directly accessible from a GET request (for some old-schools website where downloads are inited from a POST request to some PHP form handler, or publications behind a paywall).
-        lang: the ISO code of the language.
-        file_path: local path to the PDF file if the URL can't be directly fetched by GET request. The content will be extracted from the local file but the original/remote URL will still be referenced as the source.
-        process_outline: set to `True` to split the document according to its outline (table of content), so each section will be in fact a document in itself. PDF pages are processed in full, so sections are at least equal to a page length and there will be some overlapping.
-        category: arbitrary category or label set by user
+        url: 
+            the online address of the document, or the downloading page if the doc 
+            is not directly accessible from a GET request (for some old-schools website where downloads are inited from a 
+            POST request to some PHP form handler, or publications behind a paywall).
+
+        lang: 
+            the ISO code of the language.
+
+        file_path: 
+            local path to the PDF file if the URL can't be directly fetched by GET request. 
+            The content will be extracted from the local file but the original/remote URL 
+            will still be referenced as the source.
+
+        process_outline: 
+            set to `True` to split the document according to its outline (table of content), 
+            so each section will be in fact a document in itself. PDF pages are processed in full, 
+            so sections are at least equal to a page length and there will be some overlapping.
+
+        category: 
+            arbitrary category or label set by user
+
         ocr:
             - `0` disables any attempt at using OCR,
             - `1` enables OCR through Tesseract if no text was found in the PDF document
             - `2` forces OCR through Tesseract even when text was found in the PDF document.
-        See [core.crawler.ocr_pdf][] for info regarding the Tesseract environment. You will need to manually disable
-        max_size: when attempting OCR on PDF files, files larger than this value (in MiB) will be ignored.
-        max_pages: when attempting OCR on PDF files, files having more pages than this value will be ignored.
-        custom_header: option HTTP headers to form the request that will download the PDF
+            See [core.pdf.ocr_pdf][] for info regarding the Tesseract environment. You will need to manually disable
+
+        max_size: 
+            when attempting OCR on PDF files, files larger than this value (in MiB) will be ignored.
+
+        max_pages: 
+            when attempting OCR on PDF files, files having more pages than this value will be ignored.
+
+        custom_header: 
+            option HTTP headers to form the request that will download the PDF
 
     Other parameters:
-        **kwargs: directly passed-through to [core.crawler.ocr_pdf][]. See this function documentation for more info.
+        **kwargs: directly passed-through to [core.pdf.ocr_pdf][]. See this function documentation for more info.
 
     Returns:
-        a list of [core.crawler.web_page][] objects holding the text content and the PDF metadata
+        a list of [core.types.web_page][] objects holding the text content and the PDF metadata
     """
     try:
         # Open the document from local or remote storage
@@ -305,7 +327,8 @@ def get_pdf_content(url: str,
                                     h1={},
                                     h2={},
                                     lang=lang,
-                                    category=category)
+                                    category=category,
+                                    crawled=datetime.now())
                 print("found 1 PDF")
                 doc.close()
                 return [result]
@@ -331,7 +354,8 @@ def get_pdf_content(url: str,
                                         h1={},
                                         h2={},
                                         lang=lang,
-                                        category=category)
+                                        category=category,
+                                        crawled=datetime.now())
                     results.append(result)
 
             print("found", i, "PDF chapters")
@@ -351,7 +375,8 @@ def get_pdf_content(url: str,
                                     h1={},
                                     h2={},
                                     lang=lang,
-                                    category=category)
+                                    category=category,
+                                    crawled=datetime.now())
                 print("found 1 PDF")
                 doc.close()
                 return [result]
@@ -368,7 +393,8 @@ def get_pdf_content(url: str,
                                 h1={},
                                 h2={},
                                 lang=lang,
-                                category=category)
+                                category=category,
+                                crawled=datetime.now())
             print("found 1 PDF")
             doc.close()
             return [result]

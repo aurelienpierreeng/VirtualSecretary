@@ -1,3 +1,2 @@
 # Secretary
 
-::: core.secretary

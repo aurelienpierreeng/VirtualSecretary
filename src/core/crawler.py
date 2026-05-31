@@ -1,4 +1,4 @@
-"""Module containing utilities to crawl websites for HTML, XML and PDF pages for their text content. PDF can be read from their text content if any, or through optical characters recognition for scans. Websites can be crawled from a `sitemap.xml` file or by following internal links recursively from and index page. Each page is aggregated on a list of [core.crawler.web_page][] objects, meant to be used as input to train natural language AI models and to index and rank for search engines.
+"""Module containing utilities to crawl websites for HTML, XML and PDF pages for their text content. PDF can be read from their text content if any, or through optical characters recognition for scans. Websites can be crawled from a `sitemap.xml` file or by following internal links recursively from and index page. Each page is aggregated on a list of [core.types.web_page][] objects, meant to be used as input to train natural language AI models and to index and rank for search engines.
 
 © 2023-2024 - Aurélien Pierre
 """
@@ -173,7 +173,7 @@ def get_page_content(url: str | None,
 
     Returns:
         a tuple with:
-            1. [bs4.ParsedHTML][] object initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached. The list of URLs found in page before removing meaningless markup is stored as a list of strings in the `object.links` member. `object.h1` and `object.h2` contain a set of headers 1 and 2 found in the page before removing any markup. `object.date` contains the best-guess for the date.
+            1. [core.parser.ParsedHTML][] object initialized with the page DOM for further text mining. `None` if the HTML response was empty or the URL could not be reached. The list of URLs found in page before removing meaningless markup is stored as a list of strings in the `object.links` member. `object.h1` and `object.h2` contain a set of headers 1 and 2 found in the page before removing any markup. `object.date` contains the best-guess for the date.
             2. the final URL of the retrieved page, which might be different from the input URL if HTTP redirections happened,
     """
 
@@ -202,20 +202,20 @@ def parse_page(page: ParsedHTML,
 
     This chains in a single call:
 
-    - [core.crawler.get_page_markup][]
-    - [core.crawler.get_date][]
-    - [core.crawler.get_excerpt][]
+    - [core.parser.ParsedHTML.get_page_markup][]
+    - [core.parser.ParsedHTML.get_date][]
+    - [core.parser.ParsedHTML.get_excerpt][]
 
     Arguments:
-        page: a [bs4.ParsedHTML][] handler with pre-filtered DOM,
+        page: a [core.parser.ParsedHTML][] handler with pre-filtered DOM,
         url: the valid URL accessible by HTTP GET request of the page
         lang: the provided or guessed language of the page,
-        markup: the markup to search for. See [core.crawler.get_page_markup][] for details.
-        date: if the page was retrieved from a sitemap, usually the date is available in ISO format (`yyyy-mm-ddTHH:MM:SS`) and can be passed directly here. Otherwise, several attempts will be made to extract it from the page content (see [core.crawler.get_date][]).
+        markup: the markup to search for. See [core.parser.ParsedHTML.get_page_markup][] for details.
+        date: if the page was retrieved from a sitemap, usually the date is available in ISO format (`yyyy-mm-ddTHH:MM:SS`) and can be passed directly here. Otherwise, several attempts will be made to extract it from the page content (see [core.parser.ParsedHTML.get_date][]).
         category: arbitrary category or label defined by user
 
     Returns:
-        The content of the page, including metadata, in a [core.crawler.web_page][] singleton.
+        The content of the page, including metadata, in a [core.types.web_page][] singleton.
     """
     if ".wikipedia.org" in url and markup == "body":
         # Wikipedia is massive enough to appear in at least one external link.
@@ -236,7 +236,8 @@ def parse_page(page: ParsedHTML,
                           h1=page.h1,
                           h2=page.h2,
                           lang=page.lang or lang,
-                          category=category)
+                          category=category,
+                          crawled=datetime.datetime.now())
         print(result)
         return [result]
     else:
@@ -317,9 +318,10 @@ class Crawler(DelayedClass):
         allocations and releases in background.
 
         Parameters:
-            delay: time in seconds to wait before 2 HTTP requests.
-            The right delay will prevent the crawler from being throttled by anti-DoS rules while making it as fast as possible.
-            Set to `0.0` if you are crawling your own servers and they have no DoS protection.
+            delay: 
+                time in seconds to wait before 2 HTTP requests.
+                The right delay will prevent the crawler from being throttled by anti-DoS rules while making it as fast as possible.
+                Set to `0.0` if you are crawling your own servers and they have no DoS protection.
             no_follow: list of URL parts to completely ignore, that is not index them but not even crawl them for internal links.
             no_follow: list of URLs parts that will discard pages from crawling
 
@@ -339,7 +341,7 @@ class Crawler(DelayedClass):
         """List of { URL + category } hashes already visited.
         Websites crawled from sitemap and also following internal links recursively will tag
         recursively-crawled pages with an `external` category, which will later be considered
-        by [nlp.deduplicator.Deduplicator][] with a lower priority than any other category.
+        by [core.deduplicator.Deduplicator][] with a lower priority than any other category.
         Sitemap crawling may restrict content to selected HTML tags and produce better-quality data,
         with less noise. So we need to keep crawling everything from sitemap, whether or not it was
         already crawled from internal links earlier, and dedup will sort it out."""
@@ -438,12 +440,17 @@ class Crawler(DelayedClass):
         """Update target link with possible HTTP redirections
 
         Arguments:
-            old_link: original URL followed, found in HTML
-            new_link: destination URL retrieved, possibly after HTTP redirections.
-            found: set to True if the server reported any HTTP response code other than 404,
-            meaning we know the page exists, whether or not we are authorized to access it.
-            error: set to True if the page exists at this URL but we couldn't retrieve it,
-            because of encoding errors, connection errors or unauthorized.
+            old_link: 
+                original URL followed, found in HTML
+
+            new_link: 
+                destination URL retrieved, possibly after HTTP redirections.
+
+            category:
+                tagged category of the page
+
+            status_code:
+                HTML returned status code
         """
 
         self.crawled_URL.append(hash_with_category(old_link, category))
@@ -476,17 +483,48 @@ class Crawler(DelayedClass):
         """Recursively crawl all pages of a website from internal links found starting from the `child` page. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain.
 
         Arguments:
-            website: root of the website, including `https://` or `http://` without trailing slash.
-            default_lang: provided or guessed main language of the website content. Not used internally.
-            child: page of the website to use as index to start crawling for internal links.
-            langs: ISO-something 2-letters code of the languages for which we attempt to fetch the translation if available, looking for the HTML `<link rel="alternate" hreflang="...">` tag.
-            contains_str: a string or a list of strings that should be contained in a page URL for the page to be indexed. On a forum, you could for example restrict pages to URLs containing `"discussion"` to get only the threads and avoid user profiles or archive pages.
-            markup: see [core.crawler.get_page_markup][]
-            max_recursion_level: this method will call itself recursively on each internal link found in the current page, starting from the `website/child` page. The `max_recursion_level` defines how many times it calls itself until it is stopped, if it is stopped. When set to `-1`, it stops when all the internal links have been crawled.
-            category: arbitrary category or label set by user.
-            restrict_section: set to `True` to limit crawling to the website section defined by `://website/child/*`. This is useful when indexing parts of very large websites when you are only interested in a small subset.
-            mine_pdf: set to `True` to aggressively try to crawl PDF linked on external HTML pages. This may increase RAM consumption dramatically.
-            _recursion_level: __DON'T USE IT__. Everytime this method calls itself recursively, it increments this variable internally, and recursion stops when the level is equal to the `max_recurse_level`.
+            website: 
+                root of the website, including `https://` or `http://` without trailing slash.
+
+            default_lang: 
+                provided or guessed main language of the website content. Not used internally.
+
+            child: 
+                page of the website to use as index to start crawling for internal links.
+
+            langs: 
+                ISO-something 2-letters code of the languages for which we attempt to fetch the translation 
+                if available, looking for the HTML `<link rel="alternate" hreflang="...">` tag.
+            
+            contains_str: 
+                a string or a list of strings that should be contained in a page URL for the page to be indexed.
+                On a forum, you could for example restrict pages to URLs containing `"discussion"` to get only
+                the threads and avoid user profiles or archive pages.
+            
+            markup: 
+                see [core.parser.ParsedHTML.get_page_markup][]
+
+            max_recurse_level: 
+                this method will call itself recursively on each internal link found in the current page, 
+                starting from the `website/child` page. The `max_recursion_level` defines how many times 
+                it calls itself until it is stopped, if it is stopped. When set to `-1`, it stops when all 
+                the internal links have been crawled.
+            
+            category: 
+                arbitrary category or label set by user for classification. Will be automatically set to `external`
+                for URLs followed outside of the main domain.
+
+            restrict_section: 
+                set to `True` to limit crawling to the website section defined by `://website/child/*`. 
+                This is useful when indexing parts of very large websites when you are only interested in a small subset.
+            
+            mine_pdf: 
+                set to `True` to aggressively try to crawl PDF linked on external HTML pages. 
+                This may increase RAM consumption dramatically.
+            
+            _recursion_level: 
+                __DON'T USE IT__. Everytime this method calls itself recursively, 
+                it increments this variable internally, and recursion stops when the level is equal to the `max_recurse_level`.
 
         Returns:
             a list of all valid pages found. Invalid pages (wrong markup, empty HTML response, 404 errors) will be silently ignored.
@@ -653,16 +691,23 @@ class Crawler(DelayedClass):
                                  internal_links: str = "any",
                                  mine_pdf: bool = False,
                                  _recursion_level: int = 0) -> list[web_page]:
-        """Recursively crawl all pages of a website from links found in a sitemap. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain. Sitemaps of sitemaps are followed recursively.
+        """Recursively crawl all pages of a website from links found in a sitemap. 
+        This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from 
+        the current domain or from external domains but referenced on HTML pages of the current domain. 
+        Sitemaps of sitemaps are followed recursively.
 
         Arguments:
             website: root of the website, including `https://` or `http://` without trailing slash.
             default_lang: provided or guessed main language of the website content. Not used internally.
             sitemap: relative path of the XML sitemap.
-            langs: ISO-something 2-letters code of the languages for which we attempt to fetch the translation if available, looking for the HTML `<link rel="alternate" hreflang="...">` tag.
-            markup: see [core.crawler.get_page_markup][]
+            langs: 
+                ISO-something 2-letters code of the languages for which we attempt to fetch the translation if available, 
+                looking for the HTML `<link rel="alternate" hreflang="...">` tag.
+            markup: see [core.parser.ParsedHTML.get_page_markup][]
             category: arbitrary category or label
-            contains_str: limit recursive crawling from sitemap-defined pages to pages containing this string or list of strings. Will get passed as-is to [get_website_from_crawling][].
+            contains_str: 
+                limit recursive crawling from sitemap-defined pages to pages containing this string or list of strings. 
+                Will get passed as-is to [core.crawler.Crawler.get_website_from_crawling][].
             internal_links: defines what to do with links found inside the HTML page body/content.
                 - `any`: follow and include all links found in page, no matter what domain they point to,
                 - `internal`: follow and include links found in page only if they point to the same domain as the current page,

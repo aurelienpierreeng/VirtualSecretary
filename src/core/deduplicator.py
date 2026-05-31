@@ -1,4 +1,4 @@
-"""Find and remove duplicates and near-duplicates in a list of [core.types.web_pages][]
+"""Find and remove duplicates and near-duplicates in a list of [core.types.web_page][]
 
 © 2024 - Aurélien Pierre.
 """
@@ -767,11 +767,16 @@ class Deduplicator():
         """Find near-duplicate by computing the Levenshtein distance between pages contents.
 
         Params:
-            posts: dictionnary mapping an unused key to a liste of `crawler.web_page`
-            threshold: the minimum distance ratio of Lenvenshtein metric for 2 contents to be assumed duplicates
-            distance: for efficiency, the list of web_page is first sorted alphabetically by URL, assuming duplicates
-            will share at least the beginning of their URL. From there, duplicates are searched ahead in the list up
-            to this distance.
+            posts: 
+                dictionnary mapping an unused key to a liste of [core.types.web_page][]
+
+            threshold: 
+                the minimum distance ratio of Lenvenshtein metric for 2 contents to be assumed duplicates
+
+            distance: 
+                for efficiency, the list of web_page is first sorted alphabetically by URL, assuming duplicates
+                will share at least the beginning of their URL. From there, duplicates are searched ahead in the list up
+                to this distance.
 
         """
 
@@ -845,12 +850,12 @@ class Deduplicator():
             avoid keeping two copies in memory simultaneously.
 
         Args:
-            posts: Flat list of :class:`~core.types.web_page` dicts.  The list
+            posts: Flat list of :class:`core.types.web_page` dicts.  The list
                    is modified in-place; callers should not rely on its contents
                    after this call returns.
 
         Returns:
-            Deduplicated list of sanitised :class:`~core.types.web_page` dicts,
+            Deduplicated list of sanitised :class:`core.types.web_page` dicts,
             ready for downstream use (``to_db=False``).  Also writes a
             ``domains`` frequency file via :func:`~core.utils.get_models_folder`.
         """
@@ -905,14 +910,14 @@ class Deduplicator():
         ``None``.
 
         Args:
-            posts:     Either a flat list of :class:`~core.types.web_page` dicts
+            posts:     Either a flat list of :class:`core.types.web_page` dicts
                        **or** an open :class:`sqlite3.Connection` whose ``pages``
                        table should be deduplicated in-place.
             chunksize: Row-fetch batch size forwarded to :meth:`run_on_db` when
                        ``posts`` is a database connection.  Ignored for lists.
 
         Returns:
-            Deduplicated list of :class:`~core.types.web_page` when given a list;
+            Deduplicated list of :class:`core.types.web_page` when given a list;
             ``None`` when given a database connection (mutations are applied
             directly to the DB).
 
@@ -952,7 +957,7 @@ class Deduplicator():
                 for those pages to be considered near-duplicates and be factorized. If set to
                 1.0, the near-duplicates detection is bypassed which results in a huge speed up.
             distance: the near-duplicates search is performed on the nearest elements after the
-                [core.crawler.web_page][] list has been ordered alphabetically by URL, for performance, assuming near-duplicates
+                [core.types.web_page][] list has been ordered alphabetically by URL, for performance, assuming near-duplicates
                 will most likely be found on the same domain and at a resembling path.
                 The distance parameters defines how many elements ahead we will look into.
             discard_params: on modern CMS that enable "pretty URLs" (URL rewriting), pages will be indexed

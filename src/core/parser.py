@@ -105,7 +105,6 @@ class ParsedHTML:
         """Extract the text content of an HTML page DOM by targeting only the specific tags.
 
         Arguments:
-            page: a [bs4.BeautifulSoup][] handler with pre-filtered DOM,
             markup: any kind of tags supported by [bs4.BeautifulSoup.find_all][]:
 
                 - (str): the single tag to select. For example, `"body"` will select `<body>...</body>`.
@@ -156,12 +155,8 @@ class ParsedHTML:
         """Find HTML tags possibly containing the shortened version of the page content.
 
         Looks for HTML tags:
-
-        - `<meta name="description" content="...">`
-        - `<meta property="og:description" content="...">`
-
-        Arguments:
-            page: a [bs4.BeautifulSoup][] handler with pre-filtered DOM,
+            - `<meta name="description" content="...">`
+            - `<meta property="og:description" content="...">`
 
         Returns:
             The content of the meta tag if any.
@@ -194,9 +189,6 @@ class ParsedHTML:
         - `<relative-time datetime="...">`
         - `<div class="dateline">...</div>`
         - `<script type="application/ld+json">{"dateModified":"...", }</script>` (Wikipedia)
-
-        Arguments:
-            page: a [bs4.BeautifulSoup][] handler with pre-filtered DOM,
 
         Returns:
             The content of the meta tag if any.
