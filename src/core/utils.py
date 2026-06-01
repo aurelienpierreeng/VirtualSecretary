@@ -806,4 +806,4 @@ def get_script_ram():
 
 def get_past_n_months(n: int) -> datetime:
     """Get the date of now minus n months"""
-    return datetime.now(UTC) - relativedelta(month=n)
+    return datetime.now(UTC) - relativedelta(months=n)
