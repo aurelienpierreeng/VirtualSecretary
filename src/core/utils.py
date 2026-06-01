@@ -5,7 +5,9 @@ Logging and filter finding utilities.
 © 2022-2023 - Aurélien Pierre
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, UTC
+from dateutil.relativedelta import relativedelta
+
 import os
 import io
 import errno
@@ -800,3 +802,8 @@ def get_available_ram():
 
 def get_script_ram():
     return psutil.Process(os.getpid()).memory_info().vms
+
+
+def get_past_n_months(n: int) -> datetime:
+    """Get the date of now minus n months"""
+    return datetime.now(UTC) - relativedelta(month=n)
