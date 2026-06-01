@@ -60,7 +60,7 @@ class DelayedClass(ABC):
         if domain in self.domain_thresholds:
             threshold = self.domain_thresholds[domain]
 
-        if time_elapsed < threshold:
+        if time_elapsed < min(threshold, 30):
             time.sleep(threshold - time_elapsed)
 
         self.last_requests[domain] = datetime.now().timestamp()
