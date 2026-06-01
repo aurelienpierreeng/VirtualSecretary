@@ -75,6 +75,213 @@ for folder in imap.folders:
     imap.run_filters(filter, action)
 ```
 
+### Training an email folder classifier
+
+You can use your manually-sorted IMAP folders as labels for an AI classifier. The workflow is:
+
+1. fetch emails from each IMAP folder,
+2. convert each email into a `web_page` item, using the IMAP folder as `category`,
+3. train a [core.nlp.Word2Vec][] language model on the email text,
+4. train a [core.nlp.Classifier][] to predict the folder,
+5. load the classifier from an IMAP filter and move new inbox emails only when confidence is high enough.
+
+#### Step 1: collect emails as training data
+
+Create a learning filter, for example `LEARN-imap-folder-dataset.py`, in your email account configuration folder:
+
+```python
+from core import types, utils
+
+protocols = globals()
+imap = protocols["imap"]
+
+DATASET_NAME = "email-folders"
+
+# Keep only folders whose current contents are good examples of the label.
+# Remove any folder from this set if you want to train on it too.
+EXCLUDED_FOLDERS = {
+    imap.inbox,
+    imap.sent,
+    imap.drafts,
+    imap.trash,
+    imap.junk,
+}
+
+
+def email_text(email):
+    body = email.get_body("plain") or email.get_body() or ""
+    parts = [
+        email["Subject"],
+        email["From"],
+        body,
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
+def email_to_web_page(email, folder):
+    content = email_text(email)
+
+    return types.sanitize_web_page(types.web_page(
+        title=email["Subject"] or "(no subject)",
+        url=f"imap://{email.server.user}/{folder}/{email.hash}",
+        domain=email.server.server,
+        date=email.date.isoformat(),
+        datetime=email.date,
+        content=content,
+        excerpt=content[:800],
+        category=folder,
+        lang=None,
+    ))
+
+
+pages = []
+
+for folder in imap.folders:
+    if folder in EXCLUDED_FOLDERS or folder == "[Gmail]":
+        continue
+
+    # get_objects() fetches the n most recent emails. Use a large number
+    # to collect the whole folder, or a smaller cap while testing.
+    imap.get_objects(folder, n_messages=10**9)
+
+    for email in imap.objects:
+        pages.append(email_to_web_page(email, folder))
+
+utils.save_data(pages, DATASET_NAME)
+print(f"Saved {len(pages)} labelled emails to {DATASET_NAME}")
+```
+
+Run learning filters with:
+
+```bash
+python src/main.py config learn
+```
+
+This creates `data/email-folders.pickle.tar.gz`.
+
+!!! tip
+
+    The folder labels are only as good as your mailbox organization. Start with folders you already trust, and exclude catch-all folders, archives, spam, sent mail, and folders that mix unrelated topics.
+
+#### Step 2: train the language model and classifier
+
+Create a user script, for example `src/user_scripts/train-email-folder-classifier.py`:
+
+```python
+import os
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.dirname(SCRIPT_DIR))
+
+from core import nlp, utils
+
+DATASET_NAME = "email-folders"
+WORD2VEC_NAME = "email-folder-word2vec"
+CLASSIFIER_NAME = "email-folder-classifier"
+
+pages = utils.open_data(DATASET_NAME, scheme="pickle")
+
+tokenizer = nlp.Tokenizer()
+
+documents = [
+    tokenizer.tokenize_document_per_sentence(page["content"])
+    for page in pages
+    if page["content"] and page["category"]
+]
+
+w2v = nlp.Word2Vec(
+    documents,
+    WORD2VEC_NAME,
+    tokenizer=tokenizer,
+    vector_size=300,
+    epochs=200,
+    window=8,
+    min_count=3,
+    sample=0.0005,
+)
+
+training_set = [
+    nlp.Data(page["content"], page["category"])
+    for page in pages
+    if page["content"] and page["category"]
+]
+
+classifier = nlp.Classifier(
+    training_set,
+    CLASSIFIER_NAME,
+    w2v,
+    validate=True,
+    variant="svm",
+)
+
+for text in [
+    "Invoice for your order",
+    "Meeting notes and next actions",
+    "Your newsletter subscription",
+]:
+    print(text, classifier.prob_classify(text))
+```
+
+Run it from the project root:
+
+```bash
+python src/user_scripts/train-email-folder-classifier.py
+```
+
+When the validation accuracy looks good, run the same script with `validate=False` in the `nlp.Classifier(...)` call to train the final production model on all available emails.
+
+#### Step 3: sort incoming emails from classifier predictions
+
+Create a normal processing filter, for example `10-imap-ai-folder-sort.py`:
+
+```python
+from core import nlp
+
+protocols = globals()
+imap = protocols["imap"]
+
+CLASSIFIER_NAME = "email-folder-classifier"
+CONFIDENCE_THRESHOLD = 0.75
+
+classifier = nlp.Classifier.load(CLASSIFIER_NAME)
+
+
+def email_text(email):
+    body = email.get_body("plain") or email.get_body() or ""
+    parts = [
+        email["Subject"],
+        email["From"],
+        body,
+    ]
+    return "\n\n".join(part for part in parts if part)
+
+
+def filter(email):
+    folder, confidence = classifier.prob_classify(email_text(email))
+    email.predicted_folder = folder
+    email.prediction_confidence = confidence
+
+    return (
+        confidence >= CONFIDENCE_THRESHOLD
+        and folder
+        and folder != email.server.mailbox
+    )
+
+
+def action(email):
+    email.move(email.predicted_folder)
+
+
+imap.get_objects(imap.inbox)
+
+# runs=-1 lets the classifier reconsider low-confidence messages on future
+# runs after you retrain the model. Confident messages leave INBOX anyway.
+imap.run_filters(filter, action, runs=-1)
+```
+
+The confidence threshold is deliberately conservative. Start around `0.75` or `0.80`, inspect what was moved, then lower it only if the classifier is consistently right.
+
 
 ### Filtering fields
 
