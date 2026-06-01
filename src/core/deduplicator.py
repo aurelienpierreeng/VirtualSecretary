@@ -24,6 +24,34 @@ from . import database
 from .types import web_page, sanitize_web_page
 from .utils import guess_date, get_models_folder, timeit
 
+def _normalise_date(d) -> str:
+    """Normalise any date value to a comparable ISO-8601 string.
+
+    The list path stores ``datetime`` as Python :class:`datetime.datetime`
+    objects set by :func:`core.utils.guess_date`; the DB path reads them back
+    from SQLite as plain TEXT.  By converting both to ISO strings before any
+    comparison, :func:`_elect_group` works uniformly without caring which path
+    called it.
+
+    ``None``, empty strings, and other falsy values map to ``""`` which sorts
+    before any real ISO date, treating missing dates as "oldest possible".
+    """
+    if not d:
+        return ""
+    if isinstance(d, str):
+        return d
+    return d.isoformat()   # datetime / date → "YYYY-MM-DDTHH:MM:SS±HH:MM"
+
+
+from typing import NamedTuple
+
+class _UrlResult(NamedTuple):
+    """Return value of :meth:`Deduplicator._canonicalize_url`."""
+    canonical_url: str
+    domain:        str
+    wayback:       "str | None"   # original Wayback/archive URL, or None
+
+
 class Deduplicator():
     urls_to_ignore: list[str] = [
         "/tag/",
@@ -57,24 +85,64 @@ class Deduplicator():
         return False
 
     @classmethod
-    def prepare_posts_parallel(cls, elem, discard_params, urls_to_ignore, fix_urls):
-        if cls.discard_post(elem["url"], urls_to_ignore):
-            return None
-        
-        input_url = elem["url"].rstrip("/")
+    def _canonicalize_url(
+        cls,
+        original_url: str,
+        discard_params: bool,
+        urls_to_ignore: list,
+        fix_urls: bool,
+    ) -> "_UrlResult | None":
+        """Canonicalize a single URL and extract its domain.
 
-        # Check if this is a Web archive URL
+        This is the authoritative URL-processing core, shared by both the list
+        path (:meth:`prepare_posts_parallel`) and the DB path
+        (:meth:`_fill_prepared`).  It is the **only** place where URL
+        normalization rules live; changing the rules here affects both paths.
+
+        Processing steps (in order):
+
+        1. Pre-filter: discard if the original URL matches :attr:`urls_to_ignore`.
+        2. Wayback / Internet Archive unwrapping (``web.archive.org`` prefix).
+        3. URL structure parsing via :func:`patterns.split_url`.
+        4. ``http`` → ``https`` upgrade probe (when ``fix_urls=True`` and the URL
+           is not already from a Wayback snapshot).
+        5. Wikipedia mobile redirect (``*.m.wikipedia.org`` → ``*.wikipedia.org``).
+        6. ``www.`` stripping probe (when ``fix_urls=True``).
+        7. Canonical URL assembly (protocol + domain + path), retaining only
+           ``?lang=`` / ``?v=`` params and ``#page=N`` anchors.
+        8. Post-filter: discard if the **canonical** URL matches
+           :attr:`urls_to_ignore` (catches patterns revealed by unwrapping).
+
+        Args:
+            original_url:   Raw URL as stored by the crawler.
+            discard_params: When ``True``, strip all query parameters except
+                            ``?lang=`` and ``?v=`` (YouTube / translated pages).
+            urls_to_ignore: Substrings that mark a URL as discardable.
+            fix_urls:       Probe for ``https``/non-``www.`` variants via
+                            ``HEAD`` requests (I/O-bound; use threads).
+
+        Returns:
+            A :class:`_UrlResult` with ``canonical_url``, ``domain``, and
+            ``wayback`` (the original archive wrapper URL, or ``None``); or
+            ``None`` if the URL must be discarded.
+        """
+        if cls.discard_post(original_url, urls_to_ignore):
+            return None
+
+        input_url = original_url.rstrip("/")
+
+        # Wayback / Internet Archive unwrapping
+        wayback = None
         canonical = patterns.wayback_extract_url(input_url)
         if canonical:
-            elem["wayback"] = input_url
+            wayback   = input_url   # remember the archive wrapper
             input_url = canonical
-        
-        # Parse the actual URL
-        url = patterns.split_url(input_url)
-        if not url:
+
+        url_parts = patterns.split_url(input_url)
+        if not url_parts:
             return None
-        
-        protocol, domain, page, params, anchor = url
+
+        protocol, domain, page, params, anchor = url_parts
 
         # See if an https variant of the http page is available.
         # This avoids http/https duplicates.
@@ -94,45 +162,63 @@ class Deduplicator():
         # See if a non-www. variant of the domain is available
         # This avoids www.domain.ext/domain.ext duplicates
         if fix_urls and domain.startswith("www."):
-            test_url = protocol + domain.lstrip("www.") + page + params + anchor
+            test_url = protocol + "://" + domain.lstrip("www.") + page + params + anchor
             try:
                 response = requests.head(test_url, timeout=2, allow_redirects=True, impersonate="chrome120")
                 if response.status_code == 200:
                     # Found a valid page -> remove www.
                     domain = domain.lstrip("www.")
-            except:
+            except Exception:
                 pass # timeout
 
-        elem["domain"] = domain
-
-        if "/#/" in elem["url"]:
-            # Matrix chat links use # as a "page" and make anchor detection fail big time
-            new_url = elem["url"]
+        # Canonical URL assembly.
+        # Matrix chat uses /#/ as a virtual path; preserve the original form.
+        if "/#/" in original_url:
+            new_url = original_url
         else:
             new_url = protocol + "://" + domain + page
 
-        if params and (params.startswith("?lang=") or params.startswith("?v=") \
-            or not discard_params):
-            # Non SEO-friendly way of translating pages and Youtube videos
-            # Need to keep it
-            new_url += params
+        if params and (params.startswith("?lang=") or params.startswith("?v=") or not discard_params):
+            new_url += params   # translation params and YouTube video IDs must be kept
 
         if anchor and anchor.startswith("#page="):
-            # Long PDF are indexed by page. Keep it.
-            new_url += anchor
+            new_url += anchor   # PDF page anchors are semantically significant
 
-        # Replace URL by canonical stuff
-        elem["url"] = new_url
+        # Post-canonicalization discard check (e.g. /tag/ revealed by Wayback unwrap)
+        if cls.discard_post(new_url, urls_to_ignore):
+            return None
 
-        # elem["parsed"] will need to have been prepared earlier
-        # with a text normalization implemented by user
+        return _UrlResult(canonical_url=new_url, domain=domain, wayback=wayback)
 
-        if "length" not in elem or elem["length"] is None or elem["length"] == 0:
+
+    @classmethod
+    def prepare_posts_parallel(cls, elem, discard_params, urls_to_ignore, fix_urls):
+        """Canonicalize a :class:`~core.types.web_page` dict for the list path.
+
+        Delegates URL normalization to :meth:`_canonicalize_url` and adds
+        list-path-specific fallbacks for ``length`` and ``datetime`` (which are
+        guaranteed to be pre-computed on the DB path by ``batch_parse_web_page``
+        but may be absent on hand-assembled lists).
+
+        Returns the mutated *elem* dict, or ``None`` if the URL must be
+        discarded.
+        """
+        result = cls._canonicalize_url(elem["url"], discard_params, urls_to_ignore, fix_urls)
+        if result is None:
+            return None
+
+        elem["url"]    = result.canonical_url
+        elem["domain"] = result.domain
+        if result.wayback is not None:
+            elem["wayback"] = result.wayback
+
+        # List-path fallbacks — not needed on the DB path because
+        # batch_parse_web_page already populates these columns.
+        if not elem.get("length") and elem.get("parsed"):
             elem["length"] = len(elem["parsed"])
 
-        # Get datetime for age comparison
-        if "datetime" not in elem or elem["datetime"] is None:
-            elem["datetime"] = guess_date(elem["date"])
+        if not elem.get("datetime"):
+            elem["datetime"] = guess_date(elem.get("date"))
 
         return elem
     
@@ -206,23 +292,40 @@ class Deduplicator():
         return [self.get_unique_urls_parallel(item) for item in cleaned_set.values()]
 
 
-    # ── Election priority (used by both URL and content SQL window functions) ──────────────
+    # ── Election priority constants ───────────────────────────────────────────────────────
     #
-    # The ordering mirrors the voting logic in `get_unique_urls_parallel`:
-    #   1. Non-external category beats external  (internal crawl data has less noise)
-    #   2. Newer datetime beats older             (primary quality signal)
-    #   3. Longer content beats shorter           (secondary; overridden by age)
-    #   4. Shorter canonical URL beats longer     (anchors / tracking params are noise)
-    #   5. Lower source_rowid                     (deterministic tiebreaker)
+    # Two separate ORDER BY clauses because URL conflicts and content conflicts have
+    # different tiebreakers (length vs. URL length) as the third criterion.
     #
-    # NULLS LAST on datetime: rows without a date are treated as oldest.
+    # Common prefix for both:
+    #   1. Non-external category  — internal crawl data has less noise
+    #   2. Newer content datetime — primary quality signal (pre-computed by batch_parse_web_page)
+    #   3. Newer crawled datetime — secondary freshness signal (set by the crawler)
+    #
+    # Then they diverge:
+    #   URL  conflict tiebreaker  → longer content   (more information)
+    #   Content conflict tiebreaker → shorter URL    (cleaner / more canonical address)
+    #
+    # Final tiebreaker for both: lower source_rowid (deterministic, reproducible).
+    #
+    # NULLS LAST: rows lacking a date sort after rows that have one, so a dated
+    # row always beats an undated one at the same content/length level.
     # SQLite supports NULLS LAST since 3.30.0 (2019-10-04).
-    _ELECTION_ORDER = """
-        CASE WHEN category = 'external' THEN 1 ELSE 0 END ASC,
-        datetime                                            DESC NULLS LAST,
-        length                                              DESC,
-        LENGTH(canonical_url)                               ASC,
-        source_rowid                                        ASC
+
+    _ELECTION_ORDER_URL = """
+        CASE WHEN category = 'external' THEN 1 ELSE 0 END  ASC,
+        datetime                                             DESC NULLS LAST,
+        crawled                                              DESC NULLS LAST,
+        length                                               DESC NULLS LAST,
+        source_rowid                                         ASC
+    """
+
+    _ELECTION_ORDER_CONTENT = """
+        CASE WHEN category = 'external' THEN 1 ELSE 0 END  ASC,
+        datetime                                             DESC NULLS LAST,
+        crawled                                              DESC NULLS LAST,
+        LENGTH(canonical_url)                                ASC,
+        source_rowid                                         ASC
     """
 
     def run_on_db(self, db: sqlite3.Connection, chunksize: int = 4096) -> None:
@@ -264,24 +367,24 @@ class Deduplicator():
         cursor = db.cursor()
 
         before = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
-        print(f"[dedup] Phase 0 – initial rows : {before}")
+        print(f"[dedup] Phase 0  – initial records                      : {before}")
 
         # ── Phase 1: URL canonicalization + hash computation ──────────────────
         self._fill_prepared(db, chunksize)
         after_prep = cursor.execute("SELECT COUNT(*) FROM _prepared").fetchone()[0]
-        print(f"[dedup] Phase 1 – after URL filtering/canonicalization : {after_prep}")
+        print(f"[dedup] Phase 1  – after URL canonicalization           : {after_prep}")
         database.compress_db(db)
 
         # ── Phase 2: URL deduplication ────────────────────────────────────────
         self._elect_by_url(db)
         after_url = cursor.execute("SELECT COUNT(*) FROM _url_winners").fetchone()[0]
-        print(f"[dedup] Phase 2 – after URL deduplication             : {after_url}")
+        print(f"[dedup] Phase 2  – after URL deduplication              : {after_url}")
         database.compress_db(db)
 
         # ── Phase 3: Exact content deduplication ──────────────────────────────
         self._elect_by_content(db)
         after_content = cursor.execute("SELECT COUNT(*) FROM _content_winners").fetchone()[0]
-        print(f"[dedup] Phase 3 – after exact-content deduplication   : {after_content}")
+        print(f"[dedup] Phase 3  – after exact-content deduplication    : {after_content}")
         database.compress_db(db)
 
         # ── Phase 4: Near-duplicate removal (optional) ────────────────────────
@@ -289,44 +392,75 @@ class Deduplicator():
             self._elect_near_duplicates(db)
             final_table = "_near_winners"
             after_near = cursor.execute(f"SELECT COUNT(*) FROM {final_table}").fetchone()[0]
-            print(f"[dedup] Phase 4 – after near-duplicate removal        : {after_near}")
+            print(f"[dedup] Phase 4  – after near-duplicate removal         : {after_near}")
             database.compress_db(db)
         else:
             final_table = "_content_winners"
-            print("[dedup] Phase 4 – near-duplicate removal skipped (threshold=1.0)")
+            print("[dedup] Phase 4  – near-duplicate removal skipped (threshold=1.0)")
 
         # ── Phase 5: Rebuild pages table with winners ─────────────────────────
         self._rebuild_pages(db, final_table)
         database.compress_db(db)
 
         final = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
-        print(f"[dedup] Done – removed {before - final} rows, {final} remain.")
+        print(f"[dedup] Done     – {before - final} removed, {final} remain.")
 
     # ─────────────────────────────────────────────────────────────────────────────────────
     # Private DB pipeline helpers
     # ─────────────────────────────────────────────────────────────────────────────────────
 
     def _fill_prepared(self, db: sqlite3.Connection, chunksize: int) -> None:
-        """Phase 1 – stream ``pages``, canonicalise URLs, compute content hashes.
+        """Phase 1 – canonicalise every URL, extract domains, populate ``_prepared``.
 
-        Rows that are filtered out by :attr:`urls_to_ignore` or that carry an
-        empty ``parsed`` field are silently dropped; they will not appear in
-        ``_prepared`` and will therefore be absent from the final table.
+        **What this phase does and does not do**
 
-        The ``content_hash`` column is computed here (SHA-1 of ``parsed``) rather
-        than in a separate pass so that we only read each row's content once.
+        *Does:*
 
-        Threading note: :meth:`prepare_posts_parallel` is I/O-bound when
-        ``fix_urls=True`` (it issues ``HEAD`` requests).  A
-        :class:`~concurrent.futures.ThreadPoolExecutor` is therefore correct; a
-        ``ProcessPoolExecutor`` would needlessly serialise/deserialise the rows.
+        - Run every row's URL through :meth:`_canonicalize_url` (parallel,
+          I/O-bound when ``fix_urls=True``): Wayback unwrapping, ``http``→``https``
+          upgrade, ``www.`` stripping, ``urls_to_ignore`` filtering.
+        - Write the canonical URL, domain, and (if applicable) the original
+          Wayback wrapper URL back via ``_prepared``.
+        - Copy ``content_hash``, ``datetime``, ``crawled``, ``length``, and
+          ``category`` verbatim from ``pages``; these are expected to have been
+          populated upstream by ``batch_parse_web_page`` / the crawler.
+
+        *Does not:*
+
+        - Re-compute ``content_hash``, ``length``, or ``datetime`` — those are
+          the responsibility of ``batch_parse_web_page``.
+        - Store ``parsed`` text — it is large, already in ``pages``, and only
+          needed in Phase 4 where it is read back from ``pages`` directly.
+        - Drop rows with ``NULL`` / empty ``parsed`` — such rows are kept for
+          archival (the URL is known but the content could not be extracted).
+          They participate in URL deduplication (Phase 2) but are excluded from
+          content and near-duplicate deduplication (Phases 3–4) because their
+          ``content_hash`` is ``NULL``.
+
+        **Pre-conditions** (caller's responsibility)
+
+        The ``pages`` table is expected to have the following columns populated
+        before :meth:`run_on_db` is called:
+
+        - ``parsed``       — normalised text produced by ``batch_parse_web_page``.
+        - ``content_hash`` — SHA-1 of ``parsed``, set by ``batch_parse_web_page``.
+        - ``length``       — character count of ``parsed``, set by the same.
+        - ``datetime``     — timezone-aware UTC datetime parsed from ``date``,
+                             set by ``batch_parse_web_page``.
+        - ``crawled``      — UTC datetime set by the crawler at fetch time.
+        - ``category``     — arbitrary label set by the crawler; ``"external"``
+                             marks pages reached by recursive link-following.
+
+        Columns that are **not** required before deduplication and are typically
+        computed after it: ``tokenized``, ``stemmed``, ``vectorized``.
+
+        Column ``excerpt`` should be populated by the crawler or a preprocessing
+        step; the deduplicator does not generate it on the DB path.
 
         Args:
             db:        Open database connection.
-            chunksize: Rows fetched per batch.
+            chunksize: Rows fetched per batch; tune to balance memory and throughput.
         """
-        import hashlib
-
         cursor = db.cursor()
         cursor.execute("DROP TABLE IF EXISTS _prepared")
         cursor.execute("""
@@ -334,21 +468,24 @@ class Deduplicator():
                 source_rowid  INTEGER PRIMARY KEY,
                 canonical_url TEXT    NOT NULL,
                 domain        TEXT,
-                parsed        TEXT    NOT NULL,
-                content_hash  TEXT    NOT NULL,
-                datetime      TEXT,
-                length        INTEGER NOT NULL,
+                wayback       TEXT,            -- original archive wrapper URL, or NULL
+                content_hash  TEXT,            -- NULL for rows with no parsed content
+                datetime      TEXT,            -- pre-computed upstream; NULL if unavailable
+                crawled       TEXT,            -- set by crawler; NULL if unavailable
+                length        INTEGER,         -- NULL for rows with no parsed content
                 category      TEXT
             )
         """)
-        # Indexes created upfront so bulk inserts land with sorted access later.
+        # Partial index on content_hash: NULL rows are excluded so the index
+        # only covers rows that will actually participate in content dedup.
         cursor.execute("CREATE INDEX idx_prep_url  ON _prepared (canonical_url)")
-        cursor.execute("CREATE INDEX idx_prep_hash ON _prepared (content_hash)")
+        cursor.execute("CREATE INDEX idx_prep_hash ON _prepared (content_hash) WHERE content_hash IS NOT NULL")
         db.commit()
 
-        sel = db.execute(
-            "SELECT rowid, url, title, content, date, datetime, parsed, category FROM pages"
-        )
+        sel = db.execute("""
+            SELECT rowid, url, content_hash, datetime, crawled, length, category
+            FROM pages
+        """)
 
         max_workers = os.cpu_count() or 1
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -357,58 +494,54 @@ class Deduplicator():
                 if not rows:
                     break
 
-                elems, ids = [], []
-                for row in rows:
-                    ids.append(row[0])
-                    elems.append({
-                        "url":      row[1],
-                        "title":    row[2],
-                        "content":  row[3],
-                        "date":     row[4],
-                        "datetime": row[5],
-                        "parsed":   row[6],
-                        "category": row[7],
-                    })
+                # Split URL column from the rest so canonicalization is parallelised
+                # without copying heavy content columns into worker closures.
+                url_jobs = [(row[0], row[1]) for row in rows]
+                metadata = {row[0]: row[2:] for row in rows}   # rowid → (hash, dt, crawled, length, cat)
 
-                results = list(executor.map(
-                    lambda e: self.prepare_posts_parallel(
-                        e, self.discard_params, self.urls_to_ignore, self.fix_urls
-                    ),
-                    elems,
+                url_results = list(executor.map(
+                    lambda t: (t[0], self._canonicalize_url(
+                        t[1], self.discard_params, self.urls_to_ignore, self.fix_urls
+                    )),
+                    url_jobs,
                 ))
 
                 inserts = []
-                for rid, res in zip(ids, results):
-                    if not res or not res.get("parsed"):
-                        continue
-                    parsed = res["parsed"]
+                for rid, url_res in url_results:
+                    if url_res is None:
+                        continue    # URL matches urls_to_ignore — drop row
+                    content_hash, dt, crawled, length, category = metadata[rid]
                     inserts.append((
                         rid,
-                        res["url"],
-                        res.get("domain"),
-                        parsed,
-                        hashlib.sha1(parsed.encode("utf-8")).hexdigest(),
-                        res.get("datetime"),
-                        res.get("length") or len(parsed),
-                        res.get("category"),
+                        url_res.canonical_url,
+                        url_res.domain,
+                        url_res.wayback,
+                        content_hash,
+                        dt,
+                        crawled,
+                        length or None,   # treat 0 as NULL (unparsed archival row)
+                        category,
                     ))
 
                 if inserts:
                     cursor.executemany(
                         """INSERT INTO _prepared
-                               (source_rowid, canonical_url, domain, parsed,
-                                content_hash, datetime, length, category)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                               (source_rowid, canonical_url, domain, wayback,
+                                content_hash, datetime, crawled, length, category)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         inserts,
                     )
                     db.commit()
 
 
     def _elect_by_url(self, db: sqlite3.Connection) -> None:
-        """Phase 2 – keep one row per canonical URL using :attr:`_ELECTION_ORDER`.
+        """Phase 2 – keep one row per canonical URL using :attr:`_ELECTION_ORDER_URL`.
 
-        Creates the ``_url_winners`` temp table containing only the
-        ``source_rowid`` values of the elected rows.
+        Creates the ``_url_winners`` temp table.  Rows with ``NULL``
+        ``content_hash`` (no extractable content) participate normally: if two
+        such rows share a canonical URL, the one with the more recent
+        ``crawled`` timestamp survives; if neither has a crawled timestamp the
+        lower ``source_rowid`` wins.
         """
         cursor = db.cursor()
         cursor.execute("DROP TABLE IF EXISTS _url_winners")
@@ -419,7 +552,7 @@ class Deduplicator():
                 SELECT source_rowid,
                        ROW_NUMBER() OVER (
                            PARTITION BY canonical_url
-                           ORDER BY {self._ELECTION_ORDER}
+                           ORDER BY {self._ELECTION_ORDER_URL}
                        ) AS rn
                 FROM _prepared
             )
@@ -430,35 +563,46 @@ class Deduplicator():
 
 
     def _elect_by_content(self, db: sqlite3.Connection) -> None:
-        """Phase 3 – among URL winners, keep one row per SHA-1 content hash.
+        """Phase 3 – keep one row per SHA-1 content hash using :attr:`_ELECTION_ORDER_CONTENT`.
 
-        Operates exclusively on the ``_url_winners`` set so that Phase 2's work
-        is not undone: two URLs that canonicalise differently but carry identical
-        content will be collapsed here, and the elected row still follows
-        :attr:`_ELECTION_ORDER`.
+        Only rows with a non-``NULL`` ``content_hash`` are deduplicated.  Rows
+        without a hash (archival stubs whose ``parsed`` content is ``NULL``)
+        have already been URL-deduplicated in Phase 2 and are passed through
+        unchanged via a ``UNION ALL``.
+
+        Assumption: ``content_hash`` was computed by ``batch_parse_web_page``
+        (SHA-1 of normalised ``parsed`` text).  Rows that were never processed
+        by that step will have ``content_hash = NULL`` and will be treated as
+        archival stubs regardless of whether they have ``parsed`` text.
 
         Creates the ``_content_winners`` temp table.
-
-        Assumption: two rows with different canonical URLs but identical ``parsed``
-        text are true duplicates (e.g. HTTP vs HTTPS, trailing-slash variants that
-        survived canonicalization, or pages whose content is query-parameter
-        independent despite distinct URLs).
         """
         cursor = db.cursor()
         cursor.execute("DROP TABLE IF EXISTS _content_winners")
         cursor.execute(f"""
             CREATE TABLE _content_winners AS
+
+            -- Rows with content: elect one winner per identical hash
             SELECT source_rowid
             FROM (
                 SELECT p.source_rowid,
                        ROW_NUMBER() OVER (
                            PARTITION BY p.content_hash
-                           ORDER BY {self._ELECTION_ORDER}
+                           ORDER BY {self._ELECTION_ORDER_CONTENT}
                        ) AS rn
-                FROM _prepared      p
-                JOIN _url_winners   u USING (source_rowid)
+                FROM _prepared    p
+                JOIN _url_winners u USING (source_rowid)
+                WHERE p.content_hash IS NOT NULL
             )
             WHERE rn = 1
+
+            UNION ALL
+
+            -- Archival stubs (no content hash): pass through without deduplication
+            SELECT u.source_rowid
+            FROM _url_winners u
+            JOIN _prepared    p USING (source_rowid)
+            WHERE p.content_hash IS NULL
         """)
         cursor.execute("CREATE INDEX idx_cw ON _content_winners (source_rowid)")
         db.commit()
@@ -467,56 +611,110 @@ class Deduplicator():
     def _elect_near_duplicates(self, db: sqlite3.Connection) -> None:
         """Phase 4 – Levenshtein near-duplicate detection on content winners.
 
-        Algorithm mirrors :meth:`get_close_content`:
+        Loads only the rows that have actual content (``pages.parsed IS NOT
+        NULL``) sorted by ``canonical_url`` for locality, then delegates the
+        parallel window scan to :meth:`_close_content_scan`.
 
-        * Load the surviving rows sorted by ``canonical_url`` (near-duplicates are
-          more likely to share a URL prefix).
-        * For each row *i* not yet eliminated, compare it against the next
-          :attr:`distance` live rows using the Levenshtein ratio.
-        * Matches above :attr:`threshold` form a group; :meth:`_elect_group` picks
-          the winner; the rest are marked for removal.
+        Rows without parsed content (archival stubs) are never compared —
+        they have no text to measure similarity against — and are passed
+        straight into ``_near_winners`` via a separate INSERT.
 
-        Parallelisation: the Levenshtein comparisons *within each window* are
-        dispatched to a :class:`~concurrent.futures.ThreadPoolExecutor`.
-        ``python-Levenshtein`` (backed by ``rapidfuzz``) releases the GIL for
-        string comparison, making threads genuinely parallel here despite Python's
-        GIL.  A ``ProcessPoolExecutor`` would require pickling every content string,
-        which would be slower for large payloads.
+        ``parsed`` text is read directly from ``pages`` rather than being
+        cached in ``_prepared``: it can be very large, and ``_prepared`` is
+        a compact index-oriented table that should not duplicate bulk text.
 
         Creates the ``_near_winners`` temp table.
-
-        Args:
-            db: Open database connection.
         """
         cursor = db.cursor()
 
         rows = cursor.execute("""
-            SELECT p.source_rowid, p.canonical_url, p.parsed,
-                   p.datetime, p.length, p.category
-            FROM _prepared       p
-            JOIN _content_winners c USING (source_rowid)
-            ORDER BY p.canonical_url
+            SELECT pr.source_rowid,
+                   pr.canonical_url,
+                   pg.parsed,
+                   pr.datetime,
+                   pr.crawled,
+                   pr.length,
+                   pr.category
+            FROM _prepared        pr
+            JOIN _content_winners cw USING (source_rowid)
+            JOIN pages            pg ON pg.rowid = pr.source_rowid
+            WHERE pg.parsed IS NOT NULL
+              AND pg.parsed != ''
+            ORDER BY pr.canonical_url
         """).fetchall()
 
-        if not rows:
-            cursor.execute("DROP TABLE IF EXISTS _near_winners")
-            cursor.execute(
-                "CREATE TABLE _near_winners AS SELECT source_rowid FROM _content_winners"
-            )
-            db.commit()
-            return
+        cursor.execute("DROP TABLE IF EXISTS _near_winners")
+        cursor.execute("CREATE TABLE _near_winners (source_rowid INTEGER PRIMARY KEY)")
 
-        elements = [
-            {
-                "rowid":    r[0],
-                "url":      r[1],
-                "parsed":   r[2],
-                "datetime": r[3] or "",   # empty string sorts before any ISO date
-                "length":   r[4] or 0,
-                "category": r[5] or "",
-            }
-            for r in rows
-        ]
+        if rows:
+            elements = [
+                {
+                    "rowid":    r[0],
+                    "url":      r[1],
+                    "parsed":   r[2],
+                    "datetime": r[3] or "",
+                    "crawled":  r[4] or "",
+                    "length":   r[5] or 0,
+                    "category": r[6] or "",
+                }
+                for r in rows
+            ]
+
+            keep = self._close_content_scan(elements)
+            cursor.executemany(
+                "INSERT INTO _near_winners VALUES (?)",
+                [(elements[i]["rowid"],) for i in range(len(elements)) if keep[i]],
+            )
+
+        # Archival stubs bypass near-duplicate detection entirely
+        cursor.execute("""
+            INSERT OR IGNORE INTO _near_winners
+            SELECT cw.source_rowid
+            FROM _content_winners cw
+            JOIN pages pg ON pg.rowid = cw.source_rowid
+            WHERE pg.parsed IS NULL OR pg.parsed = ''
+        """)
+
+        db.commit()
+
+
+    def _close_content_scan(
+        self,
+        elements: list[dict],
+        threshold: float | None = None,
+        distance: int | None = None,
+    ) -> np.ndarray:
+        """Parallel Levenshtein window scan — shared by both deduplication paths.
+
+        Called by :meth:`get_close_content` (list path) and
+        :meth:`_elect_near_duplicates` (DB path) so that near-duplicate
+        detection is byte-for-byte identical regardless of how data was loaded.
+
+        The outer loop is inherently sequential: whether row *j* is still a live
+        candidate when row *i* is processed depends on the results of earlier
+        iterations.  The Levenshtein comparisons *within* each window are
+        independent and are dispatched to a
+        :class:`~concurrent.futures.ThreadPoolExecutor`.
+        ``python-Levenshtein`` (``rapidfuzz`` backend) releases the GIL, so
+        the threads are genuinely parallel here.  A ``ProcessPoolExecutor``
+        would require pickling every content string per task, which is slower
+        for large payloads.
+
+        Args:
+            elements:  Dicts each carrying at least ``parsed``, ``datetime``,
+                       ``length``, and ``category`` keys, pre-sorted by URL for
+                       near-duplicate locality.
+            threshold: Levenshtein ratio above which two rows are considered
+                       near-duplicates.  Defaults to :attr:`self.threshold`.
+            distance:  How many positions ahead to scan from each row.
+                       Defaults to :attr:`self.distance`.
+
+        Returns:
+            Boolean :class:`numpy.ndarray` of length ``len(elements)``; ``True``
+            means the row survives.
+        """
+        threshold = threshold if threshold is not None else self.threshold
+        distance  = distance  if distance  is not None else self.distance
 
         n    = len(elements)
         keep = np.ones(n, dtype=bool)
@@ -527,19 +725,19 @@ class Deduplicator():
                 if not keep[i]:
                     continue
 
-                live_js = [j for j in range(i + 1, min(n, i + self.distance)) if keep[j]]
+                live_js = [j for j in range(i + 1, min(n, i + distance)) if keep[j]]
                 if not live_js:
                     continue
 
                 parsed_i = elements[i]["parsed"]
 
-                # Compute Levenshtein ratios for the entire window in parallel.
+                # Dispatch ratio computations for the whole window in parallel.
                 ratios = list(executor.map(
                     lambda j: Levenshtein.ratio(parsed_i, elements[j]["parsed"]),
                     live_js,
                 ))
 
-                near_js = [j for j, r in zip(live_js, ratios) if r > self.threshold]
+                near_js = [j for j, r in zip(live_js, ratios) if r > threshold]
                 if not near_js:
                     continue
 
@@ -551,85 +749,86 @@ class Deduplicator():
                     if idx != best:
                         keep[idx] = False
 
-        winner_rowids = [elements[i]["rowid"] for i in range(n) if keep[i]]
-
-        cursor.execute("DROP TABLE IF EXISTS _near_winners")
-        cursor.execute("CREATE TABLE _near_winners (source_rowid INTEGER PRIMARY KEY)")
-        cursor.executemany("INSERT INTO _near_winners VALUES (?)", [(r,) for r in winner_rowids])
-        db.commit()
-
+        return keep
 
     @staticmethod
     def _elect_group(elements: list[dict], indices: list[int]) -> int:
         """Return the index (into *elements*) of the best candidate in *indices*.
 
-        Applies the same sequential voting logic as :meth:`get_unique_urls_parallel`
-        so that the near-duplicate pass honours identical priorities to the URL and
-        content passes:
+        Selects the winner by maximising a priority key that directly encodes
+        the election rules, eliminating the fragility of the old sequential
+        voting loop:
 
-        * A candidate **votes** to become the new elected if it is longer than the
-          current best, OR if it is more recent.
-        * Its vote is **cancelled** if it is strictly older than the current best,
-          regardless of length.
-        * Its vote is **cancelled** if it carries the ``"external"`` category while
-          the current best does not.
+        Priority (highest first):
 
-        ``datetime`` values are compared as ISO-8601 strings (lexicographic order
-        is equivalent to chronological order for ISO dates).  An empty/null string
-        is treated as the oldest possible date.
+        1. **Non-external category** — ``"external"`` rows lose to any other
+           category because they contain full ``<body>`` HTML with more noise.
+        2. **Newer content datetime** — pre-computed UTC ISO string from
+           ``batch_parse_web_page``; ``""`` (no date) sorts last.
+        3. **Newer crawled datetime** — set by the crawler; ``""`` sorts last.
+        4. **Longer content** — larger ``length`` value wins.
+        5. **Lower index** — deterministic tiebreaker (lower index ↔ lower
+           ``source_rowid`` for DB path, insertion order for list path).
+
+        ``datetime`` and ``crawled`` values are normalised to ISO-8601 strings
+        via :func:`_normalise_date` so the method works whether called from the
+        list path (Python :class:`~datetime.datetime` objects) or the DB path
+        (SQLite TEXT / empty string).
 
         Args:
-            elements: Full list of row dicts (keys: rowid, url, parsed, datetime,
-                      length, category).
-            indices:  Indices into *elements* forming the near-duplicate group.
+            elements: Full list of row dicts.  Required keys: ``datetime``,
+                      ``length``, ``category``.  Optional key: ``crawled``
+                      (absent on the list path; treated as ``""``).
+            indices:  Indices into *elements* that form the candidate group.
 
         Returns:
             The index (into *elements*) of the elected winner.
         """
-        elected          = indices[0]
-        elected_category = elements[elected]["category"]
-        best_length      = elements[elected]["length"]
-        best_date        = elements[elected]["datetime"]   # ISO string or ""
+        def _key(idx: int) -> tuple:
+            e = elements[idx]
+            return (
+                # 1. non-external beats external (1 > 0)
+                0 if (e.get("category") or "") == "external" else 1,
+                # 2. newer content datetime (ISO string: later > earlier > "")
+                _normalise_date(e.get("datetime")),
+                # 3. newer crawled datetime
+                _normalise_date(e.get("crawled")),
+                # 4. longer content
+                e.get("length") or 0,
+                # 5. lower index (negate so max() picks the smallest)
+                -idx,
+            )
 
-        for idx in indices[1:]:
-            elem          = elements[idx]
-            cand_date     = elem["datetime"]
-            cand_length   = elem["length"]
-            cand_category = elem["category"]
-            vote          = False
-
-            if cand_length > best_length:
-                best_length = cand_length
-                vote = True
-
-            if cand_date and cand_date > best_date:
-                best_date = cand_date
-                vote = True
-            elif cand_date and best_date and cand_date < best_date:
-                vote = False   # strictly older: length advantage is irrelevant
-
-            # External content loses to non-external regardless of other criteria.
-            if cand_category == "external" and elected_category != "external":
-                vote = False
-
-            if vote:
-                elected          = idx
-                elected_category = cand_category
-
-        return elected
+        return max(indices, key=_key)
 
     def _rebuild_pages(self, db: sqlite3.Connection, winners_table: str) -> None:
-        """Replace ``pages`` with only the rows identified in *winners_table*.
+        """Replace ``pages`` with the winning rows, writing back canonicalised metadata.
 
-        The original schema (including any custom columns) is preserved by
-        extracting the ``CREATE TABLE`` SQL from ``sqlite_master`` and cloning it.
-        The swap is performed inside a single ``BEGIN`` / ``COMMIT`` block to be
-        atomic.  All pipeline temp tables are dropped on success.
+        Columns substituted from ``_prepared`` rather than copied verbatim:
+
+        ``url``
+            Canonicalised URL (correct protocol, stripped ``www.``,
+            no tracking params).
+
+        ``domain``
+            Domain extracted from the canonical URL.  Fixes rows that had their
+            full URL stored as domain or a ``NULL`` domain — including archival
+            stubs that were previously excluded from ``_prepared`` and therefore
+            never had their domain corrected.
+
+        ``wayback``
+            Set to the original Wayback/archive wrapper URL when the canonical
+            URL was unwrapped from an Internet Archive snapshot; otherwise the
+            existing value in ``pages`` is preserved via ``COALESCE``.
+
+        All other columns — including ``content_hash``, ``parsed``, ``length``,
+        ``datetime``, ``crawled``, etc. — are copied verbatim from ``pages``;
+        they were pre-computed upstream and must not be altered here.
 
         Args:
             db:            Open database connection.
-            winners_table: Name of the temp table whose ``source_rowid`` column
-                           identifies the rows to keep.
+            winners_table: Temp table whose ``source_rowid`` column identifies
+                           the rows to keep.
 
         Raises:
             RuntimeError: If the ``pages`` table cannot be found in
@@ -637,23 +836,41 @@ class Deduplicator():
         """
         cursor = db.cursor()
 
-        row = cursor.execute(
+        schema_row = cursor.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='pages'"
         ).fetchone()
-        if row is None:
+        if schema_row is None:
             raise RuntimeError("pages table not found in sqlite_master")
 
-        # We need to cover both cases: pages and "pages"
-        create_sql = row[0].replace("CREATE TABLE pages", "CREATE TABLE pages_new")
-        create_sql = create_sql.replace("CREATE TABLE \"pages\"", "CREATE TABLE pages_new")
-
+        create_sql = schema_row[0].replace("CREATE TABLE pages", "CREATE TABLE pages_new")
+        create_sql = create_sql.replace('CREATE TABLE "pages"', "CREATE TABLE pages_new")
         cursor.execute("DROP TABLE IF EXISTS pages_new")
-
         cursor.execute(create_sql)
+
+        cols     = [row[1] for row in cursor.execute("PRAGMA table_info(pages)")]
+        cols_set = set(cols)
+
+        select_parts = []
+        for col in cols:
+            if col == "url":
+                select_parts.append("pr.canonical_url")
+            elif col == "domain":
+                select_parts.append("pr.domain")
+            elif col == "wayback" and "wayback" in cols_set:
+                # Keep existing wayback value unless _prepared found a new one
+                select_parts.append('COALESCE(pr.wayback, p."wayback")')
+            else:
+                select_parts.append(f'p."{col}"')
+
+        col_list   = ", ".join(f'"{c}"' for c in cols)
+        select_sql = ", ".join(select_parts)
+
         cursor.execute(f"""
-            INSERT INTO pages_new
-            SELECT * FROM pages
-            WHERE rowid IN (SELECT source_rowid FROM {winners_table})
+            INSERT INTO pages_new ({col_list})
+            SELECT {select_sql}
+            FROM pages       p
+            JOIN _prepared   pr ON pr.source_rowid = p.rowid
+            WHERE p.rowid IN (SELECT source_rowid FROM {winners_table})
         """)
         db.commit()
 
@@ -667,7 +884,6 @@ class Deduplicator():
         db.commit()
 
         database.compress_db(db)
-
         print("[dedup] pages table rebuilt.")
 
 
@@ -763,79 +979,41 @@ class Deduplicator():
         return [self.get_unique_urls_parallel(item) for item in  cleaned_set.values()]
 
 
-    def get_close_content(self, posts: list[web_page], threshold: float = 0.90, distance: float = 50) -> list[web_page]:
-        """Find near-duplicate by computing the Levenshtein distance between pages contents.
+    def get_close_content(
+        self,
+        posts: list[web_page],
+        threshold: float = 0.90,
+        distance: int = 50,
+    ) -> list[web_page]:
+        """Find and remove near-duplicates using the Levenshtein ratio.
 
-        Params:
-            posts: 
-                dictionnary mapping an unused key to a liste of [core.types.web_page][]
+        Delegates the actual scan to :meth:`_close_content_scan`, which
+        parallelises comparisons within each window via a
+        :class:`~concurrent.futures.ThreadPoolExecutor`.  This method is the
+        list-path counterpart to :meth:`_elect_near_duplicates`; both call the
+        same shared scan implementation.
 
-            threshold: 
-                the minimum distance ratio of Lenvenshtein metric for 2 contents to be assumed duplicates
+        The election among near-duplicate candidates honours the same priority
+        rules as URL and content deduplication (non-external > newer > longer >
+        shorter URL) via :meth:`_elect_group`.
 
-            distance: 
-                for efficiency, the list of web_page is first sorted alphabetically by URL, assuming duplicates
-                will share at least the beginning of their URL. From there, duplicates are searched ahead in the list up
-                to this distance.
+        Args:
+            posts:     List of :class:`core.types.web_page` dicts after URL and
+                       exact-content deduplication.
+            threshold: Minimum Levenshtein ratio for two pages to be considered
+                       near-duplicates.  Defaults to :attr:`self.threshold`.
+            distance:  Positions ahead to scan from each row after sorting by URL.
+                       Defaults to :attr:`self.distance`.
 
+        Returns:
+            Filtered list with near-duplicates removed; one survivor per group.
         """
+        # Sort by URL: near-duplicates are most likely on the same domain/path.
+        # URL dedup upstream ensures keys are already unique here.
+        elements = list(dict(sorted({p["url"]: p for p in posts}.items())).values())
+        keep = self._close_content_scan(elements, threshold=threshold, distance=distance)
+        return [elements[i] for i in range(len(elements)) if keep[i]]
 
-        # Sort posts by URL since we have the most probability
-        # to find duplicates at similar URLs
-        posts = {post["url"]: post for post in posts}
-        posts = dict(sorted(posts.items()))
-
-        elements = [value for value in posts.values()]
-        replacements = np.arange(len(elements), dtype=np.int64)
-
-        for i in range(len(elements)):
-            if replacements[i] == i:
-                # Collect the indices of the near-duplicates
-                # The similarity matrix is symmetric,
-                # no need to process the lower triangle
-                indices = [j for j in range(i, min(len(posts), i + distance))
-                           if i == j
-                           or (replacements[j] == j
-                               and Levenshtein.ratio(elements[i]["parsed"], elements[j]["parsed"]) > threshold)]
-
-                if len(indices) > 1:
-                    print(i, "found", len(indices) - 1, "duplicates")
-
-                    length = 0
-                    date = datetime.fromtimestamp(0, tz=timezone(timedelta(0)))
-                    elected = -1
-
-                    # If duplicates, find the most recent or the longest
-                    for idx in indices:
-                        vote = False
-                        if elements[idx]["length"] > length:
-                            length = elements[idx]["length"]
-                            vote = True
-
-                        if elements[idx]["datetime"] and elements[idx]["datetime"] > date:
-                            date = elements[idx]["datetime"]
-                            vote = True
-                        elif elements[idx]["datetime"] and elements[idx]["datetime"] < date:
-                            vote = False
-
-                        if vote:
-                            elected = idx
-
-                    if elected > -1:
-                        # Write the index of the best candidate for the current position
-                        replacements[i] = elected
-
-                        # Void the other candidates
-                        # Note : idx should be always > i since we test forward
-                        for idx in indices:
-                            if idx != elected:
-                                replacements[idx] = -1
-
-                    # else : replacements[i] = i still
-                # else : replacements[i] = i still
-            # else: element already removed
-
-        return [elements[i] for i in replacements if i > -1]
 
     def run_on_list(self, posts: list[web_page]) -> list[web_page]:
         """Deduplicate an in-memory list of web pages, matching the full pipeline.
@@ -850,38 +1028,44 @@ class Deduplicator():
             avoid keeping two copies in memory simultaneously.
 
         Args:
-            posts: Flat list of :class:`core.types.web_page` dicts.  The list
+            posts: Flat list of :class:`~core.types.web_page` dicts.  The list
                    is modified in-place; callers should not rely on its contents
                    after this call returns.
 
         Returns:
-            Deduplicated list of sanitised :class:`core.types.web_page` dicts,
-            ready for downstream use (``to_db=False``).  Also writes a
-            ``domains`` frequency file via :func:`~core.utils.get_models_folder`.
+            Deduplicated list of sanitised :class:`~core.types.web_page` dicts,
+            ready for downstream use.  Also writes a ``domains`` frequency file
+            via [core.utils.get_models_folder][].
         """
-        print("[dedup] Phase 0 – initial posts :", len(posts))
+        before = len(posts)
+        print(f"[dedup] Phase 0  – initial records                      : {before}")
 
-        # Phase 1 + 2: URL canonicalization + URL deduplication
+        # Phase 1+2: URL canonicalization + URL deduplication (combined in get_unique_urls)
         posts = self.get_unique_urls(posts)
-        print("[dedup] Phase 2 – after URL deduplication             :", len(posts))
+        print(f"[dedup] Phase 1+2 – after URL canonicalization + dedup  : {len(posts)}")
 
         # Phase 3: Exact-content deduplication
         posts = self.get_unique_content(posts)
-        print("[dedup] Phase 3 – after exact-content deduplication   :", len(posts))
+        print(f"[dedup] Phase 3  – after exact-content deduplication    : {len(posts)}")
 
         # Phase 4: Near-duplicate removal (optional)
         if self.threshold < 1.0:
             posts = self.get_close_content(posts, threshold=self.threshold, distance=self.distance)
-            print("[dedup] Phase 4 – after near-duplicate removal        :", len(posts))
+            print(f"[dedup] Phase 4  – after near-duplicate removal         : {len(posts)}")
         else:
-            print("[dedup] Phase 4 – near-duplicate removal skipped (threshold=1.0)")
+            print("[dedup] Phase 4  – near-duplicate removal skipped (threshold=1.0)")
+
+        # Defensive guard: urls_to_ignore filtering happens in prepare_posts_parallel
+        # on both the original and canonical URL, but apply a final pass here to
+        # catch any edge case where canonicalization produced a newly-ignorable path.
+        posts = [p for p in posts if not self.discard_post(p["url"], self.urls_to_ignore)]
 
         # List all unique domains with their frequency
         counts = Counter([post["domain"] for post in posts])
-        print(f"[dedup] Done – {len(counts)} unique domains, {len(posts)} posts remain.")
+        print(f"[dedup] Done     – {before - len(posts)} removed, {len(posts)} remain. ({len(counts)} unique domains)")
 
         # Sort domains by frequency
-        counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
+        counts = dict(sorted(counts.items(), key=lambda item: item[1]))
 
         # Remove domains below page number threshold
         discard_list: list[str] = []
