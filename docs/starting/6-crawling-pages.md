@@ -331,56 +331,38 @@ class MyCrawler(crawler.Crawler):
 with MyCrawler(delay=1.0) as cr:
     pages = cr.get_website_from_crawling("https://example.com", "en")
 
-tmp_db = database.create_temp_db()
 database.populate_db(tmp_db, pages)
 ```
 
----
+## Crawling from REST API
 
-## Custom Data Sources (REST APIs)
+Some sites serve content through client-side rendering or behind APIs that are not reachable by a normal HTML crawler. Virtual Secretary exposes two dedicated `Crawler` methods for the most common cases. Both integrate with the incremental-update system and behave consistently with the HTML crawling methods.
 
-Some sites serve content entirely through client-side rendering: their HTML is an empty canvas populated by JavaScript at runtime, so a standard HTML parser sees nothing useful. The workaround is to query the underlying REST API directly and construct `web_page` objects manually.
+### YouTube channels
 
-### YouTube Example
+Walks the uploads playlist of each channel via the YouTube Data API v3 and builds one `web_page` per video. The video description becomes the indexable content; title, publication date, and language are stored as metadata. No OAuth is needed for public channels — a standard API key is sufficient.
 
 ```python
-import requests, json
-from core import database
-from core.types import web_page, sanitize_web_page
-
-API_KEY    = "..."   # https://developers.google.com/youtube/v3/getting-started
-CHANNEL_ID = "UCmsSn3fujI81EKEr4NLxrcg"
-
-response = requests.get(
-    "https://youtube.googleapis.com/youtube/v3/search"
-    f"?maxResults=1000&part=snippet&channelId={CHANNEL_ID}&type=video&key={API_KEY}"
+pages = cr.get_youtube_channels(
+    channel_ids = [
+        "UCmsSn3fujI81EKEr4NLxrcg",   # AP Photo
+        "UCkqe4BYsllmcxo2dsF-rFQw",   # Bruce Williams
+        "UCxHYygok15XQ6bqu9FK-oCw",   # A dabble in photo
+        "UCMbDlOwmmQnkRmcb2_5WERg",   # Boris Hajdukovic
+        "UCsDxB-CSMQ0Vu_hTag7-2UQ",   # Marco Bucci
+    ],
+    api_key      = "YOUR_GOOGLE_CLOUD_API_KEY",
+    default_lang = "en",
+    category     = "video",
+    since        = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc),
 )
-items = json.loads(response.content)["items"]
-
-pages = []
-for item in items:
-    vid_id  = item["id"]["videoId"]
-    detail  = requests.get(
-        f"https://youtube.googleapis.com/youtube/v3/videos?part=snippet&id={vid_id}&key={API_KEY}"
-    )
-    snippet = json.loads(detail.content)["items"][0]["snippet"]
-
-    pages.append(sanitize_web_page(web_page(
-        title    = snippet["title"],
-        url      = f"https://www.youtube.com/watch?v={vid_id}",
-        excerpt  = item["snippet"]["description"],
-        content  = snippet["description"],
-        date     = snippet["publishedAt"],
-        lang     = snippet.get("defaultLanguage", "en"),
-        category = "video",
-        h1=[], h2=[],
-    )))
-
-tmp_db = database.create_temp_db()
-database.populate_db(tmp_db, pages)
 ```
 
-### GitHub Issues and Pull Requests
+Get a free API key at [console.cloud.google.com](https://console.cloud.google.com) — enable the *YouTube Data API v3*, create an API key credential, and optionally restrict it to that API and your server's IP.
+
+The method uses the uploads **playlist** endpoint (`playlistItems`) rather than the search endpoint, which gives complete pagination and exact upload order regardless of query ranking. After listing each video from the playlist, it makes one additional `videos?part=snippet` call per video to retrieve the full description and declared language.
+
+Rate limiting uses `self.delay` against the `www.googleapis.com` domain bucket, consistent with all other crawling calls.
 
 ```python
 import time, re, json, requests, markdown

@@ -17,6 +17,7 @@ from charset_normalizer import from_bytes
 import requests
 import regex as re
 import numpy as np
+import markdown
 import sqlite3
 
 
@@ -956,6 +957,171 @@ class Crawler(DelayedClass):
             # data/content than external recursively-crawled pages, that fetch the whole <body> 
             # (including non-data/formatting, like sidebars, nav menus, etc.).
             output += self.get_immediate_links(self.get_unique_internal_url(page, domain, currentURL), domain, default_lang, langs, "external", contains_str, internal_links=internal_links, mine_pdf=mine_pdf)
+
+        return output
+
+
+    def get_youtube_channels(self,
+                              channel_ids: list[str],
+                              api_key: str,
+                              default_lang: str = "en",
+                              category: str = "video",
+                              since: datetime.datetime | None = None) -> list[web_page]:
+        """Index YouTube channels via the Data API v3 (no OAuth required).
+
+        Retrieves the full upload list for each channel by walking the channel's
+        uploads playlist, then fetches the complete snippet for each video.  The
+        result mirrors what [get_website_from_sitemap][core.crawler.Crawler.get_website_from_sitemap] 
+        produces for a normal
+        website: one [core.types.web_page][] per video, with ``title``,
+        ``content`` (video description), ``date``, ``lang``, and ``category``
+        populated.
+
+        Incremental update logic:
+
+        - If *since* is provided, any video URL already present in ``self.known_urls``
+          and last crawled **on or after** *since* is skipped.
+        - If *since* is ``None`` but ``self.since`` is set, ``self.since`` is used
+          as the cut-off.
+        - Videos not yet in ``self.known_urls`` are always fetched.
+
+        Rate limiting respects ``self.delay`` and the ``www.googleapis.com`` domain
+        bucket, consistent with the rest of the crawler.
+
+        Arguments:
+            channel_ids:
+                list of YouTube channel IDs — the ``UC…`` string visible in any
+                channel URL (``youtube.com/channel/UC…``).
+            api_key:
+                Google Cloud API key with *YouTube Data API v3* enabled.
+                See https://developers.google.com/youtube/v3/getting-started.
+            default_lang:
+                fallback language code when the video metadata does not declare one.
+            category:
+                label applied to every indexed video, reused by search filters.
+            since:
+                skip videos whose URL is already known and was crawled on or after
+                this datetime.  Pass ``None`` (default) to (re-)index everything.
+
+        Returns:
+            list of [core.types.web_page][] objects, one per video.
+
+        Example:
+            ```python
+            db = database.open_db("my-engine.db")
+            with crawler.Crawler(delay=0.5) as cr:
+                cr.load_known_urls(db)
+                pages = cr.get_youtube_channels(
+                    channel_ids = ["UCmsSn3fujI81EKEr4NLxrcg",
+                                   "UCkqe4BYsllmcxo2dsF-rFQw"],
+                    api_key     = "YOUR_KEY",
+                    default_lang = "en",
+                    category    = "video",
+                    since       = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc),
+                )
+            database.populate_db(db, pages)
+            ```
+        """
+        output: list[web_page] = []
+        effective_since = since or self.since
+        cutoff = _normalize_tz(effective_since) if effective_since else None
+
+        for channel_id in channel_ids:
+            print(f"[YouTube] Channel {channel_id}")
+            self.sleep("www.googleapis.com")
+            try:
+                channel_resp = requests.get(
+                    "https://youtube.googleapis.com/youtube/v3/channels"
+                    f"?part=contentDetails&id={channel_id}&key={api_key}",
+                    timeout=30,
+                )
+                channel_data = json.loads(channel_resp.content)
+            except Exception as e:
+                print(f"[YouTube] Failed to fetch channel {channel_id}: {e}")
+                continue
+
+            if not channel_data.get("items"):
+                print(f"[YouTube] Channel {channel_id}: no items returned (invalid ID or key?)")
+                continue
+
+            playlist_id = channel_data["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+            page_token = ""
+
+            while True:
+                self.sleep("www.googleapis.com")
+                try:
+                    playlist_resp = requests.get(
+                        "https://www.googleapis.com/youtube/v3/playlistItems"
+                        f"?part=snippet,contentDetails&maxResults=50"
+                        f"&playlistId={playlist_id}&key={api_key}"
+                        + (f"&pageToken={page_token}" if page_token else ""),
+                        timeout=30,
+                    )
+                    playlist_data = json.loads(playlist_resp.content)
+                except Exception as e:
+                    print(f"[YouTube] Failed to fetch playlist page: {e}")
+                    break
+
+                for item in playlist_data.get("items", []):
+                    snippet    = item["snippet"]
+                    video_id   = snippet["resourceId"]["videoId"]
+                    video_url  = f"https://www.youtube.com/watch?v={video_id}"
+                    published  = snippet.get("publishedAt", "")
+
+                    # Incremental skip
+                    if cutoff is not None and video_url in self.known_urls:
+                        if _normalize_tz(self.known_urls[video_url]) >= cutoff:
+                            continue
+
+                    if hash_with_category(video_url, category) in self.crawled_URL:
+                        continue
+                    self.crawled_URL.append(hash_with_category(video_url, category))
+
+                    # Fetch the full video snippet (richer than the playlist item snippet)
+                    self.sleep("www.googleapis.com")
+                    try:
+                        detail_resp = requests.get(
+                            "https://youtube.googleapis.com/youtube/v3/videos"
+                            f"?part=snippet&id={video_id}&key={api_key}",
+                            timeout=30,
+                        )
+                        detail_data = json.loads(detail_resp.content)
+                        if detail_data.get("items"):
+                            full = detail_data["items"][0]["snippet"]
+                            description = full.get("description") or snippet.get("description", "")
+                            lang        = full.get("defaultLanguage", default_lang)
+                        else:
+                            description = snippet.get("description", "")
+                            lang        = default_lang
+                    except Exception as e:
+                        print(f"[YouTube] Failed to fetch video details for {video_id}: {e}")
+                        description = snippet.get("description", "")
+                        lang        = default_lang
+
+                    title = snippet.get("title", "")
+                    if not title or not description:
+                        continue
+
+                    page = sanitize_web_page(web_page(
+                        title    = title,
+                        url      = video_url,
+                        excerpt  = description[:800],
+                        content  = description,
+                        date     = published,
+                        lang     = lang,
+                        category = category,
+                        h1       = [title],
+                        h2       = [],
+                        crawled  = datetime.datetime.now(datetime.timezone.utc),
+                    ))
+                    output.append(page)
+                    print(page)
+
+                page_token = playlist_data.get("nextPageToken", "")
+                if not page_token:
+                    break
+
+            print(f"[YouTube] Channel {channel_id}: {len(output)} videos indexed so far")
 
         return output
 
