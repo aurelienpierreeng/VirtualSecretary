@@ -98,6 +98,13 @@ class DelayedClass(ABC):
         if rate and rate.requests and rate.seconds:
             crawling_delay = max(crawling_delay, rate.requests / rate.seconds)
 
+        # Sanitize delay to something reasonable to prevent assholes servers
+        # from blocking the whole crawling forever. 
+        # If you can't serve 2 requests per minute, either don't bother making a website
+        # or disallow your website fair and square.
+        # Fuck inkscape.org and its 1 request / 86400.0 s
+        crawling_delay = min(crawling_delay, 30)
+
         self.domain_thresholds["domain"] = crawling_delay
         return crawling_delay
     
