@@ -56,8 +56,15 @@ for base in BASE_MODULES:
             f.write(f"# {mod}\n\n")
             f.write(f"::: {mod}\n")
 
-        # IMPORTANT: nav path must NOT include "api/" here
-        nav[mod] = file_path.as_posix()
+        rel_name = display_name(base, mod)
+        nav[base, rel_name] = Path(mod.replace(".", "/")).with_suffix(".md").as_posix()
+
+# -----------------------
+# Generate API nav
+# -----------------------
+with mkdocs_gen_files.open("api/SUMMARY.md", "w") as nav_file:
+    nav_file.write("* [API Reference](index.md)\n")
+    nav_file.writelines(nav.build_literate_nav())
 
 # -----------------------
 # Generate API index

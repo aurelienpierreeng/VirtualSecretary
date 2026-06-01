@@ -1555,8 +1555,8 @@ class Word2Vec(gensim.models.Word2Vec):
         Arguments:
             word: the word to convert to a vector.
             embed:
-                - `IN` uses the input embedding matrix [gensim.models.word2vec.wv][], useful to vectorize queries and documents for classification training.
-                - `OUT` uses the output embedding matrix [gensim.models.Word2Vec.syn1neg], useful for the dual-space embedding scheme, to train search engines. [^1]
+                - `IN` uses the input embedding matrix [gensim.models.word2vec.Word2Vec.wv][], useful to vectorize queries and documents for classification training.
+                - `OUT` uses the output embedding matrix [gensim.models.word2vec.Word2Vec][], useful for the dual-space embedding scheme, to train search engines. [^1]
 
         [^1]: A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana https://arxiv.org/pdf/1602.01137.pdf
 

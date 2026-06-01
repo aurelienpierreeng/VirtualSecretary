@@ -225,7 +225,7 @@ The tokenised form stored in `tokenized` retains stopwords, punctuation meta-tok
     db.commit()
     ```
 
-    This should ideally have been done earlier (see [Step 1](#step-1-persisting-data)), but it is safe to run it again here as a safeguard — particularly when the permanent database is populated from multiple sources built at different times.
+    This should ideally have been done earlier (see [Step 1](#step-1-restoring-data)), but it is safe to run it again here as a safeguard — particularly when the permanent database is populated from multiple sources built at different times.
 
 ### Training n-grams
 

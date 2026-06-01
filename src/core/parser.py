@@ -105,7 +105,7 @@ class ParsedHTML:
         """Extract the text content of an HTML page DOM by targeting only the specific tags.
 
         Arguments:
-            markup: any kind of tags supported by [bs4.BeautifulSoup.find_all][]:
+            markup: any kind of tags supported by [bs4.Tag.find_all][]:
 
                 - (str): the single tag to select. For example, `"body"` will select `<body>...</body>`.
                 - (tuple): the tag and properties to select. For example, `("div", { "class": "right" })` will select `<div class="right">...</div>`.

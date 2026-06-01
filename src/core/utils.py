@@ -452,6 +452,7 @@ def typography_undo(string:str) -> str:
 
 
 def clean_whitespaces(string:str) -> str:
+    """Collapse repeated spaces and newlines in text."""
     # Collapse multiple newlines and spaces
     string = MULTIPLE_LINES.sub("\n\n", string, concurrent=True, timeout=60)
     string = MULTIPLE_SPACES.sub(" ", string, concurrent=True, timeout=60)

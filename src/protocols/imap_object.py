@@ -718,6 +718,7 @@ Attachments : %s
     self.server.std_out = ["OK", ]
 
   def create_hash(self):
+    """Create a stable hash for the email from persistent headers and metadata."""
     # IMAP UID are linked to a particular mailbox. When we move
     # an email to another mailbox (folder), the UID is changed.
     # This can't be used to log emails in a truly unique way,
