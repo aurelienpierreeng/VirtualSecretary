@@ -17,11 +17,12 @@ from charset_normalizer import from_bytes
 import requests
 import regex as re
 import numpy as np
+import sqlite3
 
 
 from . import patterns, utils
 from .pdf import get_pdf_content
-from .types import web_page
+from .types import web_page, sanitize_web_page
 from .network import try_url, get_url, DelayedClass
 from .parser import ParsedHTML
 
@@ -228,16 +229,18 @@ def parse_page(page: ParsedHTML,
     page.parse(markup)
 
     if page.content and page.title:
-        result = web_page(title=page.title,
-                          url=url,
-                          date=page.date or date,
-                          content=page.content,
-                          excerpt=page.excerpt,
-                          h1=page.h1,
-                          h2=page.h2,
-                          lang=page.lang or lang,
-                          category=category,
-                          crawled=datetime.datetime.now())
+        result = sanitize_web_page(web_page(
+            title=page.title,
+            url=url,
+            date=page.date or date,
+            content=page.content,
+            excerpt=page.excerpt,
+            h1=page.h1,
+            h2=page.h2,
+            lang=page.lang or lang,
+            category=category,
+            crawled=datetime.datetime.now(datetime.timezone.utc)
+        ))
         print(result)
         return [result]
     else:
@@ -267,6 +270,28 @@ def hash_with_category(data: str, category: str) -> str:
     hasher.update(data.encode("utf-8"))
 
     return hasher.hexdigest()
+
+
+def _parse_iso_date(date_str: str) -> datetime.datetime:
+    """Parse an ISO 8601 / RFC 3339 string to a timezone-aware datetime.
+
+    Handles both the ``Z`` suffix (accepted by Python 3.11+) and the
+    ``+00:00`` form accepted by all supported Python versions.
+    """
+    cleaned = date_str.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    dt = datetime.datetime.fromisoformat(cleaned)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
+
+
+def _normalize_tz(dt: datetime.datetime) -> datetime.datetime:
+    """Return *dt* with timezone info, assuming UTC if the datetime is naïve."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=datetime.timezone.utc)
+    return dt
 
 
 class Crawler(DelayedClass):
@@ -312,7 +337,9 @@ class Crawler(DelayedClass):
         ]
     """List of URLs sub-strings that will disable crawling if they are found in URLs. Mostly social networks sharing links."""
 
-    def __init__(self, delay: float = 1., no_follow: list[str] = []):
+    def __init__(self, delay: float = 1., no_follow: list[str] = [],
+                 known_urls: dict[str, datetime.datetime] | None = None,
+                 since: datetime.datetime | None = None):
         """Crawl a website from its sitemap or by following internal links recusively from an index page.
         This class needs therefore to be used within a `with` statement that will take care of resources
         allocations and releases in background.
@@ -323,17 +350,30 @@ class Crawler(DelayedClass):
                 The right delay will prevent the crawler from being throttled by anti-DoS rules while making it as fast as possible.
                 Set to `0.0` if you are crawling your own servers and they have no DoS protection.
             no_follow: list of URL parts to completely ignore, that is not index them but not even crawl them for internal links.
-            no_follow: list of URLs parts that will discard pages from crawling
+            known_urls:
+                mapping of ``url → last crawled datetime`` for pages already in the index.
+                When provided, crawling methods use it to skip pages that have not changed since
+                they were last indexed.  Populate it conveniently with [load_known_urls][core.crawler.Crawler.load_known_urls].
+            since:
+                global freshness cut-off for recursive crawling.  Any URL present in *known_urls*
+                and last crawled **on or after** this datetime will be skipped entirely.
+                Has no effect when *known_urls* is empty or when a URL is not yet known.
+                For sitemap crawling, the sitemap's own ``<lastmod>`` field takes precedence;
+                *since* is only used as a fallback for entries that have no ``<lastmod>``.
 
         Example:
-            ```
-            with crawler.Crawler() as cr:
-                output = cr.get_website_from_sitemap("https://domain.com")
+            ```python
+            db = database.open_db("my-engine.db")
 
-                # Can be called more than once.
-                # The list of already-crawled pages will be shared between calls
-                # so pages are not crawled more than once.
-                output += cr.get_website_from_crawling("https://forum.domain.com")
+            with crawler.Crawler(delay=1.0) as cr:
+                cr.load_known_urls(db)      # populate incremental-update map
+                cr.since = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc)
+
+                # Only re-fetches pages whose <lastmod> is newer than the stored crawl date.
+                pages = cr.get_website_from_sitemap("https://domain.com", "en")
+
+                # Only re-fetches pages not yet in the index, or crawled before since.
+                pages += cr.get_website_from_crawling("https://forum.domain.com", "en")
             ```
 
         """
@@ -348,6 +388,18 @@ class Crawler(DelayedClass):
         
         self.crawled_content: list[str] = []
         """List of hashes of content already known"""
+
+        self.known_urls: dict[str, datetime.datetime] = dict(known_urls) if known_urls else {}
+        """Mapping of URL → last-crawled datetime for incremental updates.
+        Populated at construction time or via [load_known_urls][core.crawler.Crawler.load_known_urls].
+        
+        Note:
+            We strip leading and trailing `/` for generality, in URL keys.
+        """
+
+        self.since: datetime.datetime | None = since
+        """Global freshness cut-off for recursive and API-based crawling.
+        Pages in *known_urls* last crawled on or after this datetime are skipped."""
 
         self.no_follow += no_follow
         self.delay = delay
@@ -372,6 +424,55 @@ class Crawler(DelayedClass):
         print("OTHER ERRORS:", len(set(self.errors)))
         for error in set(self.errors):
             print(error)
+
+
+    def load_known_urls(self, db: sqlite3.Connection) -> int:
+        """Populate the incremental-update map from an existing index database.
+
+        After calling this, all crawling methods will skip pages whose stored crawl
+        timestamp indicates they are still fresh (see ``self.since`` and the
+        ``<lastmod>`` logic in [get_website_from_sitemap][core.crawler.Crawler.get_website_from_sitemap]).
+
+        Arguments:
+            db: an open SQLite connection to a Virtual Secretary database
+                (as returned by [core.database.open_db][] or [core.database.create_db][]).
+
+        Returns:
+            Number of URL entries loaded.
+
+        Example:
+            ```python
+            db  = database.open_db("my-engine.db")
+            with crawler.Crawler(delay=1.0) as cr:
+                cr.load_known_urls(db)
+                cr.since = datetime.datetime(2025, 6, 1, tzinfo=datetime.timezone.utc)
+                pages = cr.get_website_from_sitemap("https://domain.com", "en")
+            db.close()
+            ```
+        """
+        cursor = db.execute(
+            "SELECT url, crawled, wayback FROM pages WHERE crawled IS NOT NULL AND url IS NOT NULL"
+        )
+        count = 0
+        for url, crawled, wayback in cursor.fetchall():
+            if not url or not crawled:
+                continue
+            if isinstance(crawled, str):
+                try:
+                    crawled = datetime.datetime.fromisoformat(crawled)
+                except (ValueError, AttributeError):
+                    continue
+            if isinstance(crawled, datetime.datetime):
+                self.known_urls[url.strip("/")] = crawled
+                count += 1
+
+            if wayback:
+                self.known_urls[wayback.strip("/")] = crawled
+                count += 1
+
+
+        print(f"Loaded {count} known URLs for incremental crawling")
+        return count
 
 
     def discard_link(self, url):
@@ -550,6 +651,19 @@ class Crawler(DelayedClass):
         if max_recurse_level > -1 and _recursion_level >= max_recurse_level:
             #print("max recursivity level reached")
             return output
+
+        # Incremental update: skip pages that are still fresh according to self.since
+        if self.since is not None and index_url in self.known_urls:
+            stripped_url = index_url.strip("/")
+            last_crawled = _normalize_tz(self.known_urls[stripped_url])
+            if last_crawled >= _normalize_tz(self.since):
+                print(f"Skip (recent): {index_url}")
+                self.update_link(index_url, stripped_url, category, 200)
+                return output
+            else:
+                print(f"{index_url} has no crawling date or was crawled too long ago, will be recrawled")
+        else:
+            print(f"{index_url} is unknown")
 
         # Extract the domain name, to prepend it if we find relative URL while parsing
         address = patterns.split_url(website)
@@ -793,6 +907,31 @@ class Crawler(DelayedClass):
 
         if self.discard_link(currentURL):
             return output
+
+        # Incremental update: skip pages that haven't changed since last crawl.
+        # Priority: sitemap's own <lastmod> field > self.since fallback.
+        stripped_url = currentURL.strip("/")
+        last_crawled = self.known_urls.get(stripped_url)
+        if last_crawled is not None:
+            last_crawled = _normalize_tz(last_crawled)
+            if date:
+                try:
+                    lastmod = _parse_iso_date(date)
+                    if last_crawled >= lastmod:
+                        print(f"Skip (unchanged): {currentURL}")
+                        self.update_link(currentURL, stripped_url, category, 200)
+                        return output
+                except (ValueError, TypeError):
+                    print(f"{currentURL} has unparseable date, will be recrawled")
+                    pass  # unparseable date — crawl anyway
+            elif self.since is not None:
+                # No <lastmod> in sitemap — use global since cut-off
+                if last_crawled >= _normalize_tz(self.since):
+                    print(f"Skip (recent): {currentURL}")
+                    self.update_link(currentURL, stripped_url, category, 200)
+                    return output
+        else:
+            print(f"{currentURL} is unknown")
 
         self.crawled_URL.append(hash_with_category(currentURL, category))
         content_type, status, new_url, custom_header, status_code = get_content_type(currentURL, self, bypass_robots_txt=True)

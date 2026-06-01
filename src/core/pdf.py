@@ -17,23 +17,23 @@ import fitz
 from PIL import Image
 import numpy as np
 import regex as re
-from datetime import datetime
+import datetime
 
-from .types import web_page
+from .types import web_page, sanitize_web_page
 from .network import get_url, DelayedClass
 from .patterns import HYPHENIZED
 from .utils import clean_whitespaces
 
 def ocr_pdf(document: bytes, 
             output_images: bool = False, 
-            path: str = None,
+            path: str | None = None,
             repair: int = 1, 
             upscale: int = 3, 
             contrast: float = 1.5, 
             sharpening: float = 1.2, 
             threshold: float = 0.4,
             tesseract_lang: str = "eng+fra+equ", 
-            tesseract_bin: str = None) -> str:
+            tesseract_bin: str | None = None) -> str:
     """Extract text from PDF using OCR through [Tesseract](https://github.com/tesseract-ocr/tesseract). Both the binding [Python package PyTesseract](https://pypi.org/project/pytesseract/#installation) __and__ the [Tesseract binaries](https://tesseract-ocr.github.io/tessdoc/Installation.html) need to be installed.
 
     To run on a server where you don't have `sudo` access to install package, you will need to download the [AppImage package](https://tesseract-ocr.github.io/tessdoc/Installation.html#appimage) and pass its path to the `tesseract_bin` argument.
@@ -280,7 +280,7 @@ def get_pdf_content(url: str,
     except:
         date = None
 
-    if isinstance(date, datetime):
+    if isinstance(date, datetime.datetime):
         date = date.isoformat()
 
     title = meta.get("title") if meta.get("title") else url.split("/")[-1]
@@ -319,16 +319,18 @@ def get_pdf_content(url: str,
             chapters_titles, chapters_bounds = _get_pdf_outline(doc, title)
 
             if len(chapters_bounds) == 0 and len(content) > 0:
-                result = web_page(title=title,
-                                    url=url,
-                                    date=date,
-                                    content=content,
-                                    excerpt=excerpt,
-                                    h1={},
-                                    h2={},
-                                    lang=lang,
-                                    category=category,
-                                    crawled=datetime.now())
+                result = sanitize_web_page(web_page(
+                    title=title,
+                    url=url,
+                    date=date,
+                    content=content,
+                    excerpt=excerpt,
+                    h1={},
+                    h2={},
+                    lang=lang,
+                    category=category,
+                    crawled=datetime.datetime.now(datetime.timezone.utc)
+                ))
                 print("found 1 PDF")
                 doc.close()
                 return [result]
@@ -346,16 +348,18 @@ def get_pdf_content(url: str,
                     # Make up a page anchor to make URLs to document sections unique
                     # since that's what is used as key for dictionaries. Also, Chrome and Acrobat
                     # will be able to open PDF files at the right page with this anchor.
-                    result = web_page(title=chapters_titles[i],
-                                        url=f"{url}#page={i + 1}",
-                                        date=date,
-                                        content=chapter_content,
-                                        excerpt=None,
-                                        h1={},
-                                        h2={},
-                                        lang=lang,
-                                        category=category,
-                                        crawled=datetime.now())
+                    result = sanitize_web_page(web_page(
+                        title=chapters_titles[i],
+                        url=f"{url}#page={i + 1}",
+                        date=date,
+                        content=chapter_content,
+                        excerpt=None,
+                        h1={},
+                        h2={},
+                        lang=lang,
+                        category=category,
+                        crawled=datetime.datetime.now(datetime.timezone.utc)
+                    ))
                     results.append(result)
 
             print("found", i, "PDF chapters")
@@ -367,16 +371,18 @@ def get_pdf_content(url: str,
             content = clean_whitespaces(HYPHENIZED.sub("", content))
 
             if content:
-                result = web_page(title=title,
-                                    url=url,
-                                    date=date,
-                                    content=content,
-                                    excerpt=excerpt,
-                                    h1={},
-                                    h2={},
-                                    lang=lang,
-                                    category=category,
-                                    crawled=datetime.now())
+                result = sanitize_web_page(web_page(
+                    title=title,
+                    url=url,
+                    date=date,
+                    content=content,
+                    excerpt=excerpt,
+                    h1={},
+                    h2={},
+                    lang=lang,
+                    category=category,
+                    crawled=datetime.datetime.now(datetime.timezone.utc)
+                ))
                 print("found 1 PDF")
                 doc.close()
                 return [result]
@@ -385,16 +391,18 @@ def get_pdf_content(url: str,
         content = clean_whitespaces(HYPHENIZED.sub("", content))
 
         if content:
-            result = web_page(title=title,
-                                url=url,
-                                date=date,
-                                content=content,
-                                excerpt=excerpt,
-                                h1={},
-                                h2={},
-                                lang=lang,
-                                category=category,
-                                crawled=datetime.now())
+            result = sanitize_web_page(web_page(
+                title=title,
+                url=url,
+                date=date,
+                content=content,
+                excerpt=excerpt,
+                h1={},
+                h2={},
+                lang=lang,
+                category=category,
+                crawled=datetime.now()
+            ))
             print("found 1 PDF")
             doc.close()
             return [result]

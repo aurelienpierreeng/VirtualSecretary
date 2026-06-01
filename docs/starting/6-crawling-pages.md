@@ -139,7 +139,72 @@ with crawler.Crawler(delay=1.0) as cr:
 database.populate_db(tmp_db, pages)
 ```
 
----
+## Incremental crawling
+
+All crawling methods — HTML, PDF, YouTube, and GitHub — share the same two-attribute incremental-update mechanism:
+
+| Attribute | How to set | Effect |
+|---|---|---|
+| `cr.known_urls` | `cr.load_known_urls(db)` | Maps URL → last crawled `datetime` from an existing database |
+| `cr.since` | `cr.since = datetime(…)` | Global cut-off: any URL in `known_urls` crawled on or after this datetime is skipped |
+
+For sitemap crawling the page's own `<lastmod>` field takes precedence over `since`, so a page that was modified after the last crawl is re-fetched even if it was crawled recently. `since` is used as a fallback for sitemap entries that carry no `<lastmod>`.
+
+```python
+import datetime
+from core import crawler, database
+
+# Append new URLs to a temporary DB that supports
+# duplicated URLs. Deduplication will be handled after (see below)
+tmp_db = database.create_temp_db()
+
+with crawler.Crawler(delay=1.0) as cr:
+    # Populate the map once — applies to all crawling calls below:
+    # Get all known URLs from a permament DB storage
+    # where URLs are primary keys and therefore unique
+    # or ensure to deduplicate a temporary database.
+    db = database.open_db("my-engine.db")
+    cr.load_known_urls(db)
+    db.close()
+
+    cr.since = datetime.datetime(2025, 6, 1, tzinfo=datetime.timezone.utc)
+
+    # Skips sitemap entries whose <lastmod> <= stored crawl date
+    pages  = cr.get_website_from_sitemap("https://ansel.photos", "en", markup="article")
+
+    # Skips any URL crawled after cr.since
+    pages += cr.get_website_from_crawling("https://community.ansel.photos", "en",
+                                           child="/discussions-home/", contains_str="/view-discussion/")
+
+    # Skips videos crawled after cr.since (no API-side filter needed)
+    pages += cr.get_youtube_channels(
+        channel_ids  = ["UCmsSn3fujI81EKEr4NLxrcg"],
+        api_key      = "AIza…",
+        since        = cr.since,
+    )
+
+    # Passes since to the GitHub API's ?since= param for issues/pulls/commits
+    pages += cr.get_github_repositories(
+        repositories = [("aurelienpierreeng", "ansel")],
+        api_key      = "ghp_…",
+        since        = cr.since,
+    )
+
+database.populate_db(tmp_db, pages)
+tmp_db.close()
+```
+
+Recursively crawling websites that don't have a sitemap is expensive and can take ages. So you may want to re-crawl them only once a year or so, which can be achieved automatically in your script with:
+
+```python
+from datetime import datetime, UTC
+from dateutil.relativedelta import relativedelta
+
+with crawler.Crawler(delay=1.0) as cr:
+    cr.since = datetime.now(UTC) - relativedelta(years=1)
+```
+
+Then you don't need to worry about updating dates manually.
 
 ## Mining PDF Documents
 
@@ -551,7 +616,7 @@ tmp_db = utils.open_data("my-dataset")
 final_db = database.create_db("my-engine.db")
 
 # Dump the memory-hosted dataset DB
-final_db.backup(tmp_db)
+tmp_db.backup(final_db)
 
 # Close memory DB
 tmp_db.close()
