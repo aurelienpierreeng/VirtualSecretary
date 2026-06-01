@@ -37,5 +37,11 @@ jobs:
       - name: Build documentation
         run: mkdocs build --strict
 
+      - name: Inspect sitemap
+        run: |
+          ls -lah site/
+          echo "===================="
+          cat site/sitemap.xml
+
       - name: Deploy to GitHub Pages
         run: mkdocs gh-deploy --force
