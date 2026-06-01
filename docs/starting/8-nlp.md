@@ -1,8 +1,6 @@
-# NLP
+# Natural Language Processing
 
-## Examples
-
-### Training a language model
+## Training a language model
 
 The [Word2Vec][core.nlp.Word2Vec] model is trained from pre-tokenized documents. Each document is a list of sentences, and each sentence is a list of tokens. The [Tokenizer][core.nlp.Tokenizer] object is therefore part of the training pipeline and is saved inside the model so production code can tokenize new text the same way.
 
@@ -50,7 +48,7 @@ from core import nlp
 w2v = nlp.Word2Vec.load_model("word2vec-ansel")
 ```
 
-### Training an AI classifier
+## Training an AI classifier
 
 [Classifier][core.nlp.Classifier] learns labels from `Data(text, label)` samples, using an existing [Word2Vec][core.nlp.Word2Vec] model to vectorize the text. The label can be any meaningful class: a topic, a document type, or an IMAP folder name.
 
