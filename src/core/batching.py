@@ -75,7 +75,7 @@ SHARED_DB: sqlite3.Connection | None = None
 SHARED_TABLE_NAME: str | None = None
 
 
-def _init_batch_normalize_process_worker(tokenizer, db_path: str, table_name: str = "pages"):
+def _init_batch_normalize_process_worker(tokenizer, db_path: str):
     """Initializer for process pool workers: set tokenizer and open read-only sqlite DB."""
     global TOKENIZER, SHARED_DB
     TOKENIZER = tokenizer
@@ -86,9 +86,6 @@ def _init_batch_normalize_process_worker(tokenizer, db_path: str, table_name: st
     # Enable WAL and set a busy timeout so readers wait instead of failing when writes occur
     SHARED_DB.execute("PRAGMA journal_mode = WAL")
     SHARED_DB.execute("PRAGMA busy_timeout = 5000")
-    # store table name for worker in module variable
-    global SHARED_TABLE_NAME
-    SHARED_TABLE_NAME = table_name
 
 
 def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, str, str, None | datetime, None | str, str, int]]:
@@ -99,9 +96,8 @@ def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, 
 
     normalize = TOKENIZER.normalize_text
 
-    table = SHARED_TABLE_NAME or 'docs'
     for i in indices:
-        cur.execute(f'SELECT title, content, date, lang FROM {table} WHERE rowid=?', (i,))
+        cur.execute(f'SELECT title, content, date, lang FROM pages WHERE rowid=?', (i,))
         row = cur.fetchone()
         if row is None:
             continue
@@ -135,10 +131,18 @@ def batch_parse_web_page(documents: sqlite3.Connection, tokenizer: Tokenizer, ch
     has a clean parsed version to compare web pages.
 
     Arguments:
-        documents: any database having [core.types.web_page][] rows stored in a `pages` table
-        tokenizer: we only use it for the the [core.nlp.Tokenizer.normalize_text][] method
-        chunksize: number of SQLite rows to process at once, too many is not helpful since some batches
+        documents: 
+            any database having [core.types.web_page][] rows stored in a `pages` table
+            and stored on the filesystem. It cannot be a memory-hosted database: each parallel
+            worker will open its own copy by file path.
+
+        tokenizer: 
+            we only use it for the the [core.nlp.Tokenizer.normalize_text][] method
+
+        chunksize: 
+            number of SQLite rows to process at once, too many is not helpful since some batches
             may take longer than others, depending on text length.
+
         cores: CPU cores to use for parallel processing.
     """
     # Determine number of worker threads/processes
@@ -168,7 +172,7 @@ def batch_parse_web_page(documents: sqlite3.Connection, tokenizer: Tokenizer, ch
         max_workers=num_workers,
         mp_context=ctx,
         initializer=_init_batch_normalize_process_worker,
-        initargs=(tokenizer, database.get_db_filename(documents), 'pages'),
+        initargs=(tokenizer, database.get_db_filename(documents)),
     ) as executor:
         # Collect updates and commit in batches to minimize write-lock churn
         pending_updates = []
