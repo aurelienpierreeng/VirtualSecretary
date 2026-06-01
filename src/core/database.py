@@ -193,6 +193,13 @@ def create_temp_db(min_free: float = 2.0, filename: str | None = None) -> sqlite
     return db
 
 
+def delete_temp_db(db: sqlite3.Connection):
+    """Close and delete a temporary database in one shot."""
+    filename = get_db_filename(db)
+    db.close()
+    os.unlink(filename)
+
+
 def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
     """Open an SQLite database with workload-specific optimizations.
 
@@ -966,3 +973,133 @@ def normalize_wayback_urls(db):
         """, (original_url, domain, title, old_url))
 
     db.commit()
+
+
+def inspect_db(db: sqlite3.Connection, message: str = "") -> None:
+    """Print useful metadata and statistics about a SQLite database.
+
+    Arguments:
+        db: active database connection
+        message: optional additional message to indentify several inspections if any.
+    
+    """
+
+    cur = db.cursor()
+
+    # Database info
+    print("=" * 80)
+    print("DATABASE", get_db_filename(db), message)
+    print("=" * 80)
+
+    print("SQLite version:", sqlite3.sqlite_version)
+
+    db_info = cur.execute("PRAGMA database_list").fetchall()
+
+    for _, name, path in db_info:
+        print(f"\n{name}:")
+        print(f"  path: {path or ':memory:'}")
+
+        if path and Path(path).exists():
+            size = Path(path).stat().st_size / (1024 * 1024)
+            print(f"  size: {size:.2f} MB")
+
+    # Tables
+    tables = [
+        row[0]
+        for row in cur.execute("""
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+        """)
+    ]
+
+    print("\n" + "=" * 80)
+    print("TABLES")
+    print("=" * 80)
+
+    for table in tables:
+        print(f"\n[{table}]")
+
+        row_count = cur.execute(
+            f'SELECT COUNT(*) FROM "{table}"'
+        ).fetchone()[0]
+
+        print(f"Rows: {row_count:,}")
+
+        columns = cur.execute(
+            f'PRAGMA table_info("{table}")'
+        ).fetchall()
+
+        print("\nColumns:")
+
+        for cid, name, col_type, notnull, default, pk in columns:
+
+            null_count = cur.execute(
+                f'SELECT COUNT(*) FROM "{table}" WHERE "{name}" IS NULL'
+            ).fetchone()[0]
+
+            empty_count = None
+
+            if col_type.upper() in ("TEXT", "", "VARCHAR", "CHAR"):
+                empty_count = cur.execute(
+                    f'SELECT COUNT(*) FROM "{table}" WHERE "{name}" = ""'
+                ).fetchone()[0]
+
+            print(
+                f"  - {name:<20}"
+                f"type={col_type or 'UNKNOWN':<10}"
+                f" pk={pk}"
+                f" nulls={null_count:,}"
+                + (
+                    f" empty={empty_count:,}"
+                    if empty_count is not None
+                    else ""
+                )
+            )
+
+        # Indexes
+        indexes = cur.execute(
+            f'PRAGMA index_list("{table}")'
+        ).fetchall()
+
+        if indexes:
+            print("\nIndexes:")
+
+            for _, index_name, unique, origin, partial in indexes:
+                cols = [
+                    row[2]
+                    for row in cur.execute(
+                        f'PRAGMA index_info("{index_name}")'
+                    )
+                ]
+
+                print(
+                    f"  - {index_name}"
+                    f" ({', '.join(cols)})"
+                    f"{' UNIQUE' if unique else ''}"
+                )
+
+    print("\n" + "=" * 80)
+
+    # Global stats
+    page_count = cur.execute(
+        "PRAGMA page_count"
+    ).fetchone()[0]
+
+    page_size = cur.execute(
+        "PRAGMA page_size"
+    ).fetchone()[0]
+
+    freelist = cur.execute(
+        "PRAGMA freelist_count"
+    ).fetchone()[0]
+
+    print("GLOBAL STATS")
+    print("=" * 80)
+    print(f"Pages:          {page_count:,}")
+    print(f"Page size:      {page_size:,} bytes")
+    print(f"Free pages:     {freelist:,}")
+    print(f"Used size:      {(page_count * page_size) / 1024 / 1024:.2f} MB")
+    print()
