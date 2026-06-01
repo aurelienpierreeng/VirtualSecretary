@@ -194,14 +194,13 @@ database.populate_db(tmp_db, pages)
 tmp_db.close()
 ```
 
-Recursively crawling websites that don't have a sitemap is expensive and can take ages. So you may want to re-crawl them only once a year or so, which can be achieved automatically in your script with:
+Recursively crawling websites that don't have a sitemap is expensive and can take ages. So you may want to re-crawl them only once every `n` months, which can be achieved automatically in your script with:
 
 ```python
-from datetime import datetime, UTC
-from dateutil.relativedelta import relativedelta
+import utils
 
-with crawler.Crawler(delay=1.0) as cr:
-    cr.since = datetime.now(UTC) - relativedelta(years=1)
+# Recrawl everything older than 3 months
+cr.since = utils.get_past_n_months(3)
 ```
 
 Then you don't need to worry about updating dates manually.
