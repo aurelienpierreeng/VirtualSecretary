@@ -1,0 +1,14 @@
+.md-sidebar__scrollwrap {
+  overflow: auto;
+  max-height: calc(100vh - 90px);
+}
+
+/* Indentation. */
+div.doc-contents:not(.first) {
+  padding-left: 0.75rem;
+  border-left: .1rem solid var(--md-typeset-table-color);
+}
+
+footer {
+  z-index: 999;
+}
