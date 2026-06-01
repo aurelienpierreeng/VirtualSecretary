@@ -364,67 +364,40 @@ The method uses the uploads **playlist** endpoint (`playlistItems`) rather than 
 
 Rate limiting uses `self.delay` against the `www.googleapis.com` domain bucket, consistent with all other crawling calls.
 
+### Github repositories
+
+Indexes issues, pull requests, commits, and discussions from one or more repositories. Comments on issues and PRs are fetched and concatenated with the parent body. External URLs found in Markdown bodies are followed at one recursion level — the same behaviour as `get_website_from_crawling(max_recurse_level=1)` — and linked PDFs are mined when `mine_pdf=True`.
+
 ```python
-import time, re, json, requests, markdown
-from core import database
-from core.types import web_page, sanitize_web_page
-
-API_KEY = "..."  # https://docs.github.com/en/rest/authentication
-HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Accept": "application/vnd.github+json",
-}
-POSTS_PER_PAGE = 100   # GitHub maximum
-
-
-def items_count(user: str, repo: str, feature: str) -> int:
-    r = requests.get(
-        f"https://api.github.com/repos/{user}/{repo}/{feature}?per_page=1",
-        headers=HEADERS, timeout=30,
-    )
-    return int(re.search(r"\d+$", r.links["last"]["url"]).group())
-
-
-def get_github_items(user: str, repo: str, feature: str, category: str) -> list[web_page]:
-    total  = items_count(user, repo, feature)
-    pages_ = total // POSTS_PER_PAGE + 1
-    result = []
-    for page in range(pages_):
-        time.sleep(0.72)   # stay within GitHub's 5 000 req/hr limit
-        r = requests.get(
-            f"https://api.github.com/repos/{user}/{repo}/{feature}"
-            f"?per_page={POSTS_PER_PAGE}&page={page}",
-            headers=HEADERS, timeout=30,
-        )
-        for item in json.loads(r.content):
-            url = item.get("html_url", "")
-            if not url:
-                continue
-            body = markdown.markdown(item.get("body") or "")
-            result.append(sanitize_web_page(web_page(
-                title    = f"{feature.capitalize()}: {item.get('title', '')}",
-                url      = url,
-                content  = body,
-                excerpt  = body[:300],
-                date     = item.get("created_at", ""),
-                lang     = "en",
-                category = category,
-                h1=[], h2=[],
-            )))
-    return result
-
-
-pages = []
-repos = [("aurelienpierreeng", "ansel"), ("darktable-org", "rawspeed")]
-for user, repo in repos:
-    for feature in ["issues", "pulls"]:
-        pages += get_github_items(user, repo, feature, "Github")
-
-tmp_db = database.create_temp_db()
-database.populate_db(tmp_db, pages)
+pages = cr.get_github_repositories(
+    repositories = [
+        ("aurelienpierreeng", "ansel"),
+        ("darktable-org",     "rawspeed"),
+        ("lensfun",           "lensfun"),
+        ("Exiv2",             "exiv2"),
+        ("darktable-org",     "darktable"),
+    ],
+    api_key  = "ghp_YOUR_PERSONAL_ACCESS_TOKEN",
+    features = ["issues", "pulls", "commits", "discussions"],
+    category = "Github",
+    since    = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc),
+    mine_pdf = True,
+)
 ```
 
----
+A read-only fine-grained token scoped to the target repositories is sufficient. Generate one at [github.com/settings/tokens](https://github.com/settings/tokens). The GitHub API allows 5 000 requests/hour for authenticated users; the method sleeps for `self.delay` seconds between requests and handles 403/429 rate-limit responses by reading the `Retry-After` header and waiting.
+
+**Incremental update** is first-class: for `issues`, `pulls`, and `commits` the `?since=` query parameter is passed directly to the GitHub API, so the server returns only items updated after that date — minimising both quota usage and processing time. For `discussions` (which the REST API does not support filtering), the method fetches all pages and filters client-side by `created_at`.
+
+| Feature | Server-side `since` filter | Comment fetching |
+|---|---|---|
+| `issues` | ✅ `?since=` on `updated_at` | ✅ |
+| `pulls` | ✅ `?since=` on `updated_at` | ✅ |
+| `commits` | ✅ `?since=` on author date | — (too voluminous) |
+| `discussions` | ❌ client-side by `created_at` | — (REST API limitation) |
+
+!!! tip "Keeping GitHub and web content in the same database"
+    Because both `get_github_repositories` and the HTML crawling methods return the same `list[web_page]` type, they can all be passed to `database.populate_db` without any conversion. Pages from GitHub will carry `category="Github"` while forum crawl results carry `category="forum"`, which lets you filter them independently at query time.
 
 ## Crawling Details
 

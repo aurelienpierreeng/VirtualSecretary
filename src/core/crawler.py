@@ -325,6 +325,7 @@ class Crawler(DelayedClass):
         "/member/",
         "/register?",
         "?share=",
+        "?replytocom=",
         ".css",
         ".js",
         ".json",
@@ -1122,6 +1123,232 @@ class Crawler(DelayedClass):
                     break
 
             print(f"[YouTube] Channel {channel_id}: {len(output)} videos indexed so far")
+
+        return output
+
+
+    def get_github_repositories(self,
+                                 repositories: list[tuple[str, str]],
+                                 api_key: str,
+                                 features: list[str] | None = None,
+                                 langs: tuple[str, ...] = ("en", "fr"),
+                                 category: str = "Github",
+                                 since: datetime.datetime | None = None,
+                                 mine_pdf: bool = True) -> list[web_page]:
+        """Index GitHub repository content via the REST API.
+
+        Supported *features*: ``"issues"``, ``"pulls"``, ``"commits"``,
+        ``"discussions"``.  Issue and pull-request comments are concatenated with
+        the parent body.  External links found in Markdown bodies are followed at
+        one recursion level (same behaviour as 
+        [get_website_from_crawling][core.crawler.Crawler.get_website_from_crawling] with
+        ``max_recurse_level=1``), and PDF files linked from those pages are mined
+        when *mine_pdf* is ``True``.
+
+        Incremental update:
+
+        - For ``issues``, ``pulls``, and ``commits``, the GitHub API's native
+          ``?since=`` query parameter is used when *since* is provided, so only
+          items updated after that date are fetched — minimising API quota usage.
+        - For ``discussions``, the REST API has no ``since`` filter; client-side
+          filtering by ``created_at`` is applied instead.
+        - 429 / 403 rate-limit responses are handled automatically: the crawler
+          reads the ``Retry-After`` header and waits accordingly.
+
+        Arguments:
+            repositories:
+                list of ``(owner, repo)`` tuples,
+                e.g. ``[("aurelienpierreeng", "ansel"), ("darktable-org", "darktable")]``.
+            api_key:
+                GitHub personal access token (classic or fine-grained, read-only
+                ``repo`` scope is sufficient).
+                See https://docs.github.com/en/rest/authentication.
+            features:
+                subset of ``["issues", "pulls", "commits", "discussions"]`` to index.
+                Defaults to all four when ``None``.
+            langs:
+                language codes passed through to 
+                [get_immediate_links][core.crawler.Crawler.get_immediate_links] when
+                following external links from item bodies.
+            category:
+                label applied to every indexed item.
+            since:
+                only fetch items created or updated after this datetime.
+                Overrides ``self.since`` when provided.
+            mine_pdf:
+                whether to follow and extract PDF files linked from item bodies.
+
+        Returns:
+            list of [core.types.web_page][] objects.
+
+        Example:
+            ```python
+            db = database.open_db("my-engine.db")
+            with crawler.Crawler(delay=0.72) as cr:
+                cr.load_known_urls(db)
+                pages = cr.get_github_repositories(
+                    repositories = [("aurelienpierreeng", "ansel"),
+                                    ("darktable-org", "rawspeed")],
+                    api_key      = "ghp_…",
+                    features     = ["issues", "pulls", "commits"],
+                    since        = datetime.datetime(2025, 1, 1,
+                                                     tzinfo=datetime.timezone.utc),
+                    mine_pdf     = True,
+                )
+            database.populate_db(db, pages)
+            ```
+        """
+        if features is None:
+            features = ["issues", "pulls", "commits", "discussions"]
+
+        output: list[web_page] = []
+        posts_per_page = 100  # GitHub API maximum
+
+        effective_since = since or self.since
+        since_str = (
+            effective_since.strftime("%Y-%m-%dT%H:%M:%SZ")
+            if effective_since else None
+        )
+
+        gh_headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+        # ── internal helpers ──────────────────────────────────────────────────
+
+        def _fetch_page(url: str) -> list:
+            """Single paginated request; handles rate-limit back-off."""
+            self.sleep("api.github.com")
+            try:
+                resp = requests.get(url, headers=gh_headers, timeout=30)
+                if resp.status_code in (403, 429):
+                    wait = int(resp.headers.get("Retry-After", 60))
+                    print(f"[GitHub] Rate limited — waiting {wait} s…")
+                    time.sleep(wait)
+                    resp = requests.get(url, headers=gh_headers, timeout=30)
+                if resp.status_code != 200:
+                    print(f"[GitHub] HTTP {resp.status_code} for {url}")
+                    return []
+                data = json.loads(resp.content)
+                # Some endpoints return a dict (e.g. error) instead of a list
+                return data if isinstance(data, list) else []
+            except Exception as e:
+                print(f"[GitHub] Request failed: {url} — {e}")
+                return []
+
+        def _fetch_all_pages(base_url: str) -> list:
+            """Walk all pages of a paginated GitHub endpoint."""
+            results, page = [], 1
+            sep = "&" if "?" in base_url else "?"
+            while True:
+                items = _fetch_page(f"{base_url}{sep}per_page={posts_per_page}&page={page}")
+                if not items:
+                    break
+                results.extend(items)
+                if len(items) < posts_per_page:
+                    break
+                page += 1
+            return results
+
+        def _item_to_pages(item_url: str, title: str, body: str,
+                            date: str | None) -> list[web_page]:
+            """Parse a Markdown body into web_page objects and follow external links."""
+            if hash_with_category(item_url, category) in self.crawled_URL:
+                return []
+            self.crawled_URL.append(hash_with_category(item_url, category))
+
+            html = (
+                f"<title>{title}</title><body>\n\n"
+                + markdown.markdown(body or "")
+                + "\n\n</body>"
+            )
+            entry, _, _ = get_page_content(None, self, content=html)
+            if entry is None:
+                return []
+
+            pages = parse_page(entry, item_url, "en", "body", date, category)
+
+            # Extract bare URLs from raw Markdown (regex match covers URLs that are
+            # not wrapped in Markdown link syntax and thus absent from the rendered HTML)
+            entry.links += [
+                patterns.remove_unmatched_parentheses(m.group(0))
+                for m in patterns.URL_PATTERN.finditer(body or "", concurrent=True)
+            ]
+
+            # Follow external links at one recursion level
+            unique_links = self.get_unique_internal_url(entry, "github.com", item_url)
+            pages += self.get_immediate_links(
+                unique_links, "github.com", "en", langs,
+                category, "", internal_links="any", mine_pdf=mine_pdf,
+            )
+
+            return pages
+
+        # ── main loop ────────────────────────────────────────────────────────
+
+        for owner, repo in repositories:
+            print(f"[GitHub] Crawling {owner}/{repo}")
+
+            for feature in features:
+                print(f"[GitHub] Fetching {feature}…")
+
+                # Build the API URL.
+                # Only issues and commits support a server-side ?since= filter.
+                # The pulls endpoint silently ignores ?since=, so PRs are filtered
+                # client-side below (same path as discussions).
+                since_param = f"&since={since_str}" if since_str else ""
+                base_url = f"https://api.github.com/repos/{owner}/{repo}/{feature}?state=all{since_param}&sort=updated"
+                items = _fetch_all_pages(base_url)
+
+                print(f"[GitHub] {len(items)} {feature} fetched for {owner}/{repo}")
+
+                for item in items:
+                    item_url = item.get("html_url", "")
+                    if not item_url:
+                        continue
+ 
+                    # Client-side date filter for pulls and discussions.
+                    # Pulls: the REST API ignores ?since=, so we filter by updated_at here.
+                    # Discussions: the REST API has no since filter at all.
+                    if feature in ("pulls", "discussions") and effective_since:
+                        updated = item.get("updated_at") or item.get("created_at", "")
+                        try:
+                            if _normalize_tz(_parse_iso_date(updated)) < _normalize_tz(effective_since):
+                                continue
+                        except (ValueError, TypeError):
+                            pass
+
+                    # Assemble title, body, date
+                    body_parts: list[str] = []
+
+                    if feature == "commits":
+                        commit = item.get("commit", {})
+                        msg    = commit.get("message", "")
+                        title  = msg.split("\n\n")[0] or item_url.split("/")[-1]
+                        body_parts.append(msg)
+                        date   = commit.get("committer", {}).get("date")
+                    else:
+                        title = item.get("title", item_url.split("/")[-1])
+                        body_parts.append(item.get("body") or "")
+                        date  = item.get("created_at")
+
+                    full_title = f"{feature.capitalize()}: {title}"
+
+                    # Fetch comments
+                    if feature in ("issues", "pulls", "commits", "discussions"):
+                        comments_url = item.get("comments_url", "")
+                        if comments_url:
+                            self.crawled_URL.append(hash_with_category(comments_url, category))
+                            for comment in _fetch_page(comments_url):
+                                if comment.get("body"):
+                                    body_parts.append(comment["body"])
+
+                    full_body = "\n\n---\n\n".join(filter(None, body_parts))
+                    output += _item_to_pages(item_url, full_title, full_body, date)
+
+            print(f"[GitHub] {owner}/{repo}: {len(output)} total pages indexed so far")
 
         return output
 
