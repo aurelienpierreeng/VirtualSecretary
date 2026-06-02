@@ -424,6 +424,7 @@ cursor = db.execute(
 )
 
 # Create a list of Python dict from the results and do whatever you want with it...
+# They are still ordered like results, by descending relevance
 full_results = [
   { 
     "title": row[0], 
