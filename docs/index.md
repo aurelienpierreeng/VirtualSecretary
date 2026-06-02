@@ -58,6 +58,9 @@ With all this data, it allows you to easily create information pipelines to:
         * detect questions and topics in incoming emails and send back automatic responses with the most relevant pages from your search engine,
     * mirror/duplicate notifications from third-party services on your mailbox:
         * when a new Instagram comment comes in, mirror it on a dedicated mailbox folder, respecting threading hierarchy and authors,
+* __build complete timelines of your working ecosystem__:
+    * aggregate unified (SQLite) databases of URL-based pieces of information as temporal events, throughout various sources,
+    * create web or desktop GUIs allowing to show, query and filter into them by date, language, content, source (URL), category, using keywords or regex.
 
 ---
 
@@ -113,6 +116,11 @@ Internally, it provides low-level features exposed through a nice programming in
     - find relevant resources from a query (search engine) or an email body (auto-responder).
 * __works on server or desktop__, on demand or as a Cron job. A locking mechanism prevents more than one instance to process each mailbox. AI classifiers can be trained locally on desktop and sent to run read-only on the server,
 * an overridable internal logging mechanism prevents emails from being processed more than once, so automatic actions that are manually reverted are not performed again on the next run.
+* __data handling is uniform__:
+    - whether you fetch emails, PDF, webpages, Github commits, etc., they all get represented as the same data objects [types.web_page][core.types.web_page],
+    - saving, restoring, sanitizing and converting `web_page` entries between SQLite databases, Python objects, models `.joblib` or datasets `tar.gz` is handled internally by interfaces,
+    - text cleaning (non-Unicode characters removal, bad formatting, etc.) is handled centrally through the same methods,
+    - the whole information pipeline can safely expect immutable formats, and there are only few places where you need to mind the type conversions.
 
 !!! note
     The AI language models used by Virtual Secretary are memory- and power-efficient methods from before 2015, they will run with reasonable runtimes on servers and old desktop computers, and don't use GPU. The AI layer uses Python modules interfacing with parallelized C code, so the heavy-lifting is done by compiled code.
