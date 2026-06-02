@@ -379,14 +379,14 @@ database.delete_tmp_db(tmp_db) # we will not need the temp DB anymore
 # Instanciate the search engine object, with expensive variable pre-computing
 engine = search.Indexer(db, "engine", w2v, principal_components=2)
 # this will be automatically saved to disk
-# load it from disk in the future with `search.Indexer.load("search_engine", db)`
+# load it from disk in the future with `search.Indexer.load("engine", db)`
 
 database.close_db(db)
 ```
 
 All the above is fairly computationally-expensive, but:
 
-1. in 45 lines of code, you just built a semantic search-engine from scratch on your own data,
+1. in 45 lines of code, you just built a semantic search-engine from scratch, from any website, on your computer,
 2. then everything is pre-computed into 2 artifacts saved on disk:
     - `engine.db`: the SQLite database of web pages (or any other text content),
     - `engine.joblib`: the pre-computed search indexer instance.
@@ -397,8 +397,10 @@ So, at runtime (possibly on server), you need those 2 pre-computed artifacts in 
 
 from core import database, search
 
-# Open pre-computed artifacts from disk
-db = database.open_db("engine.db", mode="ro") # read-only mode is slightly faster
+# Open pre-computed artifacts from disk in read-only mode.
+# The database contains the whole list of web pages for content filtering
+db = database.open_db("engine.db", mode="ro") 
+# The engine contains only a list of URLs and precomputed stats
 engine = search.Indexer.load("engine", db) 
 
 # Run the user query
@@ -406,17 +408,19 @@ user_query = "How to install Ansel on Mac OS ?"
 tokenized_query = engine.tokenize_query(user_query)
 results = engine.rank(db, tokenized_query, search.search_methods.AI)
 
-# Paginate results with 50 results per page
-NUM_RESULTS = 50
 
-# Print raw ordered list: rank, url, similarity score
-print(results[0:NUM_RESULTS])
+# results is an ordered list: rank, url, similarity score,
+# by descending order of relevance.
+print(results[0:50])
 
-# Extract only URLs from the list of results
-urls = [url for rank, url, score in results[0:NUM_RESULTS]]
+# In case you need more data on the page results, you will
+# need to fetch them from the database, which is indexed by URL.
 
-# URLs are the database primary key, so use them to fetch more data on results
-# from the DB
+
+# Get title, date, excerpt and url again for all URLs in the first
+# 50 results.
+urls = [url for rank, url, score in results[0:50]]
+
 sql_placeholder = ", ".join(["?" for _ in urls])
 cursor = db.execute(
     f"SELECT title, date, excerpt, url FROM pages WHERE url IN ({sql_placeholder})",
