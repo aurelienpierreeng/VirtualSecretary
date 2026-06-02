@@ -7,16 +7,55 @@
   <figcaption markdown>Secretary icons by [UltimateArm](https://www.flaticon.com/authors/ultimatearm)</figcaption>
 </figure>
 
- The Virtual Secretary is a Python framework allowing to write custom filters and actions to __automate your digital office workflows__ and
- improve __information processing and retrieval__. It provides connectors to synchronize information across:
+The Virtual Secretary is a Python framework allowing to write filters and actions to __automate your digital office workflows__ and
+improve __information processing and retrieval__ by creating __relationships__ between information.
 
-* your emails,
-* your contacts (address books),
-* your Instagram posts & comments,
+It provides connectors to aggregate and synchronize information across:
+
+* your __emails__ (IMAP)
+* your __contacts/address book__ (CardDAV),
+* your __Instagram posts & comments__ (oAuth),
+* typical __websites and forums__ (HTML and PDF, with optional/automatic OCR),
+* AJAX-driven/Rest-driven websites: 
+    * __Github__ issues, pull requests, commits, discussions,
+    * __Stack Exchange__ forums,
+    * __YouTube__ channels,
+* __local PDF and text documents__ (automatic OCR if needed),
 * _and more in the future_:
-    * your agenda events,
-    * your database entries.
+    * your agenda events (CalDAV),
+    * your database entries (SQL).
 
+With all this data, it allows you to easily create information pipelines to:
+
+* __train an AI language model__, privately, on your own computer and on your own data, then, from it:
+    * train an AI classifier (tagging documents with topics or categories),
+    * create a semantic search-engine, for intranet and/or internet knowledge base, on your own infrastructure,
+* __write custom filters and actions on events__. Some examples:
+    * arbitrarily tag or flag incoming emails, straight on server (so all clients get the tags):
+        * based on keyword detection and regex in subject, body, attachments, sender, etc.
+        * based on AI classifier output (topic, category, etc.)
+    * automatically sort incoming emails into (dynamically-created) IMAP folders:
+        * mirroring your address book contact categories: 
+        > contacts in the "family" category have their emails moved to "family" folder, same for any other category: folders are dynamically created based on the sender's category, so you only need to manage that on your CardDAV address book,
+        * using a self-trained AI classifier where IMAP folders are used as tags (needs prior manually-sorted emails whithin topical folders to be trained),
+        * using Github `organization/repository` detection in email subject (regex),
+    * detect spam emails from a mix of:
+        * SPF and DKIM checks (very reliable, yet few email providers do it…),
+        * SpamAssassin headers,
+        * your self-trained AI classifier,
+    * program auto-responders:
+        * put up vacation notices that start and end automatically at specified dates,
+        * notify your correspondents that they are n-th in your backlog queue, based on the count of unread emails in your box,
+        * detect questions and topics in incoming emails and send back automatic responses with the most relevant pages from your search engine,
+    * mirror/duplicate notifications from third-party services on your mailbox:
+        * when a new Instagram comment comes in, mirror it on a dedicated mailbox folder, respecting threading hierarchy and authors,
+
+!!! note
+    The AI language models used by Virtual Secretary are memory- and power-efficient methods from before 2015, they will run with reasonable runtimes on servers and old desktop computers, and don't use GPU. The AI layer uses Python modules interfacing with parallelized C code, so the heavy-lifting is done by compiled code.
+    
+    Virtual Secretary uses no LLM and provides no chat bot.
+
+---
 
 > __Secretary__: _a person who works in an office, working for another person, dealing with mail and phone calls, keeping records, arranging meetings with people, etc._ ([Oxford dictionnary](https://www.oxfordlearnersdictionaries.com/definition/english/secretary?q=secretary))
 
@@ -50,23 +89,10 @@ Internally, it provides low-level features exposed through a nice programming in
 * __Machine-learning language classifier__ ([SVM](https://en.wikipedia.org/wiki/Support_vector_machine) and decision trees on top of [word2vec](https://en.wikipedia.org/wiki/Word2vec)), allowing to train your own AI against your own emails in your own language and perform automatic tagging and sorting based on content,
     - perform topic recognition in emails or documents,
     - find relevant resources from a query (search engine) or an email body (auto-responder).
-* __works on server or desktop__, on demand or as a Cron job. A locking mechanism prevents more than one instance to process each mailbox. AI classifiers can be trained locally on desktop and sent to run on the server,
+* __works on server or desktop__, on demand or as a Cron job. A locking mechanism prevents more than one instance to process each mailbox. AI classifiers can be trained locally on desktop and sent to run read-only on the server,
 * an overridable internal logging mechanism prevents emails from being processed more than once, so automatic actions that are manually reverted are not performed again on the next run.
 
 ## Examples of applications
-
-The Virtual Secretary can, for example :
-
-* move emails into IMAP folders or tag them based on their sender and content,
-* detect spoofed emails and send them to the spam box,
-* mirror your Instagram comments into an IMAP folder, respecting their original date, author, and threading, and attaching the original media,
-* create advanced autoresponders, based on timeframes and number of unread messages in your mailbox,
-* detect the language of an email.
-
-In the future, it will be able to :
-
-* add an "urgent" tag to emails sent by people with whom you have an appointment scheduled in the next 48 hours,
-* add a "client" tag to emails sent by someone who bought your product (connecting to the MySQL database of your Prestashop or WordPress WooCommerce website).
 
 ## Quick demos
 
@@ -83,12 +109,13 @@ carddav = protocols["carddav"] if "carddav" in protocols else None
 
 def filter(email) -> bool:
   # If email is spoofed or authentication is forged, exit immediately
+  # Uses SPF, DKIM and ARC.
   if not email.is_authentic():
     return True
 
   names, addresses = email.get_sender()
 
-  # Email is in the address book : exit early
+  # Sender is in the address book : exit early
   if carddav.connection_inited:
     for address in addresses:
       if address in carddav.emails:
