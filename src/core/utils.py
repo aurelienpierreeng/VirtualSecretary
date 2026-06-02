@@ -811,7 +811,7 @@ def get_past_n_months(n: int) -> datetime:
 
 def get_past_n_weeks(n: int) -> datetime:
     """Get the date of now minus n weeks"""
-    return datetime.now(UTC) - relativedelta(week==n)
+    return datetime.now(UTC) - relativedelta(weeks=n)
 
 
 def get_past_n_days(n: int) -> datetime:
