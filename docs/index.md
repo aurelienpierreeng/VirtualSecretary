@@ -68,6 +68,8 @@ The framework provides an high-level Python API allowing you to efficiently writ
 
 The Virtual Secretary works standalone: it doesn't need any intermediate piece of software, but connects directly to servers. It can therefore be used on any typical mailbox supporting IMAP v4 (Gmail, Outlook/Office365, self-hosted and custom servers). It can work alongside your usual desktop mail client (Microsoft Outlook, Mozilla Thunderbird, web clients like Zimbra, Horde, SoGo, etc.).
 
+---
+
 ## Features
 
 Internally, it provides low-level features exposed through a nice programming interface allowing to write clean and elegant filters:
