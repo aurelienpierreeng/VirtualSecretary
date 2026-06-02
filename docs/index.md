@@ -399,10 +399,14 @@ So, at runtime (possibly on server), you need those 2 pre-computed artifacts in 
 
 from core import database, search
 
-# Open pre-computed artifacts from disk in read-only mode.
-# The database contains the whole list of web pages for content filtering
+## Open pre-computed artifacts from disk in read-only mode:
+
+# The database contains all the expensive data that may not fully fit in RAM,
+# open it in read-only mode for performance and security.
 db = database.open_db("engine.db", mode="ro") 
-# The engine contains only a list of URLs and precomputed stats
+
+# The engine contains only lightweight loaders and managers,
+# it will read the database when needed.
 engine = search.Indexer.load("engine", db) 
 
 # Run the user query
