@@ -190,6 +190,13 @@ with crawler.Crawler(delay=1.0) as cr:
         since        = cr.since,
     )
 
+    # Passes since as fromdate to the SE API; also does per-post last_edit_date check
+    pages += cr.get_stackexchange_posts(
+        site    = "photo",
+        api_key = "YOUR_SE_APP_KEY",
+        since   = cr.since,
+    )
+
 database.populate_db(tmp_db, pages)
 tmp_db.close()
 ```
@@ -398,6 +405,47 @@ A read-only fine-grained token scoped to the target repositories is sufficient. 
 
 !!! tip "Keeping GitHub and web content in the same database"
     Because both `get_github_repositories` and the HTML crawling methods return the same `list[web_page]` type, they can all be passed to `database.populate_db` without any conversion. Pages from GitHub will carry `category="Github"` while forum crawl results carry `category="forum"`, which lets you filter them independently at query time.
+
+
+### Stack Exchange forums
+
+Indexes all posts (questions + answers) and their embedded comments from any Stack Exchange community via the public API v2.3. Each post body and its comments are concatenated into one `web_page`. External links found in Markdown bodies are followed at one recursion level, exactly as `get_github_repositories()` does.
+
+```python
+pages = cr.get_stackexchange_posts(
+    site     = "photo",             # site name as used in the SE API
+    api_key  = "YOUR_SE_APP_KEY",   # optional but strongly recommended
+    category = "forum",
+    since    = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc),
+)
+```
+
+Other community examples:
+
+```python
+# Multiple communities in one session (shared crawled_URL dedup list)
+for se_site in ["photo", "unix", "electronics", "ux"]:
+    pages += cr.get_stackexchange_posts(site=se_site, api_key="…", category="forum")
+
+# stackoverflow.com has its own domain — resolved automatically
+pages += cr.get_stackexchange_posts(site="stackoverflow", api_key="…")
+```
+
+Register a free API key at [stackapps.com/apps/oauth/register](https://stackapps.com/apps/oauth/register). Without one the daily quota is 300 requests; with a key it is 10 000. The API also sends a `backoff` field in responses that **must** be respected — the method sleeps for that duration automatically.
+
+**Pagination.** The SE API caps results at 25 pages per request without a key. The method handles this with a sliding date-window pattern: it fetches *window_days* days' worth of posts per window, then steps backward in time until `earliest_date` (default: 2010-01-01) is reached.
+
+**Incremental update.** Two layers of filtering combine:
+
+| Layer | Mechanism |
+|---|---|
+| API-level | `fromdate=since` is passed to the server — only posts created or edited after `since` are returned |
+| Post-level | Each post's `last_edit_date` is compared with `self.known_urls[url]`; unchanged posts are skipped without parsing |
+
+When `since` is provided the date-window loop collapses to a single forward pass from `since` to now — the fast incremental path.
+
+!!! tip "Choosing `window_days`"
+    Smaller windows mean more API requests but fewer results per window, reducing the risk of hitting the 25-page cap on large communities. 90 days works well for mid-size communities; use 30 days for very active ones like Stack Overflow.
 
 ## Crawling Details
 
