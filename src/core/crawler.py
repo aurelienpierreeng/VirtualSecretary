@@ -1337,13 +1337,17 @@ class Crawler(DelayedClass):
                     full_title = f"{feature.capitalize()}: {title}"
 
                     # Fetch comments
-                    if feature in ("issues", "pulls", "commits", "discussions"):
+                    comments_url = None
+                    if feature in ("issues", "pulls", "commits"):
                         comments_url = item.get("comments_url", "")
-                        if comments_url:
-                            self.crawled_URL.append(hash_with_category(comments_url, category))
-                            for comment in _fetch_page(comments_url):
-                                if comment.get("body"):
-                                    body_parts.append(comment["body"])
+                    elif feature == "discussions":
+                        comments_url = f"https://api.github.com/repos/{owner}/{repo}/{feature}/{item.get("number", "")}/comments"
+
+                    if comments_url:
+                        self.crawled_URL.append(hash_with_category(comments_url, category))
+                        for comment in _fetch_page(comments_url):
+                            if comment.get("body"):
+                                body_parts.append(comment["body"])
 
                     full_body = "\n\n---\n\n".join(filter(None, body_parts))
                     output += _item_to_pages(item_url, full_title, full_body, date)
