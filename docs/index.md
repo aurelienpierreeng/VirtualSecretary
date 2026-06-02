@@ -445,7 +445,7 @@ db.close()
 ```
 
 !!! warning
-    In practice, you will want to train the language model on a much larger dataset than the one you are going to index in the search engine, so the language model can acquire a larger vocabulary and learn synonyms. See the [full tutorial on building a search index](/starting/7-build-your-own-search-engine.html).
+    In practice, you will want to train the language model on a much larger dataset than the one you are going to index in the search engine, so the language model can acquire a larger vocabulary and learn synonyms. See the [full tutorial on building a search index](/starting/7-build-your-own-search-engine.md).
 
 !!! note
     All the stages (crawling data, training the tokenizer and the language model, building the search engine index and serving the actual queries) are independent and communicate through SQLite databases saved on disk, which means:
@@ -456,8 +456,15 @@ db.close()
     - datasets can optionally be controlled and cleaned using [DB Browser for SQLite](https://sqlitebrowser.org/), providing a spreadsheet-like UI and allowing to run custom queries,
     - updating the server-side search engine means uploading 2 updated artifacts through FTP and overwritting the previous. They contain everything they need (page index, language model, tokenizer, etc.),
 
-!! tip
-    A search engine index of 256k pages (with an 8.6 GB database) uses 1.6 GB of RAM at runtime and returns a result in under 300 ms on an Intel Xeon laptop from 2018. Building it requires at most 12 GB of RAM (which can be reduced by using fewer cores). Preparing it from scratch (without crawling the sources) takes around 6 h of computation.
+!!! tip
+    A search engine index of 256k pages (with an 8.6 GB database) uses 1.6 GB of RAM at runtime.
+    
+    On an Intel Xeon laptop from 2018: 
+    
+    - in a server-like situation (Flask debug server, capped at 2 threads): the indexer loads in ~5 s and returns a search result in under 300 ms,
+    - in a script-like situation: the indexer loads in ~1.5s and returns a search result in under 75 ms,
+    - building the full pipeline requires at most 12 GB of RAM (which can be reduced by using fewer cores),
+    - building the full pipeline from scratch (without crawling the sources) takes around 6 h of computation.
 
 ## Extensible by design
 
