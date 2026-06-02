@@ -283,7 +283,7 @@ The model will be stored in a file named `classifier.joblib` that can be saved a
 
 ### Build a semantic search-engine for your website
 
-"Semantic" means the search-engine understands synonyms and possibly translatons, otherwise basic information retrieval systems simply rely on exact keywords, which is quite limiting when users are not experts using the exact technical slang.
+"Semantic" means the search-engine understands synonyms and possibly translations, otherwise basic information retrieval systems simply rely on exact keywords, which is quite limiting when users are not experts using the exact technical slang.
 
 ```python
 
@@ -397,12 +397,6 @@ So, at runtime (possibly on server), you need those 2 pre-computed artifacts in 
 
 from core import database, search
 
-# Paginate results with 50 results per page
-PAGE = 0
-NUM_RESULTS = 50
-n_min = PAGE * NUM_RESULTS
-n_max = (PAGE + 1) * NUM_RESULTS - 1
-
 # Open pre-computed artifacts from disk
 db = database.open_db("engine.db", mode="ro") # read-only mode is slightly faster
 engine = search.Indexer.load("engine", db) 
@@ -411,6 +405,12 @@ engine = search.Indexer.load("engine", db)
 user_query = "How to install Ansel on Mac OS ?"
 tokenized_query = engine.tokenize_query(user_query)
 results = engine.rank(db, tokenized_query, search.search_methods.AI)
+
+# Paginate results with 50 results per page
+PAGE = 0
+NUM_RESULTS = 50
+n_min = PAGE * NUM_RESULTS
+n_max = (PAGE + 1) * NUM_RESULTS - 1
 
 # Print raw ordered list: rank, url, similarity score
 print(results[n_min:n_max])
@@ -436,18 +436,6 @@ full_results = [
   } 
   for row in cursor.fetchall()
 ]
-
-# ...like dumping it as JSON to feed it to an interface
-import json
-dump = json.dumps(
-  {
-    "query": user_query,
-    "tokenized": tokenized_query,
-    "results": full_results,
-    "page": PAGE,
-    "pages": len(results) // NUM_RESULTS
-  }
-)
 
 db.close()
 ```
