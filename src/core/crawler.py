@@ -1409,7 +1409,7 @@ class Crawler(DelayedClass):
             category:
                 Label applied to every indexed post.
             langs:
-                Language codes passed to [get_immediate_links][] when following
+                Language codes passed to [get_immediate_links][core.crawler.Crawler.get_immediate_links] when following
                 external links from post bodies.
             since:
                 Only fetch posts whose ``creation_date`` or ``last_edit_date``
