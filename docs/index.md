@@ -447,6 +447,18 @@ db.close()
 !!! warning
     In practice, you will want to train the language model on a much larger dataset than the one you are going to index in the search engine, so the language model can acquire a larger vocabulary and learn synonyms. See the [full tutorial on building a search index](/starting/7-build-your-own-search-engine.html).
 
+!!! note
+    All the stages (crawling data, training the tokenizer and the language model, building the search engine index and serving the actual queries) are independent and communicate through SQLite databases saved on disk, which means:
+
+    - all the stages can be deployed as micro-services on different hardware, having different performance and running on different timelines. Crawling needs a lot of runtime (due to servers thresholding bots) but low performance, training language models needs a couple of hours here and there, but powerful hardware, and the language model doesn't need to be updated everytime new pages are inserted into the index,
+    - updating datasets means inserting new rows into existing databases, which can be done incrementally so website crawling can only crawl new pages (since the previour crawl), and pages that go 404 or 403 are not lost in your knowledge base,
+    - merging different, pre-filtered, data sources into a final index database is easy,
+    - datasets can optionally be controlled and cleaned using [DB Browser for SQLite](https://sqlitebrowser.org/), providing a spreadsheet-like UI and allowing to run custom queries,
+    - updating the server-side search engine means uploading 2 updated artifacts through FTP and overwritting the previous. They contain everything they need (page index, language model, tokenizer, etc.),
+
+!! tip
+    A search engine index of 256k pages (with an 8.6 GB database) uses 1.6 GB of RAM at runtime and returns a result in under 300 ms on an Intel Xeon laptop from 2018. Building it requires at most 12 GB of RAM (which can be reduced by using fewer cores). Preparing it from scratch (without crawling the sources) takes around 6 h of computation.
+
 ## Extensible by design
 
 Protocols are managed through an abstract class. To implement your own connector for protocol `xyz`, you only need to inherit the `Server` and `Content` abstract classes from `src/core/connectors.py`, then put your children classes in a file named `xyz_server.py`, into the `src/protocols` folder. It will then be automatically loaded by the framework and will be accessible from the filters through:
