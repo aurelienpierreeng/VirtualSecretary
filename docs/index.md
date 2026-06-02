@@ -407,16 +407,13 @@ tokenized_query = engine.tokenize_query(user_query)
 results = engine.rank(db, tokenized_query, search.search_methods.AI)
 
 # Paginate results with 50 results per page
-PAGE = 0
 NUM_RESULTS = 50
-n_min = PAGE * NUM_RESULTS
-n_max = (PAGE + 1) * NUM_RESULTS - 1
 
 # Print raw ordered list: rank, url, similarity score
-print(results[n_min:n_max])
+print(results[0:NUM_RESULTS])
 
 # Extract only URLs from the list of results
-urls = [url for rank, url, score in results[n_min:n_max]]
+urls = [url for rank, url, score in results[0:NUM_RESULTS]]
 
 # URLs are the database primary key, so use them to fetch more data on results
 # from the DB
