@@ -92,7 +92,7 @@ Internally, it provides low-level features exposed through a nice programming in
 * __works on server or desktop__, on demand or as a Cron job. A locking mechanism prevents more than one instance to process each mailbox. AI classifiers can be trained locally on desktop and sent to run read-only on the server,
 * an overridable internal logging mechanism prevents emails from being processed more than once, so automatic actions that are manually reverted are not performed again on the next run.
 
-## Examples of applications
+---
 
 ## Quick demos
 
@@ -280,6 +280,177 @@ The model will be stored in a file named `classifier.joblib` that can be saved a
 !!! note
     Training your own AI makes sure it uses your language(s) and it knows the specific vocabulary of your particular business (including slang, trademarks and company names). This training is done on your own computer or server, not on a third-party cloud, which solves one of the major data privacy concerns of AI in its current [SaaS](https://en.wikipedia.org/wiki/Software_as_a_service) approach.
 
+
+### Build a semantic search-engine for your website
+
+"Semantic" means the search-engine understands synonyms and possibly translatons, otherwise basic information retrieval systems simply rely on exact keywords, which is quite limiting when users are not experts using the exact technical slang.
+
+```python
+
+from core import crawler, utils, deduplicator, nlp, batching, database, types, language, search
+
+dataset_name = "ansel"
+
+# Open a temp database to save the pages
+tmp_db = database.create_temp_db()
+
+# Instanciate a tokenizer that will split sentences into single words
+# and remove English stopwords
+tokenizer = nlp.Tokenizer(replacements=language.REPLACEMENTS,
+                          abbreviations=language.ABBREVIATIONS,
+                          stopwords=language.STOPWORDS_DICT["english"])
+
+#######################################################################
+# 1. Acquire data from the web
+#######################################################################
+
+# Crawl the website content
+with crawler.Crawler(delay=1.) as cr:
+  output = cr.get_website_from_sitemap("https://ansel.photos",
+                                        "en",
+                                        sitemap="/en/sitemap.xml",
+                                        markup=("div", {"id": "content-body"}),
+                                        category="reference",
+                                        internal_links="external",
+                                        mine_pdf=True)
+# Dump the pages into the database
+database.populate_db(tmp_db, output)
+
+# Cleanup and prepare crawled data: extract dates and guess language
+batching.batch_parse_web_page(tmp_db, tokenizer)
+
+# Deduplicate pages
+dedup = deduplicator.Deduplicator()
+dedup(tmp_db)
+
+# Tokenize the whole corpus
+batching.batch_tokenize(tmd_db, tokenizer, only_none=False)
+
+# Compress and save the database for later reuse
+database.compress_db(tmp_db)
+utils.save_data(tmp_db, dataset_name)
+
+#######################################################################
+# 2. Train the language model
+#######################################################################
+
+# Train an n-gram-aware tokenizer: split words but keep "New York City" as one single token.
+# Extract only English content for reliable training
+corpus = database.SQLitePageCorpus(db,
+                                   "SELECT tokenized FROM pages WHERE lang IN ('en')",
+                                   max_depth=1) # list of strings
+
+tokenizer.train_ngrams(corpus,
+                       " a an the "  # articles; we never care about these in MWEs
+                       " for of with without at from to in on by "  # prepositions; incomplete on purpose, to minimize FNs
+                       " and or "  # conjunctions; incomplete on purpose, to minimize FNs
+                       " del della of von der die das van " # foreign
+                      )
+
+# Save the trained tokenizer to the disk, to be able to reuse it in the future
+tokenizer.save("my-tokenizer") 
+# load it from disk in the future with `nlp.Tokenizer.load("my-tokenizer")`
+
+# Stem words for generality, with n-grams detection
+batching.batch_stem(tmp_db, tokenizer)
+
+# Train Word2Vec model only on English documents for proper semantics
+corpus = database.SQLitePageCorpus(db,
+                                   "SELECT stemmed FROM pages WHERE lang IN ('en')",
+                                   max_depth=0) # list of list of strings
+
+w2v = nlp.Word2Vec(corpus, 
+                   "word2vec-public", 
+                   vector_size=496, epochs=40, window=31, min_count=10, sample=1e-4, ns_exponent=-0.5, negative=5,
+                   tokenizer=tokenizer)
+# this will be automatically saved to disk.
+# load it from disk in the future with `nlp.Word2Vec.load_model("word2vec-public")`
+
+#######################################################################
+# 3. Build the search engine
+#######################################################################
+
+# Build the permament database, indexed by URL as primary key
+db = database.create_db("engine.db")
+database.import_pages(source_db=tmp_db, destination_db=db)
+database.compress_db(db)
+database.delete_tmp_db(tmp_db) # we will not need the temp DB anymore
+
+# Instanciate the search engine object, with expensive variable pre-computing
+engine = search.Indexer(db, "engine", w2v, principal_components=2)
+# this will be automatically saved to disk
+# load it from disk in the future with `search.Indexer.load("search_engine", db)`
+
+database.close_db(db)
+```
+
+All the above is fairly computationally-expensive, but:
+
+1. in 45 lines of code, you just built a semantic search-engine from scratch on your own data,
+2. then everything is pre-computed into 2 artifacts saved on disk:
+    - `engine.db`: the SQLite database of web pages (or any other text content),
+    - `engine.joblib`: the pre-computed search indexer instance.
+
+So, at runtime (possibly on server), you need those 2 pre-computed artifacts in read-only mode:
+
+```python
+
+from core import database, search
+
+# Paginate results with 50 results per page
+PAGE = 0
+NUM_RESULTS = 50
+n_min = PAGE * NUM_RESULTS
+n_max = (PAGE + 1) * NUM_RESULTS - 1
+
+# Open pre-computed artifacts from disk
+db = database.open_db("engine.db", mode="ro") # read-only mode is slightly faster
+engine = search.Indexer.load("engine", db) 
+
+# Run the user query
+user_query = "How to install Ansel on Mac OS ?"
+tokenized_query = engine.tokenize_query(user_query)
+results = engine.rank(db, tokenized_query, search.search_methods.AI)
+
+# Print raw ordered list: rank, url, similarity score
+print(results[n_min:n_max])
+
+# Extract only URLs from the list of results
+urls = [url for rank, url, score in results[n_min:n_max]]
+
+# URLs are the database primary key, so use them to fetch more data on results
+# from the DB
+sql_placeholder = ", ".join(["?" for _ in urls])
+cursor = db.execute(
+    f"SELECT title, date, excerpt, url FROM pages WHERE url IN ({sql_placeholder})",
+    urls
+)
+
+# Create a list of Python dict from the results and do whatever you want with it...
+full_results = [
+  { 
+    "title": row[0], 
+    "date": row[1], 
+    "excerpt": row[2], 
+    "url": row[3] 
+  } 
+  for row in cursor.fetchall()
+]
+
+# ...like dumping it as JSON to feed it to an interface
+import json
+dump = json.dumps(
+  {
+    "query": user_query,
+    "tokenized": tokenized_query,
+    "results": full_results,
+    "page": PAGE,
+    "pages": len(results) // NUM_RESULTS
+  }
+)
+
+db.close()
+```
 
 ## Extensible by design
 
