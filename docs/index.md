@@ -442,6 +442,9 @@ full_results = [
 db.close()
 ```
 
+!!! warning
+    In practice, you will want to train the language model on a much larger dataset than the one you are going to index in the search engine, so the language model can acquire a larger vocabulary and learn synonyms. See the [full tutorial on building a search index](/starting/7-build-your-own-search-engine.html).
+
 ## Extensible by design
 
 Protocols are managed through an abstract class. To implement your own connector for protocol `xyz`, you only need to inherit the `Server` and `Content` abstract classes from `src/core/connectors.py`, then put your children classes in a file named `xyz_server.py`, into the `src/protocols` folder. It will then be automatically loaded by the framework and will be accessible from the filters through:
