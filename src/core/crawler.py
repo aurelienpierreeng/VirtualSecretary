@@ -1353,6 +1353,277 @@ class Crawler(DelayedClass):
         return output
 
 
+    def get_stackexchange_posts(self,
+                                 site: str,
+                                 api_key: str | None = None,
+                                 category: str = "forum",
+                                 langs: tuple[str, ...] = ("en",),
+                                 since: datetime.datetime | None = None,
+                                 window_days: int = 90,
+                                 earliest_date: datetime.datetime | None = None,
+                                 se_filter: str = "!14e92L7CSAvro*ufn5-s.s23LqfumIAci09lv0z)*cLWPr") -> list[web_page]:
+        """Index a Stack Exchange community via the public API v2.3.
+
+        Retrieves all posts (questions, answers) together with their embedded
+        comments from the `posts` endpoint.  Each post's body and its comments
+        are concatenated into a single [core.types.web_page][] and external
+        links found in the Markdown bodies are followed at one recursion level
+        (PDFs included).
+
+        **Pagination and rate limits.**  Without an API key the SE API allows
+        300 requests/day and a maximum of 25 pages per date window.  With a key,
+        the daily quota rises to 10 000 requests.  The method handles both
+        cases: it pages through 25-page windows, each covering *window_days*
+        days of posts, sliding backward in time until *earliest_date* is
+        reached.  When *since* is provided the window collapses to a single
+        forward pass from *since* to now, which is the efficient path for
+        incremental updates.  The API's ``backoff`` field is always respected.
+
+        **Incremental update.**  Two complementary mechanisms combine:
+
+        - *since* (or ``self.since``) is passed as ``fromdate`` to the API, so
+          the server only returns posts created or edited after that point.
+        - ``self.known_urls`` provides per-URL precision: for each post the
+          ``last_edit_date`` field is compared with the stored crawl timestamp,
+          and the post is skipped when the stored timestamp is more recent —
+          catching the case where a post was fetched as part of a wide window
+          but not actually changed.
+
+        **SE filter.**  The default *se_filter* string was built at
+        `api.stackexchange.com/docs/filters` and requests the following fields:
+        ``body_markdown``, ``comments``, ``comments.body_markdown``,
+        ``comments.link``, ``creation_date``, ``last_edit_date``, ``link``,
+        ``title``.  Pass a custom filter string if you need additional fields.
+
+        Arguments:
+            site:
+                Stack Exchange site name as used in the API, e.g. ``"photo"``,
+                ``"stackoverflow"``, ``"unix"``, ``"electronics"``.
+                Sites with standalone domains (``stackoverflow.com``,
+                ``superuser.com``, ``serverfault.com``, ``askubuntu.com``,
+                ``mathoverflow.net``) are resolved automatically.
+            api_key:
+                Optional Stack Exchange API key.  Raises daily quota from 300
+                to 10 000 requests/day.  Obtain one free at
+                https://stackapps.com/apps/oauth/register.
+            category:
+                Label applied to every indexed post.
+            langs:
+                Language codes passed to [get_immediate_links][] when following
+                external links from post bodies.
+            since:
+                Only fetch posts whose ``creation_date`` or ``last_edit_date``
+                is at or after this datetime.  Passed as ``fromdate`` to the
+                API.  Overrides ``self.since`` when provided.
+            window_days:
+                Size (in days) of each date window used when doing a full crawl
+                (i.e. when *since* is ``None``).  Smaller windows mean more API
+                requests but fewer items per page, reducing the chance of
+                hitting the 25-page cap.  Default ``90``.
+            earliest_date:
+                Stop the full-crawl backward walk when this date is reached.
+                Defaults to 2010-01-01 (SE's approximate launch date).
+            se_filter:
+                Opaque SE filter string defining which fields are returned.
+                Override only when you need fields beyond the defaults.
+
+        Returns:
+            list of [core.types.web_page][] objects.
+
+        Example:
+            ```python
+            db = database.open_db("my-engine.db")
+            with crawler.Crawler(delay=1.0) as cr:
+                cr.load_known_urls(db)
+                pages = cr.get_stackexchange_posts(
+                    site     = "photo",
+                    api_key  = "YOUR_SE_APP_KEY",
+                    category = "forum",
+                    since    = datetime.datetime(2025, 1, 1,
+                                                 tzinfo=datetime.timezone.utc),
+                )
+            database.populate_db(db, pages)
+            ```
+        """
+        # Standalone-domain sites — domain is not {site}.stackexchange.com
+        _SE_STANDALONE = {
+            "stackoverflow": "stackoverflow.com",
+            "superuser":     "superuser.com",
+            "serverfault":   "serverfault.com",
+            "askubuntu":     "askubuntu.com",
+            "mathoverflow":  "mathoverflow.net",
+        }
+        se_domain = _SE_STANDALONE.get(site.lower(), f"{site}.stackexchange.com")
+
+        effective_since = since or self.since
+        _earliest = earliest_date or datetime.datetime(2010, 1, 1, tzinfo=datetime.timezone.utc)
+        output: list[web_page] = []
+
+        # ── internal helpers ──────────────────────────────────────────────────
+
+        def _item_to_pages(post: dict) -> list[web_page]:
+            """Convert a single SE API post dict to web_page objects."""
+            post_url = post.get("link", "")
+            if not post_url:
+                return []
+
+            # Incremental: skip posts unchanged since last crawl
+            last_edit_ts = post.get("last_edit_date") or post.get("creation_date")
+            if last_edit_ts and post_url in self.known_urls:
+                try:
+                    post_dt = _normalize_tz(
+                        datetime.datetime.fromtimestamp(last_edit_ts,
+                                                        tz=datetime.timezone.utc)
+                    )
+                    if _normalize_tz(self.known_urls[post_url]) >= post_dt:
+                        return []
+                except (ValueError, OSError):
+                    pass
+
+            if hash_with_category(post_url, category) in self.crawled_URL:
+                return []
+            self.crawled_URL.append(hash_with_category(post_url, category))
+
+            # Mark comment URLs as already visited so recursive crawling skips them
+            for comment in post.get("comments", []):
+                if "link" in comment:
+                    self.crawled_URL.append(
+                        hash_with_category(comment["link"], category)
+                    )
+
+            # Build body: main post + all comments
+            body_parts: list[str] = []
+            if post.get("body_markdown"):
+                body_parts.append(post["body_markdown"])
+            for comment in post.get("comments", []):
+                if comment.get("body_markdown"):
+                    body_parts.append(comment["body_markdown"])
+
+            full_body = "\n\n".join(body_parts)
+            title = post.get("title", "")
+
+            date_ts = post.get("last_edit_date") or post.get("creation_date")
+            date    = (datetime.datetime
+                       .fromtimestamp(date_ts, tz=datetime.timezone.utc)
+                       .isoformat()
+                       if date_ts else None)
+
+            html = (
+                f"<title>{title}</title><body>\n\n"
+                + markdown.markdown(full_body)
+                + "\n\n</body>"
+            )
+            entry, _, _ = get_page_content(None, self, content=html)
+            if entry is None:
+                return []
+
+            pages = parse_page(entry, post_url, "en", "body", date, category)
+
+            # Add bare URLs from Markdown text; exclude internal SE links
+            # (those are covered by API pagination, not link-following)
+            entry.links += [
+                m.group(0)
+                for m in patterns.URL_PATTERN.finditer(full_body, concurrent=True)
+                if f"https://{se_domain}/" not in m.group(0)
+            ]
+
+            # Follow external links only
+            unique_links = self.get_unique_internal_url(entry, se_domain, post_url)
+            pages += self.get_immediate_links(
+                unique_links, se_domain, "en", langs,
+                "external", "", internal_links="external", mine_pdf=True,
+            )
+
+            return pages
+
+        def _process_window(fromdate: datetime.datetime,
+                             todate: datetime.datetime) -> tuple[bool, bool]:
+            """Fetch all pages in one date window.
+
+            Returns:
+                (quota_exhausted, should_continue_outer_loop)
+            """
+            page = 1
+            key_param = f"&key={api_key}" if api_key else ""
+            from_ts = int(fromdate.timestamp())
+            to_ts   = int(todate.timestamp())
+
+            while True:
+                url = (
+                    f"https://api.stackexchange.com/2.3/posts"
+                    f"?page={page}"
+                    f"&fromdate={from_ts}&todate={to_ts}"
+                    f"&order=desc&sort=activity"
+                    f"&site={site}"
+                    f"&filter={se_filter}"
+                    f"{key_param}"
+                )
+                self.sleep(f"api.stackexchange.com")
+                try:
+                    resp = requests.get(url, timeout=60)
+                    print(f"[SE:{site}] {url} → {resp.status_code}")
+                except Exception as e:
+                    print(f"[SE:{site}] Request failed: {e}")
+                    return False, False
+
+                if resp.status_code != 200:
+                    print(f"[SE:{site}] HTTP {resp.status_code}, stopping")
+                    return False, False
+
+                data = json.loads(resp.content)
+
+                for post in data.get("items", []):
+                    output.extend(_item_to_pages(post))
+
+                quota_remaining = data.get("quota_remaining", 1)
+                print(f"[SE:{site}] page {page}, quota remaining: {quota_remaining}")
+
+                # Mandatory backoff — violating this can get the app suspended
+                if "backoff" in data:
+                    wait = int(data["backoff"])
+                    print(f"[SE:{site}] Backoff requested: waiting {wait} s…")
+                    time.sleep(wait)
+
+                if quota_remaining <= 0:
+                    print(f"[SE:{site}] Daily quota exhausted")
+                    return True, False
+
+                if not data.get("has_more", False):
+                    return False, True   # window done, continue outer loop
+
+                page += 1
+
+        # ── main crawl logic ─────────────────────────────────────────────────
+
+        if effective_since is not None:
+            # Incremental mode: single forward pass from since → now
+            now = datetime.datetime.now(datetime.timezone.utc)
+            print(f"[SE:{site}] Incremental crawl from {effective_since} to {now}")
+            _process_window(
+                _normalize_tz(effective_since),
+                now,
+            )
+
+        else:
+            # Full crawl: slide a window backward from now to earliest_date
+            todate   = datetime.datetime.now(datetime.timezone.utc)
+            fromdate = todate - datetime.timedelta(days=window_days)
+
+            print(f"[SE:{site}] Full crawl backward from {todate} to {_earliest}")
+
+            while fromdate >= _normalize_tz(_earliest):
+                quota_exhausted, carry_on = _process_window(fromdate, todate)
+
+                if quota_exhausted:
+                    break
+
+                todate   = fromdate
+                fromdate = todate - datetime.timedelta(days=window_days)
+
+        print(f"[SE:{site}] Total pages indexed: {len(output)}")
+        return output
+
+
     def _parse_pdf_content(self, link, default_lang, delay: DelayedClass, category="", custom_header={}, ):
         return get_pdf_content(link, default_lang, category=category, custom_header=custom_header, delay=delay)
 
