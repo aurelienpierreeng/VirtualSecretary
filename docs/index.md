@@ -459,11 +459,11 @@ db.close()
 !!! tip
     A search engine index of 256k pages, with a language model vectorizing on 496 dimensions, produces a 8.6 GB database and uses 1.6 GB of RAM at runtime.
     
-    On an Intel Xeon laptop from 2018: 
+    On a laptop from 2018, using a 8 × Intel® Xeon® CPU E3-1505M v6 @ 3.00GHz: 
     
     - in a server-like situation (Flask debug server, capped at 2 threads): the indexer loads in ~5 s and returns a search result in under 300 ms,
     - in a script-like situation: the indexer loads in ~1.5s and returns a search result in under 75 ms,
-    - building the full pipeline:
+    - building the full pipeline, using 520k documents for the language model:
         - requires at most 12 GB of RAM (can be reduced by using fewer cores),
         - takes around 6 h of computation (without crawling the sources).
 
