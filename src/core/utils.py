@@ -807,3 +807,13 @@ def get_script_ram():
 def get_past_n_months(n: int) -> datetime:
     """Get the date of now minus n months"""
     return datetime.now(UTC) - relativedelta(months=n)
+
+
+def get_past_n_weeks(n: int) -> datetime:
+    """Get the date of now minus n weeks"""
+    return datetime.now(UTC) - relativedelta(week==n)
+
+
+def get_past_n_days(n: int) -> datetime:
+    """Get the date of now minus n days"""
+    return datetime.now(UTC) - relativedelta(days=n)
