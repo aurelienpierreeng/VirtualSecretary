@@ -2,8 +2,8 @@
 
 ## Presentation
 
-<figure style="float:left;" markdown>
-![](assets/secretary.png){ align=left width="300" }
+<figure style="" markdown>
+![](assets/secretary.png){ align=left width="350" }
   <figcaption markdown>Secretary icons by [UltimateArm](https://www.flaticon.com/authors/ultimatearm)</figcaption>
 </figure>
 
@@ -15,12 +15,12 @@ It provides connectors to aggregate and synchronize information across:
 * your __emails__ (IMAP)
 * your __contacts/address book__ (CardDAV),
 * your __Instagram posts & comments__ (oAuth),
-* typical __websites and forums__ (HTML and PDF, with optional/automatic OCR),
-* AJAX-driven/Rest-driven websites: 
-    * __Github__ issues, pull requests, commits, discussions,
+* typical __websites and forums__ (HTML),
+* AJAX or Rest-driven websites: 
+    * __Github__ issues, pull requests, commits, discussions, and all comments,
     * __Stack Exchange__ forums,
     * __YouTube__ channels,
-* __local PDF and text documents__ (automatic OCR if needed),
+* __PDF and text documents__ (automatic OCR if needed), on your computer or mined from websites crawling,
 * _and more in the future_:
     * your agenda events (CalDAV),
     * your database entries (SQL).
@@ -28,10 +28,19 @@ It provides connectors to aggregate and synchronize information across:
 With all this data, it allows you to easily create information pipelines to:
 
 * __train an AI language model__, privately, on your own computer and on your own data, then, from it:
-    * train an AI classifier (tagging documents with topics or categories),
-    * create a semantic search-engine, for intranet and/or internet knowledge base, on your own infrastructure,
+    * train an AI classifier (tagging documents with topics or categories), using:
+        * your emails,
+        * your documents,
+    * create a specialty, semantic search-engine, for intranet/internet knowledge base, on your own infrastructure, including:
+        * your own documentations and FAQs,
+        * your competitor's or supplier's websites, documentations, FAQs, etc.
+        * complete Github repositories, yours or the third-party projects you depend on,
+        * scientific journals and academic papers,
+        * YouTube channels, Stack Exchange forums,
+        * local PDF or text files, including source code,
+        * user forums,
 * __write custom filters and actions on events__. Some examples:
-    * arbitrarily tag or flag incoming emails, straight on server (so all clients get the tags):
+    * arbitrarily tag or flag incoming emails, straight on IMAP server (so all clients get the tags):
         * based on keyword detection and regex in subject, body, attachments, sender, etc.
         * based on AI classifier output (topic, category, etc.)
     * automatically sort incoming emails into (dynamically-created) IMAP folders:
@@ -43,19 +52,28 @@ With all this data, it allows you to easily create information pipelines to:
         * SPF and DKIM checks (very reliable, yet few email providers do it…),
         * SpamAssassin headers,
         * your self-trained AI classifier,
-    * program auto-responders:
+    * program email auto-responders:
         * put up vacation notices that start and end automatically at specified dates,
-        * notify your correspondents that they are n-th in your backlog queue, based on the count of unread emails in your box,
+        * notify your correspondents that they are n-th in your backlog queue, based on the count of unread emails in your mailbox,
         * detect questions and topics in incoming emails and send back automatic responses with the most relevant pages from your search engine,
     * mirror/duplicate notifications from third-party services on your mailbox:
         * when a new Instagram comment comes in, mirror it on a dedicated mailbox folder, respecting threading hierarchy and authors,
 
-!!! note
-    The AI language models used by Virtual Secretary are memory- and power-efficient methods from before 2015, they will run with reasonable runtimes on servers and old desktop computers, and don't use GPU. The AI layer uses Python modules interfacing with parallelized C code, so the heavy-lifting is done by compiled code.
-    
-    Virtual Secretary uses no LLM and provides no chat bot.
+---
+
+{==
+
+__Virtual Secretary is meant to help surviving in World of constant information overload and overstimulation,__ by connecting sollicitations to knowledge in a structured, automated way.
+
+It may greatly help neurodivergent people (autistic, ADHD, dys-*) by prefiltering, sorting and finally reducing sollicitations.
+
+It is the missing piece for when you have complete documentations & FAQs and people still don't read them.
+
+==}
 
 ---
+
+## The pitch
 
 > __Secretary__: _a person who works in an office, working for another person, dealing with mail and phone calls, keeping records, arranging meetings with people, etc._ ([Oxford dictionnary](https://www.oxfordlearnersdictionaries.com/definition/english/secretary?q=secretary))
 
@@ -67,6 +85,8 @@ The Virtual Secretary aims at __making your ultra-connected office life less str
 The framework provides an high-level Python API allowing you to efficiently write simple and advanced email filters, unleashing the full power of the Python programming language, along with its powerful ecosystem of packages for data mining, machine learning, regular expression search, etc.
 
 The Virtual Secretary works standalone: it doesn't need any intermediate piece of software, but connects directly to servers. It can therefore be used on any typical mailbox supporting IMAP v4 (Gmail, Outlook/Office365, self-hosted and custom servers). It can work alongside your usual desktop mail client (Microsoft Outlook, Mozilla Thunderbird, web clients like Zimbra, Horde, SoGo, etc.).
+
+The Virtual Secretary is released under GNU/GPL v3 license. It's free to use, free to modify, and uses only free components. All you need is a computer and internet.
 
 ---
 
@@ -83,7 +103,7 @@ Internally, it provides low-level features exposed through a nice programming in
     - easily create natural language corpora to train specialized AI language models that speak your business slang,
     - create specialized search engines aggregating internal and external resources you need for your job (reference implementation of a server-side interface: [Chantal](https://chantal.aurelienpierre.com)),
 * connection to __Instagram__ through their OAuth2 and Rest API _(read-only)_,
-  - duplicate comments into your mailbox to centralize,
+    - duplicate comments into your mailbox to centralize,
 * __email authentication__ (spam detection) through [SPF](https://en.wikipedia.org/wiki/Sender_Policy_Framework), [DKIM](https://en.wikipedia.org/wiki/DomainKeys_Identified_Mail) and [ARC](https://en.wikipedia.org/wiki/Authenticated_Received_Chain),
     - basic SPF and DKIM checks get rid of 90% of spam emails without relying on flimsy machine learning. Go figure why mail providers don't do it…
 * connection to __CardDAV address book servers__ (tested with [SabreDAV](https://sabre.io/), used by [NextCloud](https://nextcloud.com/)  and [Owncloud](https://owncloud.com/) servers) _(read-only)_,
@@ -93,6 +113,19 @@ Internally, it provides low-level features exposed through a nice programming in
     - find relevant resources from a query (search engine) or an email body (auto-responder).
 * __works on server or desktop__, on demand or as a Cron job. A locking mechanism prevents more than one instance to process each mailbox. AI classifiers can be trained locally on desktop and sent to run read-only on the server,
 * an overridable internal logging mechanism prevents emails from being processed more than once, so automatic actions that are manually reverted are not performed again on the next run.
+
+!!! note
+    The AI language models used by Virtual Secretary are memory- and power-efficient methods from before 2015, they will run with reasonable runtimes on servers and old desktop computers, and don't use GPU. The AI layer uses Python modules interfacing with parallelized C code, so the heavy-lifting is done by compiled code.
+    
+    Virtual Secretary uses no LLM and provides no chat bot.
+
+---
+
+## Limitations
+
+The Virtual Secretary is meant to help you write your own scripts, you will need to know or learn Python programming language. Tutorials and examples are provided to bootstrap it, even with poor programming skills.
+
+It has no GUI, and building a GUI for it would quickly degrade into an overwhelming product if all options and features of the framework are supported and exposed.
 
 ---
 
@@ -445,7 +478,7 @@ db.close()
 ```
 
 !!! warning
-    In practice, you will want to train the language model on a much larger dataset than the one you are going to index in the search engine, so the language model can acquire a larger vocabulary and learn synonyms. See the [full tutorial on building a search index](/starting/7-build-your-own-search-engine.md).
+    In practice, you will want to train the language model on a much larger dataset than the one you are going to index in the search engine, so the language model can acquire a larger vocabulary and learn synonyms. See the [full tutorial on building a search index](starting/7-build-your-own-search-engine.md).
 
 !!! note
     All the stages (crawling data, training the tokenizer and the language model, building the search engine index and serving the actual queries) are independent and communicate through SQLite databases saved on disk, which means:
