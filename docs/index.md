@@ -409,20 +409,16 @@ engine = search.Indexer.load("engine", db)
 user_query = "How to install Ansel on Mac OS ?"
 tokenized_query = engine.tokenize_query(user_query)
 results = engine.rank(db, tokenized_query, search.search_methods.AI)
-
+print(results[0:50])
 
 # results is an ordered list: rank, url, similarity score,
 # by descending order of relevance.
-print(results[0:50])
-
 # In case you need more data on the page results, you will
 # need to fetch them from the database, which is indexed by URL.
-
 
 # Get title, date, excerpt and url again for all URLs in the first
 # 50 results.
 urls = [url for rank, url, score in results[0:50]]
-
 sql_placeholder = ", ".join(["?" for _ in urls])
 cursor = db.execute(
     f"SELECT title, date, excerpt, url FROM pages WHERE url IN ({sql_placeholder})",
