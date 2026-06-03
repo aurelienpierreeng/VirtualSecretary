@@ -13,6 +13,7 @@ import hashlib
 
 from urllib.parse import urljoin
 from charset_normalizer import from_bytes
+from dateutil.relativedelta import relativedelta
 
 import requests
 import regex as re
@@ -315,10 +316,13 @@ class Crawler(DelayedClass):
         "translate.google.com/translate", # Machine-translated pages
         "flickr.com",
         "instagram.com",
+        "www.facebook.com",
+        "linkedin.com",
         "mailto:",
         "/profile/",
         "/login/",
         "/login.php",
+        "/wp-login.php"
         "/signup/",
         "/signup.php",
         "/login?",
@@ -690,17 +694,18 @@ class Crawler(DelayedClass):
             #print("max recursivity level reached")
             return output
 
-        # Incremental update: skip pages that are still fresh according to self.since
-        if self.since is not None and index_url in self.known_urls:
+        # Incremental update: skip pages that are still fresh according to self.since,
+        # except of course for the recursion entry point which acts as our index.
+        if _recursion_level > 0 and self.since is not None and index_url in self.known_urls:
             stripped_url = index_url.strip("/")
             last_crawled = _normalize_tz(self.known_urls[stripped_url])
-            if last_crawled >= _normalize_tz(self.since):
+            if last_crawled >= (_normalize_tz(self.since) - relativedelta(months=3)):
                 print(f"Skip (recent): {index_url}")
                 self.update_link(index_url, stripped_url, category, 200)
                 return output
             else:
                 print(f"{index_url} has no crawling date or was crawled too long ago, will be recrawled")
-        else:
+        elif _recursion_level > 0:
             print(f"{index_url} is unknown")
 
         # Extract the domain name, to prepend it if we find relative URL while parsing
