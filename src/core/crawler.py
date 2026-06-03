@@ -714,7 +714,14 @@ class Crawler(DelayedClass):
 
         # Incremental update: skip pages that are still fresh according to self.since,
         # except of course for the recursion entry point which acts as our index.
-        if _recursion_level > 0 and self.since is not None and index_url in self.known_urls:
+
+        # is_internal_link means we are called from sitemap crawling following internal links
+        is_internal_link = (_mainthread == False) and (_recursion_level == 0)
+
+        # is_apex means we are at the first stage of recursion from true recursive crawling
+        is_apex = (_mainthread == True) and (_recursion_level == 0)
+
+        if not is_apex and self.since is not None and index_url in self.known_urls:
             stripped_url = index_url.strip("/")
             last_crawled = _normalize_tz(self.known_urls[stripped_url])
             if last_crawled >= (_normalize_tz(self.since) - relativedelta(months=3)):
