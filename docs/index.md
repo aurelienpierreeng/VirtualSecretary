@@ -152,7 +152,7 @@ carddav = protocols["carddav"] if "carddav" in protocols else None
 
 def filter(email) -> bool:
   # If email is spoofed or authentication is forged, exit immediately
-  # Uses SPF, DKIM and ARC.
+  # Uses SPF, DKIM and ARC internally to assess authenticity.
   if not email.is_authentic():
     return True
 
@@ -172,9 +172,13 @@ def filter(email) -> bool:
   return False
 
 def action(email):
+  # Move to spam box
   email.spam(email.server.junk)
 
+# Get new emails from inbox
 imap.get_objects("INBOX")
+
+# For each email, if filter(email) returns True, run action(email)
 imap.run_filters(filter, action)
 ```
 
@@ -201,12 +205,22 @@ def filter(email) -> bool:
         if len(vcard["categories"]) > 0:
           # If more than one category is found, just take the first
           category = vcard["categories"][0]
+
+          # The target IMAP folder will be INBOX/People/category
+          # or INBOX.People.category, depending on IMAP server.
           folder_tree = ["INBOX", "People", category]
+
+          # Ensure the target IMAP folder exists:
+          # 1. join the path with / or . depending on server config
+          # 2. create the folder if it doesn't exist
           target_path = email.server.build_subfolder_name(folder_tree)
+
+          # Move the email there straight away.
           email.move(target_path)
           return True
 
-      # We have no category but this contact is known
+      # We have no category but this contact is known:
+      # move the email to INBOX.People or INBOX/People depending on server config
       folder_tree = ["INBOX", "People"]
       target_path = email.server.build_subfolder_name(folder_tree)
       email.move(target_path)
@@ -214,7 +228,12 @@ def filter(email) -> bool:
 
   return False
 
+# Get new emails from inbox
 imap.get_objects("INBOX")
+
+# Here we don't use action(email) but move the email straight from filter(email)
+# because we need the target folder (CardDAV category) to perform the action,
+# and filter()/action() only communicate through a False/True state.
 imap.run_filters(filter, None)
 ```
 
