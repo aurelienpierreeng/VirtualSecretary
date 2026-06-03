@@ -36,8 +36,8 @@ class DelayedClass(ABC):
     main_domain: str | None = None
     """Main domain from where we crawl, either the one holding the sitemap or the one at the root of the recursion."""
 
-    robots_txt: Protego | None = None
-    """robots.txt file associated to the main_domain"""
+    robots_txt: dict[str, Protego] = {}
+    """Dictionnary of domain/robots.txt"""
 
     last_requests: dict[str, float] = {}
     """Dictionnary of domain/timestamp for the last request sent to a domain"""
@@ -69,10 +69,16 @@ class DelayedClass(ABC):
     def get_robots_txt(self, protocol: str, domain: str, timeout: float) -> Protego | None:
         robots_txt = protocol + "://" + domain.rstrip("/") + "/robots.txt"
 
+        if domain in self.robots_txt:
+            return self.robots_txt[domain]
+
         try:
             self.sleep(domain)
             robots = get_page(robots_txt, timeout, HEADER)
-            return Protego.parse(robots.text)
+            robots = Protego.parse(robots.text)
+            self.robots_txt[domain] = robots
+            return robots
+        
         except Exception as e:
             print("Error fetching robots.txt", e)
             return None
@@ -105,17 +111,17 @@ class DelayedClass(ABC):
         # Fuck inkscape.org and its 1 request / 86400.0 s
         crawling_delay = min(crawling_delay, 30)
 
-        self.domain_thresholds["domain"] = crawling_delay
+        self.domain_thresholds[domain] = crawling_delay
+        print(f"robots.txt parsed for {domain}. Crawling rate: 1 request / {crawling_delay} s")
+
         return crawling_delay
     
 
     def __init__(self, protocol:str, domain: str, delay: float, timeout: float):
         self.delay = delay
         self.main_domain = domain
-        self.robots_txt = self.get_robots_txt(protocol, domain, timeout)
-        self.delay = self.get_crawling_rate(domain, self.robots_txt)
-        if self.robots_txt:
-            print(f"Main robots.txt parsed for {domain}. Crawling rate: 1 request / {self.delay} s")
+        robots_txt = self.get_robots_txt(protocol, domain, timeout)
+        self.delay = self.get_crawling_rate(domain, robots_txt)
 
 
 @dataclass
@@ -321,12 +327,12 @@ def try_url(url, delay: DelayedClass, timeout: int | float = 30, bypass_robots_t
     elif not bypass_robots_txt:
         robots_txt = None
         try:
-            if delay.main_domain == domain and delay.robots_txt:
-                robots_txt = delay.robots_txt
+            robots_txt = delay.get_robots_txt(protocol, domain, timeout)
+
+            if delay.main_domain == domain:
+                crawling_delay = delay.delay
             else:
-                robots_txt = delay.get_robots_txt(protocol, domain, timeout)
                 crawling_delay = max(delay.get_crawling_rate(domain, robots_txt), crawling_delay)
-                print(f"robots.txt parsed for {domain}. Crawling rate: 1 request / {crawling_delay} s")
 
             allowed = delay.can_crawl(url, robots_txt)
 
