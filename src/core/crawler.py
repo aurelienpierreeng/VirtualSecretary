@@ -973,7 +973,7 @@ class Crawler(DelayedClass):
         currentURL = relative_to_absolute(url.get_text(), domain, website + sitemap)
         include = check_contains(contains_str, currentURL)
 
-        if self.discard_link(currentURL):
+        if not include or self.discard_link(currentURL):
             return output
 
         # Incremental update: skip pages that haven't changed since last crawl.
