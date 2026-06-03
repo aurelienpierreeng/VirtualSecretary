@@ -148,6 +148,59 @@ class HTTPResponse:
     raw_response: object
     """Original curl_cffi or httpx Response object"""
 
+    error_type: str | None = None   
+    """'dns' | 'connection' | None"""
+
+
+# 5xx codes that mean the server itself is down/unavailable —
+# retrying with different URL shapes or spoofed headers won't help.
+_SERVER_DOWN_CODES = frozenset({502, 503, 504, 521, 522, 523, 524})
+
+
+def _classify_connection_error(exc: Exception) -> str:
+    msg = str(exc).lower()
+
+    _dns_markers = (
+        "could not resolve host",
+        "name or service not known",
+        "nodename nor servname",
+        "failed to resolve",
+        "no such host",
+        "errcode 6",                    # CurlECode.COULDNT_RESOLVE_HOST
+    )
+    _refused_markers = (
+        "connection refused",           # httpx / POSIX ECONNREFUSED
+        "errno 111",                    # Linux numeric form
+        "could not connect to server",  # curl (7) suffix
+        "failed to connect to",         # curl (7) prefix
+        "errcode 7",                    # CurlECode.COULDNT_CONNECT
+        "TLS connect error",
+    )
+    _timedout_markers = (
+        "timed out",
+    )
+
+    if any(m in msg for m in _dns_markers):
+        return "dns"
+    if any(m in msg for m in _refused_markers):
+        return "refused"
+    if any(m in msg for m in _timedout_markers):
+        return "connection"
+    
+    return "unknown"
+
+
+def is_hard_error(response: HTTPResponse) -> bool:
+    """True when retrying URL variants or spoofing headers is pointless."""
+    return (
+        response.error_type in ("dns", "refused", "connection")
+        or response.status_code in _SERVER_DOWN_CODES
+    )
+
+
+class _HardError(Exception):
+    """Internal sentinel: raised to break out of nested URL-variant loops."""
+
 
 def wrap_response(r: requests.Response | httpx.Response) -> HTTPResponse:
     """Unify responses from HTTPx and cURL into uniform types"""
@@ -218,15 +271,16 @@ def request(method, url, timeout=30, headers=None) -> HTTPResponse:
     try:
         return wrap_response(_curl_request(method, url, timeout, headers))
 
-    except Exception as e:
-        # Optional: log curl failure reason
-        print(f"[curl failed] {url}: {e}")
+    except Exception as curl_exc:
+        print(f"[curl failed] {url}: {curl_exc}")
 
         try:
             return wrap_response(_httpx_request(method, url, timeout, headers))
 
         except Exception as e2:
             print(f"[httpx failed] {url}: {e2}")
+            # Classify using the curl error first; it tends to be more specific.
+            error_type = _classify_connection_error(curl_exc)
             return HTTPResponse(
                 url=url,
                 status_code=-1,
@@ -236,8 +290,8 @@ def request(method, url, timeout=30, headers=None) -> HTTPResponse:
                 content=None,
                 text="",
                 raw_response=None,
+                error_type=error_type,
             )
-
 
 def get_head(url, timeout, headers=None) -> HTTPResponse:
     return request("HEAD", url, timeout, headers)
@@ -246,6 +300,12 @@ def get_head(url, timeout, headers=None) -> HTTPResponse:
 def get_page(url, timeout, headers=None) -> HTTPResponse:
     return request("GET", url, timeout, headers)
 
+
+def _wayback_fallback(archive_url, is_archive_url, url, delay, timeout):
+    """Centralise the repeated Wayback fallback to avoid copy-paste."""
+    if is_archive_url:
+        return None, None, url
+    return try_url(archive_url, delay, timeout=timeout)
 
 
 @utils.exit_after(120)
@@ -305,12 +365,16 @@ def try_url(url, delay: DelayedClass, timeout: int | float = 30, bypass_robots_t
     except Exception as e:
         print(f"{url} failed: {e}")
 
-    # Parse (redirected ?) URL
-    link = patterns.split_url(url)
     wayback = "https://web.archive.org/web"
     archive_url = f"{wayback}/0/{url}"
     is_archive_url = url.startswith(wayback)
 
+    # If the server sent us an hard error, bail out now
+    if result is not None and is_hard_error(result):
+        return _wayback_fallback(archive_url, is_archive_url, url, delay, timeout)
+
+    # Parse (redirected ?) URL
+    link = patterns.split_url(url)
     if link is not None:
         protocol, domain, page, params, anchor = link
     else:
@@ -352,6 +416,10 @@ def try_url(url, delay: DelayedClass, timeout: int | float = 30, bypass_robots_t
             for header in [None, HEADER]:
                 delay.sleep(domain, crawling_delay)
                 result = get_head(test_url, timeout, header)
+
+                if is_hard_error(result):
+                    return _wayback_fallback(archive_url, is_archive_url, url, delay, timeout)
+                
                 if result.status_code > -1 and result.status_code < 400:
                     # Assuming the next request is to get the full page content,
                     # and we don't keep the domain-wise crawling rates in memory, 
@@ -366,10 +434,7 @@ def try_url(url, delay: DelayedClass, timeout: int | float = 30, bypass_robots_t
             print(test_url, e)  
 
             # Try the Wayback machine in final resort: "https://web.archive.org/web/"
-            if is_archive_url:
-                return None, None, url
-            else:
-                return try_url(archive_url, delay, timeout=timeout)
+            return _wayback_fallback(archive_url, is_archive_url, url, delay, timeout)
                     
     # 2. bruteforce all possible unique combinations in case we have a semi-wrong URL
     # Try : 
@@ -378,37 +443,42 @@ def try_url(url, delay: DelayedClass, timeout: int | float = 30, bypass_robots_t
     # 3. URL params or not
     # 4. anchors or not.
     # Also try to remove trailing () because that might be Markdown link syntax caught in URL detection.
-    for PROTOCOL in set([protocol + "://", "http://", "https://"]):
-        for DOMAIN in set([domain, patterns.remove_www(domain), domain.rstrip("/")]):
-            for PAGE in set([page, page.rstrip("()"), page.rstrip("/"), page + "/" ]):
-                for PARAMS in set([params, "", params.rstrip("()")]):
-                    for ANCHOR in set([anchor, "", anchor.rstrip("()")]):
-                        test_url = PROTOCOL + DOMAIN + PAGE + PARAMS + ANCHOR
-                        if test_url != url and test_url != url + "/":
-                            try:
-                                for header in [None, HEADER]:
-                                    delay.sleep(domain, crawling_delay)
-                                    result = get_head(test_url, timeout, header)
-                                    if result.status_code > -1 and result.status_code < 400:
-                                        # Assuming the next request is to get the full page content,
-                                        # and we don't keep the domain-wise crawling rates in memory, 
-                                        # except for the main website recursion,
-                                        # handle rate thresholding now, so page content runs immediately on call.
+    try:
+        for PROTOCOL in set([protocol + "://", "http://", "https://"]):
+            for DOMAIN in set([domain, patterns.remove_www(domain), domain.rstrip("/")]):
+                for PAGE in set([page, page.rstrip("()"), page.rstrip("/"), page + "/" ]):
+                    for PARAMS in set([params, "", params.rstrip("()")]):
+                        for ANCHOR in set([anchor, "", anchor.rstrip("()")]):
+                            test_url = PROTOCOL + DOMAIN + PAGE + PARAMS + ANCHOR
+                            if test_url != url and test_url != url + "/":
+                                try:
+                                    for header in [None, HEADER]:
                                         delay.sleep(domain, crawling_delay)
+                                        result = get_head(test_url, timeout, header)
 
-                                        return result, header, str(result.url)
-                                    
-                            except Exception as e:
-                                # DNS resolution issue, timeout, server unreachable, etc.
-                                print(test_url, e)
-                                break
+                                        if is_hard_error(result):
+                                            raise _HardError()
+                                        
+                                        if result.status_code > -1 and result.status_code < 400:
+                                            # Assuming the next request is to get the full page content,
+                                            # and we don't keep the domain-wise crawling rates in memory, 
+                                            # except for the main website recursion,
+                                            # handle rate thresholding now, so page content runs immediately on call.
+                                            delay.sleep(domain, crawling_delay)
+
+                                            return result, header, str(result.url)
+                                        
+                                except Exception as e:
+                                    # DNS resolution issue, timeout, server unreachable, etc.
+                                    print(test_url, e)
+                                    break
+
+    except _HardError:                       
+        return _wayback_fallback(archive_url, is_archive_url, url, delay, timeout)
 
 
     # Try the Wayback machine in final resort: "https://web.archive.org/web/"
-    if is_archive_url:
-        return None, None, url
-    else:
-        return try_url(archive_url, delay, timeout=timeout)
+    return _wayback_fallback(archive_url, is_archive_url, url, delay, timeout)
 
 
 def get_url(url: str, 
