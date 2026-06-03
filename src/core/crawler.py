@@ -298,6 +298,7 @@ def _normalize_tz(dt: datetime.datetime) -> datetime.datetime:
 
 class Crawler(DelayedClass):
     no_follow: list[str] = [
+        # Social sharing links: no interest for us
         "api.whatsapp.com/share",
         "api.whatsapp.com/send",
         "pinterest.fr/pin/create",
@@ -313,12 +314,29 @@ class Crawler(DelayedClass):
         "bufferapp.com/add",
         "getpocket.com/edit",
         "tumblr.com/share",
-        "translate.google.com/translate", # Machine-translated pages
+        "www.addtoany.com/add_to",
+        "share.flipboard.com/bookmarklet/",
+        "?share=",
+        "?replytocom=",
+        # Machine-translated pages
+        "translate.google.com/translate", 
+        # Social media platforms: they all block us globally by robots.txt
+        # so no point wasting requests on them. Anyway, there is no relevant content
+        # for us there.
         "flickr.com",
         "instagram.com",
-        "www.facebook.com",
+        "facebook.com",
         "linkedin.com",
+        "twitter.com",
+        "tiktok.com",
+        "pinterest.com",
+        "x.com",
+        "sciprofiles.com",
+        "www.citeulike.org",
+        "linktr.ee",
+        # Non-HTTP links: nothing we can do with them
         "mailto:",
+        # Endpoints to private website areas: no info to crawl for us there
         "/profile/",
         "/login/",
         "/login.php",
@@ -330,8 +348,8 @@ class Crawler(DelayedClass):
         "/user/",
         "/member/",
         "/register?",
-        "?share=",
-        "?replytocom=",
+        "login.microsoftonline.com",
+        # Files extensions we don't handle: no point sending requests either
         ".css",
         ".js",
         ".json",
