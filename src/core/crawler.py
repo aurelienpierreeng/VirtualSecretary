@@ -871,7 +871,7 @@ class Crawler(DelayedClass):
                                  default_lang: str,
                                  sitemap: str = "/sitemap.xml",
                                  langs: tuple[str] = ("en", "fr"),
-                                 markup: str | tuple[str] = "body",
+                                 markup: str | tuple | list[str] | list[tuple] = "body",
                                  category: str = "",
                                  contains_str: str | list[str] = "",
                                  internal_links: str = "any",

@@ -101,7 +101,7 @@ class ParsedHTML:
             f")"
         )
 
-    def get_page_markup(self, markup: str|tuple|list[str]|list[tuple]|None) -> str | None:
+    def get_page_markup(self, markup: str | tuple | list[str] | list[tuple] | None) -> str | None:
         """Extract the text content of an HTML page DOM by targeting only the specific tags.
 
         Arguments:
