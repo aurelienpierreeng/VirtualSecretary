@@ -324,13 +324,17 @@ class Crawler(DelayedClass):
         # so no point wasting requests on them. Anyway, there is no relevant content
         # for us there.
         "flickr.com",
+        "//flic.kr/",
         "instagram.com",
+        "threads.com",
         "facebook.com",
         "linkedin.com",
         "twitter.com",
+        "//t.co/"
         "tiktok.com",
         "pinterest.com",
-        "x.com",
+        "//x.com/",
+        "reddit.com",
         "sciprofiles.com",
         "www.citeulike.org",
         "linktr.ee",
