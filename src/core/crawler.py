@@ -318,7 +318,9 @@ class Crawler(DelayedClass):
         "mailto:",
         "/profile/",
         "/login/",
+        "/login.php",
         "/signup/",
+        "/signup.php",
         "/login?",
         "/signup?"
         "/user/",
@@ -475,6 +477,40 @@ class Crawler(DelayedClass):
 
         print(f"Loaded {count} known URLs for incremental crawling")
         return count
+    
+
+    def get_most_recent_page(self, db:sqlite3.Connection) -> datetime.datetime | None:
+        """Get the datetime of the most recent `web_page` indexed in the `db` database"""
+        cursor = db.execute("SELECT MAX(datetime) from pages")
+        date = cursor.fetchone()[0]
+
+        if date is not None:
+            return _normalize_tz(datetime.datetime.fromisoformat(date))
+        else:
+            return None
+
+
+    def get_most_recent_crawl(self, db:sqlite3.Connection) -> datetime.datetime | None:
+        """Get the datetime of the most recently crawled `web_page` indexed in the `db` database"""
+        cursor = db.execute("SELECT MAX(crawled) from pages")
+        date = cursor.fetchone()[0]
+
+        if date is not None:
+            return _normalize_tz(datetime.datetime.fromisoformat(date))
+        else:
+            return None
+        
+
+    def get_crawling_threshold(self, db:sqlite3.Connection) -> datetime.datetime | None:
+        """Get the safe date from which we should restart incremental crawling of a website.
+        We use the oldest among the last crawling date and the most recent page, to account
+        for possibly badly-formed page dates set in the future at the time of crawling.
+        """
+
+        recent_page = self.get_most_recent_page(db)
+        recent_crawl = self.get_most_recent_crawl(db)
+
+        return min((d for d in (recent_page, recent_crawl) if d is not None), default=None)
 
 
     def discard_link(self, url):
