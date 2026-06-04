@@ -19,6 +19,9 @@ import numba
 import psutil
 import unicodedata
 import sqlite3
+import tempfile
+import subprocess
+
 from collections.abc import Iterable
 
 from typing import TypedDict
@@ -686,13 +689,43 @@ def open_data(filename: str, scheme: str = "auto") -> list[web_page] | sqlite3.C
                 raise ValueError(f"Archive {path} does not contain {member}")
 
             content = tar.extractfile(member)
+            if content is None:
+                raise ValueError("Archive {member} is empty")
+            
+            sql_bytes = content.read()
 
             if scheme == "pickle":
-                return pickle.loads(content.read())
+                return pickle.loads(sql_bytes)
 
             elif scheme == "sql":
                 db = sqlite3.connect(":memory:")
-                db.executescript(content.read().decode())
+
+                try:
+                    # This will fail on huge SQL dumps
+                    db.executescript(sql_bytes.decode())
+
+                except sqlite3.DataError:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        sql_path = os.path.join(tmpdir, "dump.sql")
+                        db_path = os.path.join(tmpdir, "db.sqlite")
+
+                         # 1. write de-compressed SQL dump to disk
+                        with open(sql_path, "wb") as f:
+                            f.write(sql_bytes)
+
+                        # 2. call system sqlite3 to convert it to temporary DB on disk:
+                        # dump size limit is much higher and it's faster anyway
+                        subprocess.run(
+                            ["sqlite3", db_path],
+                            stdin=open(sql_path, "rb"),
+                            check=True
+                        )
+
+                        # 3. Dump temporary DB to memory DB
+                        src = sqlite3.connect(db_path)
+                        src.backup(db)
+                        src.close()
+
                 return db
 
     raise ValueError(f"No .pickle or .sql data archive could be found for {filename}")
