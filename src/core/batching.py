@@ -257,6 +257,9 @@ def batch_tokenize(db: sqlite3.Connection,
         cursor = db.execute('SELECT rowid, parsed, lang FROM pages')
 
     processed_batches = 0
+    row_count = cursor.rowcount
+    num_batches = int(np.ceil(row_count / batch_size))
+    print(f"Batch tokenization: {row_count} to update, {num_batches} batches")
 
     with futures.ProcessPoolExecutor(
         max_workers=num_cpu,
@@ -273,7 +276,7 @@ def batch_tokenize(db: sqlite3.Connection,
             db.commit()
 
             processed_batches += 1
-            print(f"Batch {processed_batches} processed")
+            print(f"Batch {processed_batches} over {num_batches } processed")
 
 
 def _batch_stem_worker(inputs: tuple[int, list[list[str]], str | None]) -> tuple[str | None, list[list[str]], int]:
@@ -363,7 +366,7 @@ def _batch_vectorize_worker(inputs: tuple[int, list[list[str]]]) -> tuple[np.nda
     rowid, tokenized = inputs
 
     # NOTE: tokens are per-sentence/paragraph, so it's a list of list
-    vector = WORD2VEC.get_features([word for sentence in tokenized for word in sentence], embed="OUT")
+    vector = WORD2VEC.get_features([word for sentence in tokenized for word in sentence], embed="OUT", use_sif=True)
 
     #TODO:
     #indices = word2vec.tokens_to_indices(tokens)
