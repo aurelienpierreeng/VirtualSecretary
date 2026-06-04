@@ -274,24 +274,28 @@ def request(method, url, timeout=30, headers=None) -> HTTPResponse:
     except Exception as curl_exc:
         print(f"[curl failed] {url}: {curl_exc}")
 
-        try:
-            return wrap_response(_httpx_request(method, url, timeout, headers))
+        #try:
+        #   return wrap_response(_httpx_request(method, url, timeout, headers))
 
-        except Exception as e2:
-            print(f"[httpx failed] {url}: {e2}")
-            # Classify using the curl error first; it tends to be more specific.
-            error_type = _classify_connection_error(curl_exc)
-            return HTTPResponse(
-                url=url,
-                status_code=-1,
-                headers=headers or {},
-                encoding="utf-8",
-                apparent_encoding="utf-8",
-                content=None,
-                text="",
-                raw_response=None,
-                error_type=error_type,
-            )
+        #except Exception as e2:
+        #    print(f"[httpx failed] {url}: {e2}")
+
+        # HTTPX fails too where cURL fails,
+        # so the best-effort trying here only takes more time to reach the same conclusion
+
+        # Classify using the curl error first; it tends to be more specific.
+        error_type = _classify_connection_error(curl_exc)
+        return HTTPResponse(
+            url=url,
+            status_code=-1,
+            headers=headers or {},
+            encoding="utf-8",
+            apparent_encoding="utf-8",
+            content=None,
+            text="",
+            raw_response=None,
+            error_type=error_type,
+        )
 
 def get_head(url, timeout, headers=None) -> HTTPResponse:
     return request("HEAD", url, timeout, headers)
