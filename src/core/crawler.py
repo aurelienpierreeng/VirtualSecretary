@@ -637,7 +637,7 @@ class Crawler(DelayedClass):
                                   default_lang: str = "en",
                                   child: str = "/",
                                   langs: tuple = ("en", "fr"),
-                                  markup: str = "body",
+                                  markup: str | list[str] | tuple | list[tuple] = "body",
                                   contains_str: str | list[str] = "",
                                   max_recurse_level: int = -1,
                                   category: str = "",
