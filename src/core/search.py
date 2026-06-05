@@ -13,6 +13,7 @@ from sklearn.decomposition import PCA
 
 from .utils import get_models_folder, timeit
 from .nlp import Lexicon, Word2Vec
+from . import database
     
 class BM25PlusCSR:
     """
@@ -155,44 +156,6 @@ class search_methods(IntEnum):
     FUZZY = 2
 
 class Indexer():
-    SEARCH_TABLE_COLUMNS = {
-        "id": "INTEGER PRIMARY KEY",
-        "doc_index_pickle": "BLOB",
-        "vectors_raw": "BLOB",
-        "vectors_shape": "list",
-        "bm25_k1": "REAL",
-        "bm25_b": "REAL",
-        "bm25_delta": "REAL",
-        "bm25_corpus_size": "INTEGER",
-        "bm25_avgdl": "REAL",
-        "bm25_doc_lens_raw": "BLOB",
-        "bm25_denom_const_raw": "BLOB",
-        "bm25_idf_raw": "BLOB",
-        "bm25_doc_ids_raw": "BLOB",
-        "bm25_tfs_raw": "BLOB",
-        "bm25_indptr_raw": "BLOB",
-        "w2v_index_to_key": "list",
-        "w2v_vectors_raw": "BLOB",
-        "w2v_vectors_shape": "list",
-        "tokenizer_supports_ngrams": "INTEGER",
-        "tokenizer_ngrams_trie": "BLOB",
-        "tokenizer_vocabulary_counts": "BLOB",
-    }
-
-    LEGACY_SEARCH_COLUMNS = {
-        "doc_index",
-        "vectors",
-        "bm25_doc_lens",
-        "bm25_denom_const",
-        "bm25_idf",
-        "bm25_doc_ids",
-        "bm25_tfs",
-        "bm25_indptr",
-        "w2v_vectors",
-        "w2v_syn1",
-        "w2v_syn1neg",
-    }
-
     @timeit()
     def __init__(self,
                  db: sqlite3.Connection,
@@ -234,7 +197,6 @@ class Indexer():
         self.word2vec: Word2Vec = word2vec
         """Word2Vec embedding language model"""
         
-        self.init_search_table(db)
         self.init_stats_table(db)
         self.init_categories_table(db)
         self.init_pages_search_indexes(db)
@@ -302,23 +264,6 @@ class Indexer():
         # Note: DB document embeddings are left unchanged.
         self.vectors = self.normalize_pc(self.vectors)
 
-        ########################################
-        # 3. Save heavy numpy arrays to database
-        ########################################
-
-        # Save the whole Word2Vec language model and BM25+ ranker constants to database.
-        # This has several benefits:
-        #   1. the Indexer class, once saved as a joblib/pickled artifact, is much leaner
-        #      and faster to decompress and load in RAM on server,
-        #   2. we freeze the whole state of the NLP stack (vocabulary, language model, document embeddings)
-        #      in a single, consistent place, so there is no version mismatches anymore:
-        #      the database is an unit of processing.
-        self.clear_search_cache(db)
-        self.save_search_vectors(db, self.vectors) # those have principal components already removed
-        self.save_search_word2vec(db)
-        self.save_search_tokenizer(db)
-        self.save_search_ranker(db, self.ranker)
-
         # Storing a pre-built index list as a single BLOB in database is 2.5 times faster
         # to restore at runtime than unrolling it from SQL `SELECT url FROM pages`.
         self.index: list[str] = self.build_index(db)
@@ -326,8 +271,6 @@ class Indexer():
 
         self.url_to_index: dict[str, int] = self.build_index_reverse()
         """Reverse LUT of `self.index`"""
-
-        self.save_search_index(db, self.index)
 
         ###############
         # 4. Misc stats
@@ -342,57 +285,8 @@ class Indexer():
         # 5. Save the pickled object to disk for reuse
         self.save(name)
 
-
-    def __getstate__(self):
-        # Remove huge Numpy arrays from the instance before pickling it to save.
-        # They were saved in database at __init__()
-        # and will be reloaded from there when loading the pickled object
-        import copy
-
-        state = self.__dict__.copy()
-        word2vec = copy.copy(self.word2vec)
-
-        if hasattr(word2vec, "wv"):
-            del word2vec.wv
-        if hasattr(word2vec, "syn1"):
-            del word2vec.syn1
-        if hasattr(word2vec, "syn1neg"):
-            del word2vec.syn1neg
-
-        if hasattr(word2vec, "tokenizer"):
-            tokenizer = copy.copy(word2vec.tokenizer)
-            tokenizer.ngrams_trie = {}
-            tokenizer.vocabulary = Lexicon()
-            word2vec.tokenizer = tokenizer
-
-        state["word2vec"] = word2vec
-        state["db"] = None
-        state["index"] = None
-        state["vectors"] = None
-        state["ranker"] = None
-        state["url_to_index"] = None
-        return state
-
-
-    def init_search_table(self, db: sqlite3.Connection):
-        """
-        Create or migrate the one-row search cache table.
-        """
-        cursor = db.cursor()
-
-        column_sql = ", ".join(f"{name} {kind}" for name, kind in self.SEARCH_TABLE_COLUMNS.items())
-        cursor.execute(f"CREATE TABLE IF NOT EXISTS search ({column_sql})")
-
-        existing_columns = { row[1] for row in cursor.execute("PRAGMA table_info(search)") }
-
-        for name, kind in self.SEARCH_TABLE_COLUMNS.items():
-            if name not in existing_columns:
-                cursor.execute(f"ALTER TABLE search ADD COLUMN {name} {kind}")
-
-        for name in self.LEGACY_SEARCH_COLUMNS & existing_columns:
-            cursor.execute(f"ALTER TABLE search DROP COLUMN {name}")
-
-        db.commit()
+        # 6. Compress DB just in case
+        database.compress_db(db)
 
 
     def init_stats_table(self, db: sqlite3.Connection):
@@ -461,172 +355,6 @@ class Indexer():
         """)
 
         db.commit()
-
-
-    def save_search_values(self, db: sqlite3.Connection, values: dict):
-        """
-        Store one or more precomputed search cache values in the database.
-        """
-
-        unknown_columns = set(values) - set(self.SEARCH_TABLE_COLUMNS)
-        if unknown_columns:
-            raise ValueError("Unknown search cache columns: %s" % sorted(unknown_columns))
-
-        cursor = db.cursor()
-        columns = list(values)
-        placeholders = ", ".join(["?" for _ in columns])
-        insert_columns = ", ".join(["id"] + columns)
-        update_columns = ", ".join(
-            f"{column} = excluded.{column}"
-            for column in columns
-        )
-
-        cursor.execute(f"""
-            INSERT INTO search ({insert_columns})
-            VALUES (?, {placeholders})
-            ON CONFLICT(id) DO UPDATE SET {update_columns}
-        """, (1, *[values[column] for column in columns]))
-
-        db.commit()
-
-
-    def clear_search_cache(self, db: sqlite3.Connection):
-        """
-        Clear current heavy cache values before writing the refreshed cache.
-        """
-        heavy_columns = [
-            "doc_index_pickle",
-            "vectors_raw",
-            "vectors_shape",
-            "bm25_doc_lens_raw",
-            "bm25_denom_const_raw",
-            "bm25_idf_raw",
-            "bm25_doc_ids_raw",
-            "bm25_tfs_raw",
-            "bm25_indptr_raw",
-            "w2v_vectors_raw",
-            "w2v_vectors_shape",
-            "tokenizer_ngrams_trie",
-            "tokenizer_vocabulary_counts",
-        ]
-
-        cursor = db.cursor()
-        cursor.execute("INSERT OR IGNORE INTO search (id) VALUES (1)")
-        cursor.execute(f"""
-            UPDATE search
-            SET {", ".join(f"{column} = NULL" for column in heavy_columns)}
-            WHERE id = 1
-        """)
-        db.commit()
-
-
-    def get_search_values(self, db: sqlite3.Connection, columns: list[str]) -> any:
-        """
-        Fetch one or more precomputed search cache values from the database.
-        """
-
-        unknown_columns = set(columns) - set(self.SEARCH_TABLE_COLUMNS)
-        if unknown_columns:
-            raise ValueError("Unknown search cache columns: %s" % sorted(unknown_columns))
-
-        cursor = db.cursor()
-        row = cursor.execute(f"""
-            SELECT {", ".join(columns)}
-            FROM search
-            WHERE id = 1
-        """).fetchone()
-
-        if row is None:
-            return None
-
-        return row
-
-
-    def get_legacy_search_values(self, db: sqlite3.Connection, columns: list[str]) -> any:
-        """
-        Fetch legacy cache columns when loading an old DB before migration.
-        """
-        unknown_columns = set(columns) - (self.LEGACY_SEARCH_COLUMNS | set(self.SEARCH_TABLE_COLUMNS))
-        if unknown_columns:
-            raise ValueError("Unknown legacy search cache columns: %s" % sorted(unknown_columns))
-
-        cursor = db.cursor()
-        return cursor.execute(f"""
-            SELECT {", ".join(columns)}
-            FROM search
-            WHERE id = 1
-        """).fetchone()
-
-
-    def save_search_index(self, db: sqlite3.Connection, index: list[str]):
-        """
-        Store the URL lookup table into `search.doc_index`.
-        """
-        self.save_search_values(db, {
-            "doc_index_pickle": sqlite3.Binary(pickle.dumps(
-                index,
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )),
-        })
-
-
-    def save_search_ranker(self, db: sqlite3.Connection, ranker: BM25PlusCSR):
-        """
-        Store the BM25+ CSR ranker state into `search`.
-        """
-        self.save_search_values(db, {
-            "bm25_k1": float(ranker.k1),
-            "bm25_b": float(ranker.b),
-            "bm25_delta": float(ranker.delta),
-            "bm25_corpus_size": ranker.corpus_size,
-            "bm25_avgdl": float(ranker.avgdl),
-            "bm25_doc_lens_raw": self.array_to_raw(ranker.doc_lens),
-            "bm25_denom_const_raw": self.array_to_raw(ranker.denom_const),
-            "bm25_idf_raw": self.array_to_raw(ranker.idf),
-            "bm25_doc_ids_raw": self.array_to_raw(ranker.doc_ids),
-            "bm25_tfs_raw": self.array_to_raw(ranker.tfs),
-            "bm25_indptr_raw": self.array_to_raw(ranker.indptr),
-        })
-
-
-    def save_search_vectors(self, db: sqlite3.Connection, vectors: np.ndarray):
-        """
-        Store the single global vector matrix into `search.vectors`.
-        """
-        self.save_search_values(db, {
-            "vectors_raw": self.array_to_raw(vectors),
-            "vectors_shape": list(vectors.shape),
-        })
-
-
-    def save_search_word2vec(self, db: sqlite3.Connection):
-        """
-        Store Word2Vec vocabulary and embedding matrices into the search cache.
-        """
-        self.save_search_values(db, {
-            "w2v_index_to_key": list(self.word2vec.wv.index_to_key),
-            "w2v_vectors_raw": self.array_to_raw(self.word2vec.wv.vectors),
-            "w2v_vectors_shape": list(self.word2vec.wv.vectors.shape),
-        })
-
-
-    def save_search_tokenizer(self, db: sqlite3.Connection):
-        """
-        Store the tokenizer's large n-gram state in the search cache.
-        """
-        tokenizer = self.word2vec.tokenizer
-
-        self.save_search_values(db, {
-            "tokenizer_supports_ngrams": int(tokenizer.supports_ngrams),
-            "tokenizer_ngrams_trie": sqlite3.Binary(pickle.dumps(
-                tokenizer.ngrams_trie,
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )),
-            "tokenizer_vocabulary_counts": sqlite3.Binary(pickle.dumps(
-                tokenizer.vocabulary.counts,
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )),
-        })
 
 
     def save_search_stats(self, db: sqlite3.Connection, stats: dict):
@@ -801,154 +529,11 @@ class Indexer():
 
     @timeit()
     def build_index_reverse(self) -> dict[str, int]:
-        self.url_to_index = {
+        return {
             url: i
             for i, url in enumerate(self.index)
         }
-        return self.url_to_index
     
-
-    @timeit()
-    def get_index(self, db: sqlite3.Connection):
-        try:
-            row = self.get_search_values(db, ["doc_index_pickle"])
-        except sqlite3.OperationalError:
-            row = None
-
-        if row is not None and row[0] is not None:
-            self.index = pickle.loads(row[0])
-            return
-
-        self.index = self.get_legacy_search_values(db, ["doc_index"])[0]
-
-
-    @timeit()
-    def get_doc_vectors(self, db: sqlite3.Connection):
-        # Note: `nlp.Word2Vec.get_features`` already normalizes output,
-        # so this is assumed vectorized if using our internal workflows
-        # through `batching.batch_vectorize`.
-        try:
-            row = self.get_search_values(db, ["vectors_raw", "vectors_shape"])
-        except sqlite3.OperationalError:
-            row = None
-
-        if row is not None and row[0] is not None and row[1] is not None:
-            self.vectors = self.raw_to_array(row[0], np.float32, tuple(row[1]))
-            return
-
-        self.vectors = self.get_legacy_search_values(db, ["vectors"])[0]
-
-
-    @timeit()
-    def get_ranker(self, db: sqlite3.Connection):
-        try:
-            row = self.get_search_values(db, [
-                "bm25_k1",
-                "bm25_b",
-                "bm25_delta",
-                "bm25_corpus_size",
-                "bm25_avgdl",
-                "bm25_doc_lens_raw",
-                "bm25_denom_const_raw",
-                "bm25_idf_raw",
-                "bm25_doc_ids_raw",
-                "bm25_tfs_raw",
-                "bm25_indptr_raw",
-            ])
-        except sqlite3.OperationalError:
-            row = None
-
-        if row is not None and all(value is not None for value in row[5:]):
-            self.ranker = BM25PlusCSR.from_cache(
-                row[0],
-                row[1],
-                row[2],
-                row[3],
-                row[4],
-                self.raw_to_array(row[5], np.int32),
-                self.raw_to_array(row[6], np.float32),
-                self.raw_to_array(row[7], np.float32),
-                self.raw_to_array(row[8], np.int32),
-                self.raw_to_array(row[9], np.uint16),
-                self.raw_to_array(row[10], np.int32),
-            )
-            return
-
-        row = self.get_legacy_search_values(db, [
-            "bm25_k1",
-            "bm25_b",
-            "bm25_delta",
-            "bm25_corpus_size",
-            "bm25_avgdl",
-            "bm25_doc_lens",
-            "bm25_denom_const",
-            "bm25_idf",
-            "bm25_doc_ids",
-            "bm25_tfs",
-            "bm25_indptr",
-        ])
-
-        self.ranker = BM25PlusCSR.from_cache(*row)
-
-
-    @timeit()
-    def get_word2vec(self, db: sqlite3.Connection):
-        try:
-            row = self.get_search_values(db, [
-                "w2v_index_to_key",
-                "w2v_vectors_raw",
-                "w2v_vectors_shape",
-            ])
-        except sqlite3.OperationalError:
-            row = None
-
-        if row is None or row[0] is None or row[1] is None or row[2] is None:
-            index_to_key = self.get_search_values(db, ["w2v_index_to_key"])[0]
-            legacy_vectors = self.get_legacy_search_values(db, ["w2v_vectors"])
-            row = (
-                index_to_key,
-                legacy_vectors[0] if legacy_vectors is not None else None,
-            )
-
-        if row is None or row[0] is None or row[1] is None:
-            raise RuntimeError("Word2Vec embeddings were not inited")
-
-        from gensim.models import KeyedVectors
-
-        vectors = (
-            self.raw_to_array(row[1], np.float32, tuple(row[2]))
-            if len(row) > 2 and row[2] is not None
-            else row[1]
-        )
-
-        self.word2vec.wv = KeyedVectors(vector_size=self.word2vec.vector_size)
-        self.word2vec.wv.add_vectors(row[0], vectors)
-
-        # The serving path only uses input embeddings. Loading syn1/syn1neg
-        # would decode another large BLOB for no runtime benefit.
-
-
-    @timeit()
-    def get_tokenizer(self, db: sqlite3.Connection):
-        try:
-            row = self.get_search_values(db, [
-                "tokenizer_supports_ngrams",
-                "tokenizer_ngrams_trie",
-                "tokenizer_vocabulary_counts",
-            ])
-        except sqlite3.OperationalError:
-            return
-
-        # Backward compatibility for search DBs created before tokenizer state
-        # was moved out of the joblib artifact.
-        if row is None or row[1] is None or row[2] is None:
-            return
-
-        tokenizer = self.word2vec.tokenizer
-        tokenizer.supports_ngrams = bool(row[0])
-        tokenizer.ngrams_trie = pickle.loads(row[1])
-        tokenizer.vocabulary = Lexicon(pickle.loads(row[2]))
-
 
     def normalize_pc(self, vector: np.ndarray) -> np.ndarray:
         """Remove the principal component of the dataset to the vector.
@@ -1035,14 +620,6 @@ class Indexer():
             
         if not isinstance(model, Indexer):
             raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
-        
-        # Reload all class properties from database
-        model.get_word2vec(db)
-        model.get_tokenizer(db)
-        model.get_ranker(db)
-        model.get_doc_vectors(db)
-        model.get_index(db)
-        model.build_index_reverse()
 
         return model
 
