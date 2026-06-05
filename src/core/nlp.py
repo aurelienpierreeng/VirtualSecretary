@@ -15,6 +15,7 @@ import concurrent
 import unicodedata as ud
 
 from collections import Counter
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Iterable
 
@@ -32,6 +33,7 @@ import nltk
 from nltk.tokenize import RegexpTokenizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
+from sklearn.decomposition import PCA
 
 from fast_langdetect import detect
 # Ensure we download the model out of multi-threading
@@ -1294,16 +1296,38 @@ class LossLogger(CallbackAny2Vec):
 def unique_terms(doc: list[list[str]]) -> set[str]:
     return { word for sentence in doc for word in sentence }
 
+
+class _SentenceCorpus:
+    """Flattens a document corpus into sentences for gensim.
+
+    Accepts any re-iterable source (e.g. SQLitePageCorpus).
+    Each call to __iter__ re-drives the source from scratch, which is
+    what gensim needs: one pass for vocab, then one pass per epoch.
+
+    Thread safety: gensim iterates this from a producer thread, so the
+    underlying SQLite connection must be opened with
+        check_same_thread=False
+    """
+
+    def __init__(self, source: Iterable[Iterable[list[str]]]) -> None:
+        self._source = source                # stored, never consumed here
+
+    def __iter__(self) -> Iterator[list[str]]:
+        for doc in self._source:             # re-iterates source each time
+            yield from doc                   # doc → sentences, one at a time
+
+
 class Word2Vec(gensim.models.Word2Vec):
     @timeit()
-    def __init__(self, documents: list[list[str]], 
+    def __init__(self, 
+                 documents: Iterable[Iterable[list[str]]],
                  name: str = "word2vec", 
                  vector_size: int = 300, 
                  epochs: int = 200, 
                  window: int = 5, 
                  min_count: int = 5, 
                  sample: float = 0.0005, 
-                 tokenizer: Tokenizer = None,
+                 tokenizer: Tokenizer | None = None,
                  compute_idf: bool = False,
                  **kwargs: dict[str, Any]):
         """
@@ -1355,62 +1379,92 @@ class Word2Vec(gensim.models.Word2Vec):
                 `gensim.models.Word2Vec`.
         """
 
-        self.tokenizer = tokenizer if tokenizer is not None else Tokenizer()
-        """Tokenizer used to train the model. We store it to be sure to use the same when using it."""
-
-        self.pathname = get_models_folder(name)
+        self.tokenizer   = tokenizer if tokenizer is not None else Tokenizer()
+        self.pathname    = get_models_folder(name)
         self.vector_size = vector_size
 
-        self.N_docs = len(documents) 
-        """Number of documents in the training corpus"""
-        print(f"got {self.N_docs} documents")
+        # ------------------------------------------------------------------
+        # Single-pass streaming statistics — O(vocab) memory, zero copies
+        # ------------------------------------------------------------------
+        N_docs = N_sentences = N_words = 0
+        counts:    Counter[str] = Counter()
+        df_counts: Counter[str] = Counter() if compute_idf else None
+        total_doc_len: int = 0
 
-        # Flatten the first dimension of the list of list of list of strings :
-        sentences = [sentence for text in documents for sentence in text]
-        self.N_sentences = len(sentences)
-        """Number of sentences in the training corpus"""
+        for doc in documents:                       # plain iteration, no call
+            N_docs += 1
+
+            if compute_idf:
+                doc_terms: set[str] = set()
+                doc_len:   int      = 0
+
+            for sentence in doc:
+                N_sentences += 1
+                N_words     += len(sentence)
+                counts.update(sentence)
+
+                if compute_idf:
+                    doc_terms.update(sentence)
+                    doc_len += len(sentence)
+
+            if compute_idf:
+                df_counts.update(doc_terms)
+                total_doc_len += doc_len
+
+        self.N_docs      = N_docs
+        self.N_sentences = N_sentences
+        self.N_words     = N_words
+        self.N_terms     = len(counts)
+
+        print(f"got {self.N_docs}      documents")
         print(f"got {self.N_sentences} sentences")
-
-        words = [word for sentence in sentences for word in sentence]
-        self.N_words = len(words)
-        """Number of words (tokens) in the training corpus"""
-        print(f"got {self.N_words} words (tokens)")
-
-        # Frequency of terms aka unique words
-        counts = Counter(words)
-        self.N_terms = len(counts)
-        """Number of terms (unique words) in the training corpus"""
-        print(f"got {self.N_terms} unique terms")
-        del words
-
-        # Normalize frequencies
-        counts = {w: c / self.N_words for w, c in counts.items()}
-
-        # Sort terms by frequency
-        counts = dict(sorted(counts.items(), key=lambda counts: counts[1]))
-
-        # Save to file for manual review of stopwords
-        with open(get_models_folder("stopwords"), 'w', encoding='utf8') as f:
-            for key, value in counts.items():
-                f.write(f"{key}: {value}\n")
-        print("stopwords saved")
+        print(f"got {self.N_words}     words (tokens)")
+        print(f"got {self.N_terms}     unique terms")
 
         self.idf: dict[str, float] | None = None
-        """Inverse Document Frequency, used only for SIF weighting when enabled."""
-
-        self.avg_doc_len: float | None = None
-        """Average number of words in documents of the training corpus, available with IDF stats."""
+        self.avg_doc_len: float | None     = None
 
         if compute_idf:
-            self.compute_idf(documents)
+            self.idf         = {term: N_docs / df for term, df in df_counts.items()}
+            self.avg_doc_len = total_doc_len / N_docs if N_docs > 0 else 1.0
+            del df_counts
 
-        del counts
+        total = self.N_words or 1
+        freq  = dict(sorted(
+            ((w, c / total) for w, c in counts.items()),
+            key=lambda kv: kv[1],
+        ))
+        with open(get_models_folder("stopwords"), "w", encoding="utf8") as f:
+            for word, value in freq.items():
+                f.write(f"{word}: {value}\n")
+        print("stopwords saved")
 
+        del freq, counts
+
+        # ------------------------------------------------------------------
+        # Training
+        # _SentenceCorpus re-iterates `documents` on each gensim pass and
+        # flattens doc → sentences so gensim sees list[str] per item.
+        # ------------------------------------------------------------------
+        corpus      = _SentenceCorpus(documents)
         loss_logger = LossLogger()
-        super().__init__(sentences, vector_size=vector_size, window=window, min_count=min_count, 
-                         epochs=epochs, sample=sample, callbacks=[loss_logger], 
-                         compute_loss=True, sg=1, max_final_vocab=100000, hs=0,
-                         workers=os.cpu_count() or 1, batch_words=100000, **kwargs)
+
+        super().__init__(
+            corpus,
+            vector_size=vector_size,
+            window=window,
+            min_count=min_count,
+            epochs=epochs,
+            sample=sample,
+            callbacks=[loss_logger],
+            compute_loss=True,
+            sg=1,
+            max_final_vocab=100_000,
+            hs=0,
+            workers=os.cpu_count() or 1,
+            batch_words=100_000,
+            **kwargs,
+        )
         print("training done")
 
         if self.idf is not None:
@@ -1418,70 +1472,6 @@ class Word2Vec(gensim.models.Word2Vec):
         self.save(self.pathname)
         print("saving done")
     
-
-    def compute_idf(self, documents: list[list[str]]) -> None:
-        """Compute and store IDF statistics from a tokenized document corpus."""
-
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            doc_sets = executor.map(unique_terms, documents)
-
-        df_counts = Counter()
-        for s in doc_sets:
-            df_counts.update(s)
-
-        self.idf = { term: self.N_docs / df for term, df in df_counts.items() }
-
-        doc_lens = [sum(len(sentence) for sentence in doc) for doc in documents]
-        self.avg_doc_len = sum(doc_lens) / len(doc_lens) if len(doc_lens) > 0 else 1.0
-
-
-    def update_idf(self, documents: list[list[str]]) -> None:
-        """Update IDF statistics and corpus-dependent metadata with new documents.
-
-        Arguments:
-            documents: New pre-tokenized documents.
-        """
-
-        if getattr(self, "idf", None) is None or getattr(self, "avg_doc_len", None) is None:
-            raise RuntimeError("IDF stats were not computed for this model")
-
-        # Prepare new documents stats
-        new_N_docs = len(documents)
-        doc_lens = [ sum(len(sentence) for sentence in doc) for doc in documents ]
-        total_new_tokens = sum(doc_lens)
-
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            doc_sets = executor.map(unique_terms, documents)
-
-        new_df_counts = Counter()
-        for s in doc_sets:
-            new_df_counts.update(s)
-
-        old_N_docs = self.N_docs
-
-        # Update stats with new and old documents
-        self.N_docs += new_N_docs
-        self.N_words += total_new_tokens
-        self.N_sentences += sum(len(doc) for doc in documents)
- 
-        old_total_length = self.avg_doc_len * old_N_docs
-        new_total_length = sum(doc_lens)
-        self.avg_doc_len = (old_total_length + new_total_length) / self.N_docs
-
-        # Recover original DF counts from IDF
-        old_df_counts = { term: max(1, int(round(old_N_docs / idf)))
-                          for term, idf in self.idf.items() }
-
-        # Merge new and old DF counts
-        merged_df = Counter(old_df_counts)
-        merged_df.update(new_df_counts)
-
-        # Compute new IDF
-        self.idf = { term: self.N_docs / df
-                     for term, df in merged_df.items() }
-
-        self.prune_idf()
-
 
     def prune_idf(self):
         """Prune IDF entries to the actual model vocabulary (remove tokens
