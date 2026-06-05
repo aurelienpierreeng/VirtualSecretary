@@ -785,6 +785,8 @@ class Crawler(DelayedClass):
                     return output
                 else:
                     self.crawled_content.append(content_hash)
+
+                #print("MARKUP:", markup, "URL:", index_url, "CATEGORY:", category, "RESTRICT:", restrict_section, "DOMAIN:", domain, "RECURSE:", _recursion_level)
                     
                 # Parse current page content
                 if include or _recursion_level == 0:
@@ -819,15 +821,15 @@ class Crawler(DelayedClass):
                             # Recurse only through local subsections, aka :
                             # 1. domains match
                             # 2. current page is in a subsection of current child
-                            #print("recursing bis", currentURL)
+                            #print("recursing bis", currentURL, "domain:", domain, "-", current_domain, "child:", child, "-", current_page)
                             output += self.get_website_from_crawling(
                                 website, default_lang, child=current_page + current_params, langs=langs, markup=markup, contains_str=contains_str, mine_pdf=mine_pdf,
                                 _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category,
                                 _mainthread=False)
-                        elif include and domain == current_domain:
+                        elif include and domain == current_domain and not restrict_section:
                             # Follow internal links on only one recursivity level
                             # Aka HTML reference pages (Wikipedia) and attached PDF (docs, manuals, spec sheets)
-                            #print("following local", currentURL)
+                            #print("following local", currentURL, "domain:", domain, "-", current_domain, "child:", child, "-", current_page)
                             output += self.get_website_from_crawling(
                                 current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, contains_str="", max_recurse_level=1,
                                 mine_pdf=mine_pdf, restrict_section=restrict_section, category=category, _recursion_level=0, _mainthread=False)
