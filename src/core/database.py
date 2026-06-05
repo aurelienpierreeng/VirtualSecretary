@@ -218,6 +218,7 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
 
     common_kwargs = {
         "detect_types": sqlite3.PARSE_DECLTYPES,
+        "check_same_thread": False,
     }
 
     if mode == "ro":
