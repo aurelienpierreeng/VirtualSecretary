@@ -14,6 +14,8 @@ from sklearn.decomposition import PCA
 from sklearn.cluster import MiniBatchKMeans
 from scipy.sparse import csr_matrix
 
+from concurrent.futures import ThreadPoolExecutor
+
 from .utils import get_models_folder, timeit
 from .nlp import Lexicon, Word2Vec
 from . import database
@@ -925,46 +927,59 @@ class Indexer():
         [1]: https://eng.aurelienpierre.com/2024/03/designing-an-ai-search-engine-from-scratch-in-the-2020s/#accounting-for-words-patterns
         """
 
-        # Note : match needs at least Python 3.10
+        # Note: match needs at least Python 3.10
         match method:
             case search_methods.AI:
                 # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
                 # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
                 # RRF works very poorly here, so we do "alpha blending"
-                aggregates = 0.98 * self.rank_ai(tokens) + 0.02 * self.rank_fuzzy(tokens)
+                # rank_ai and rank_fuzzy are independent; both call into NumPy/C extensions
+                # which release the GIL, so threads genuinely overlap instead of taking turns.
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    fut_ai    = pool.submit(self.rank_ai,    tokens)
+                    fut_fuzzy = pool.submit(self.rank_fuzzy, tokens)
+                    # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
+                    aggregates = 0.98 * fut_ai.result() + 0.02 * fut_fuzzy.result()
             case search_methods.FUZZY:
                 aggregates = self.rank_fuzzy(tokens)
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
-
-        # Virtual array sorting, that is sort the aggregates relevance coeffs by order of relevance,
-        # but only do it on row indices, so we don't actually sort the table iself
+    
+        # O(n) partition to isolate the top-n_results candidates, then O(k log k) sort on
+        # just that small slice — much cheaper than a full O(n log n) argsort.
         n_results = min(n_results, aggregates.size - 1)
         best_indices = np.argpartition(aggregates, -n_results)[-n_results:]
         best_indices = best_indices[np.argsort(aggregates[best_indices])[::-1]]
-
+        # best_indices is now sorted descending by relevance score.
+    
         if sql_query != "":
-            # Get the intersection of the indices above with the indices from SQL query
-            # but keep the ordering from the ranking above
-            mask = np.isin(
-                best_indices,
-                self.filter_contents(db, sql_query, sql_params, candidate_indices=best_indices)
+            sql_hits = self.filter_contents(
+                db, sql_query, sql_params, candidate_indices=best_indices
             )
-            best_indices = best_indices[mask]
-
-        best_indices = best_indices[-n_results:]
-        best_elems = [self.index[i] for i in best_indices]
-        best_similarity = aggregates[best_indices]
-
-        ranked = zip(best_indices, best_elems, best_similarity)
-
-        # Now is time for the really heavy stuff: find tokens in sequential order
+            # assume_unique=True: argpartition over a flat array guarantees unique indices,
+            # so NumPy can skip an internal hash/sort pass — roughly halves np.isin cost.
+            best_indices = best_indices[np.isin(best_indices, sql_hits, assume_unique=True)]
+    
+        # Vectorised gather: a single C-level fancy-index instead of a Python loop.
+        # For hot paths, cache `self._index_arr = np.asarray(self.index)` in __init__ to
+        # avoid re-wrapping on every call.
+        index_arr    = np.asarray(self.index)
+        best_elems   = index_arr[best_indices]
+        best_scores  = aggregates[best_indices]
+    
         if self.collocations and len(tokens) > 2 and fine_search:
             indexed_query = self.word2vec.tokens_to_indices(tokens)
-            ranked = self.find_query_pattern(indexed_query, ranked)
-
-        return sorted([(index, page, similarity)
-                       for index, page, similarity in ranked], key=lambda x:x[2], reverse=True)
+            # find_query_pattern may reassign scores, so a sort is required here.
+            ranked = self.find_query_pattern(
+                indexed_query,
+                zip(best_indices.tolist(), best_elems.tolist(), best_scores.tolist()),
+            )
+            return sorted(ranked, key=lambda x: x[2], reverse=True)
+    
+        # Data is already sorted descending from the argsort above — no re-sort needed.
+        # .tolist() on a numpy array is a fast, vectorised type conversion that produces
+        # native Python ints/strs/floats as required by the return type annotation.
+        return list(zip(best_indices.tolist(), best_elems.tolist(), best_scores.tolist()))
 
 
     def get_related(self, tokens: list[str], n: int = 15, k: int = 5) -> list:
