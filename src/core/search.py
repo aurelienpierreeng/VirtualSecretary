@@ -268,19 +268,10 @@ class Indexer():
         # Note: DB document embeddings are left unchanged.
         self.vectors = self.normalize_pc(self.vectors)
 
-        # Storing a pre-built index list as a single BLOB in database is 2.5 times faster
-        # to restore at runtime than unrolling it from SQL `SELECT url FROM pages`.
-        self.index: list[str] = self.build_index(db)
-        """LUT of document URLs as ordered when building the ranker, lazily loaded from the database."""
-
-        # Pre-built numpy view of self.index for O(k) vectorised fancy-indexing in rank().
-        # Must be built here, not inside rank() — np.asarray(list_of_strings) is O(N)
-        # over the full corpus (two passes: max-length scan + copy), which at scale
-        # costs ~1–2 s per query call.
-        self._index_arr: np.ndarray = np.asarray(self.index)
-
-        self.url_to_index: dict[str, int] = self.build_index_reverse()
-        """Reverse LUT of `self.index`"""
+        # Assign a stable 0-based search_rowid to every page in URL order,
+        # replacing the in-memory self.index / self.url_to_index / self._index_arr LUTs.
+        # The column persists in the DB, so it survives process restarts and VACUUM.
+        self._build_search_rowids(db)
 
         ###############
         # 4. Misc stats
@@ -347,17 +338,28 @@ class Indexer():
 
     def init_pages_search_indexes(self, db: sqlite3.Connection):
         """
-        Add persistent indexes for the user-facing search filters.
+        Add persistent indexes for the user-facing search filters, and
+        ensure the ``search_rowid`` column exists.
 
-        The URL primary key already gives us an index for URL lookups. The
-        category indexes help equality filters and provide a stable ordering
-        path for category-only queries. Substring filters such as
-        `NOT LIKE '%github.com%'`, `instr(parsed, ?)`, and `REGEXP` cannot use a
-        normal B-tree index, so `filter_contents()` narrows those to ranked
-        candidate URLs before SQLite evaluates them.
+        ``search_rowid`` is an explicit INTEGER column that we assign to the
+        0-based position of each page in ``ORDER BY url`` order when the
+        Indexer is (re)built.  Because it is a real column value, ``VACUUM``
+        cannot renumber it — unlike SQLite's implicit rowid on tables with a
+        TEXT primary key.  This column replaces the in-memory
+        ``self.index`` / ``self.url_to_index`` / ``self._index_arr`` LUTs.
         """
         cursor = db.cursor()
 
+        # Migration-safe: ignore the error if the column already exists.
+        try:
+            cursor.execute("ALTER TABLE pages ADD COLUMN search_rowid INTEGER")
+        except sqlite3.OperationalError:
+            pass  # column already present
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pages_search_rowid
+            ON pages(search_rowid)
+        """)
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_pages_category_url
             ON pages(category, url)
@@ -531,22 +533,95 @@ class Indexer():
         return array
 
 
-    @timeit()
-    def build_index(self, db: sqlite3.Connection) -> list[str]:
-        # We index URLs because they are the database primary key
-        # and therefore guaranteed to be constant over time.
-        # So the index is a LUT of URLs as they were ordered in DB when reading it.
-        cursor = db.execute("SELECT url FROM pages ORDER BY url")
-        return [item[0] for item in cursor.fetchall()]
-    
+    def _build_search_rowids(self, db: sqlite3.Connection):
+        """Assign ``search_rowid = 0, 1, 2, …`` to every page in ``ORDER BY url``.
 
-    @timeit()
-    def build_index_reverse(self) -> dict[str, int]:
-        return {
-            url: i
-            for i, url in enumerate(self.index)
-        }
-    
+        This is the single source of truth that glues the DB to the in-RAM
+        numpy arrays (``self.vectors``, ``self.ranker``).  Both are built by
+        reading pages ``ORDER BY url``, so position 0 in every array
+        corresponds to ``search_rowid = 0``, and so on.
+
+        Run once per Indexer build; the values survive ``VACUUM`` because
+        they live in a real column, not in SQLite's internal b-tree position.
+
+        Also stores a two-point fingerprint (page count + boundary URL hash)
+        in ``self.index_fingerprint`` so ``verify_db_integrity()`` can detect
+        invalidating changes in O(1) at load time.
+        """
+        cursor = db.execute("SELECT url FROM pages ORDER BY url")
+        urls = [row[0] for row in cursor.fetchall()]
+
+        db.executemany(
+            "UPDATE pages SET search_rowid = ? WHERE url = ?",
+            enumerate(urls),
+        )
+        db.commit()
+
+        # Cheap two-point fingerprint: count + hash of first + last URL.
+        # Catches all insertions, deletions, and URL edits at the boundaries.
+        # Middle-URL mutations without a count change are rare in practice;
+        # callers who need stronger guarantees can call verify_db_integrity()
+        # with full=True (see below) before each query session.
+        import hashlib
+        boundary = "".join([
+            urls[0]  if urls else "",
+            urls[-1] if urls else "",
+        ]).encode()
+        self.index_fingerprint = (len(urls), hashlib.sha256(boundary).hexdigest())
+
+
+    def verify_db_integrity(self, db: sqlite3.Connection, full: bool = False):
+        """Raise ``RuntimeError`` if the DB has changed since this Indexer was built.
+
+        Arguments:
+            full:
+                If ``False`` (default), checks page count + a hash of the
+                first and last URL in search_rowid order — three O(log N)
+                queries, effectively O(1).  Catches all insertions, deletions,
+                and boundary-URL edits.
+                If ``True``, hashes every URL in rowid order — O(N) but
+                detects any mid-corpus reordering or URL mutation.
+
+        Called automatically by :meth:`load`.
+        """
+        import hashlib
+        stored_count, stored_hash = self.index_fingerprint
+
+        # Always check count first — cheapest possible signal.
+        current_count = db.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+        if current_count != stored_count:
+            raise RuntimeError(
+                f"Page count changed since Indexer was built "
+                f"({stored_count} → {current_count}). Rebuild with Indexer(db, ...)."
+            )
+
+        if full:
+            # Hash every URL in order — catches any mid-corpus change.
+            h = hashlib.sha256()
+            for (url,) in db.execute("SELECT url FROM pages ORDER BY search_rowid"):
+                h.update(url.encode())
+            current_hash = h.hexdigest()
+        else:
+            # Hash only the boundary URLs — three index-only lookups.
+            first = db.execute(
+                "SELECT url FROM pages ORDER BY search_rowid ASC  LIMIT 1"
+            ).fetchone()
+            last  = db.execute(
+                "SELECT url FROM pages ORDER BY search_rowid DESC LIMIT 1"
+            ).fetchone()
+            boundary = (
+                (first[0] if first else "") + (last[0] if last else "")
+            ).encode()
+            current_hash = hashlib.sha256(boundary).hexdigest()
+
+        if current_hash != stored_hash:
+            raise RuntimeError(
+                "DB page ordering has changed since this Indexer was built. "
+                "Rebuild with Indexer(db, ...)."
+            )
+
+
+
 
     def normalize_pc(self, vector: np.ndarray) -> np.ndarray:
         """Remove the principal component of the dataset to the vector.
@@ -575,46 +650,46 @@ class Indexer():
                         db: sqlite3.Connection,
                         sql_query: str = "",
                         sql_params: list[str] | None = None,
-                        candidate_indices: np.ndarray | list[int] | None = None) -> list[int]:        
-        """Filter pages by arbitrary SQL queries"""
+                        candidate_indices: np.ndarray | list[int] | None = None) -> list[int]:
+        """Filter pages by arbitrary SQL queries, returning ``search_rowid`` integers.
+
+        With ``candidate_indices`` supplied, the query is scoped to that small set
+        via a VALUES CTE — no URL ↔ index conversion, pure integer joins.
+        Without ``candidate_indices``, the full table is scanned.
+
+        The returned integers map directly to numpy array positions in
+        ``self.vectors`` and ``self.ranker``.
+        """
         if sql_params is None:
             sql_params = []
 
         if candidate_indices is not None:
-            # Ranking already reduces the search space to a small URL set
-            # (`n_results` is 800 from the web app). Applying substring/regex
-            # filters to that set avoids scanning every `pages.parsed`/`url`.
-            candidate_urls = [self.index[int(i)] for i in candidate_indices]
-            matched_indices = []
+            # Keep a comfortable margin below the historical 999-variable limit.
+            max_chunk = max(1, 900 - len(sql_params))
+            matched: list[int] = []
+            indices_list = [int(i) for i in candidate_indices]
 
-            # Keep a comfortable margin below SQLite builds that still use the
-            # historical 999-bound-parameter limit.
-            max_candidate_params = max(1, 900 - len(sql_params))
-
-            for start in range(0, len(candidate_urls), max_candidate_params):
-                chunk = candidate_urls[start:start + max_candidate_params]
+            for start in range(0, len(indices_list), max_chunk):
+                chunk = indices_list[start : start + max_chunk]
                 placeholders = ", ".join(["(?)" for _ in chunk])
+                # Integer CTE — no URL strings, no back-and-forth conversion.
+                # CROSS JOIN forces SQLite to drive from the tiny candidate list.
                 query = f"""
-                    WITH candidate_urls(candidate_url) AS (VALUES {placeholders})
-                    SELECT pages.url
-                    FROM candidate_urls
-                    JOIN pages ON pages.url = candidate_urls.candidate_url
+                    WITH candidates(rid) AS (VALUES {placeholders})
+                    SELECT pages.search_rowid
+                    FROM candidates
+                    CROSS JOIN pages ON pages.search_rowid = candidates.rid
                     {sql_query}
                 """
-                params = [*chunk, *sql_params]
-                cursor = db.execute(query, params)
-                matched_indices.extend(self.url_to_index[row[0]] for row in cursor.fetchall())
+                cursor = db.execute(query, [*chunk, *sql_params])
+                matched.extend(row[0] for row in cursor.fetchall())
 
-            return matched_indices
+            return matched
 
-        query = f"""
-            SELECT url
-            FROM pages
-            {sql_query}
-            ORDER BY url
-        """
+        # No candidate set: scan the full table.
+        query = f"SELECT search_rowid FROM pages {sql_query} ORDER BY search_rowid"
         cursor = db.execute(query, sql_params)
-        return [self.url_to_index[row[0]] for row in cursor.fetchall()]
+        return [row[0] for row in cursor.fetchall()]
 
 
     def save(self, name: str):
@@ -633,6 +708,11 @@ class Indexer():
             
         if not isinstance(model, Indexer):
             raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
+
+        # Guard against a DB that has been modified (new crawl, deletion, VACUUM
+        # after schema migration) since this Indexer was last built.
+        # O(1) by default; pass full=True for a thorough check.
+        model.verify_db_integrity(db)
 
         return model
 
@@ -959,25 +1039,35 @@ class Indexer():
             # so NumPy can skip an internal hash/sort pass — roughly halves np.isin cost.
             best_indices = best_indices[np.isin(best_indices, sql_hits, assume_unique=True)]
 
-        # Vectorised gather using the array cached in __init__.
-        # NEVER call np.asarray(self.index) here — it is O(N) over the full corpus
-        # (two passes: max-length scan + string copy) and costs ~1–2 s on a large index.
-        best_elems  = self._index_arr[best_indices]
+        # Fetch URLs for the top-k results in one SQL query.
+        # O(k · log N) with idx_pages_search_rowid — far cheaper than loading
+        # all N URLs into RAM.  Chunked to respect SQLite's variable limit.
+        best_indices_list = best_indices.tolist()
+        rowid_to_url: dict[int, str] = {}
+        for start in range(0, len(best_indices_list), 900):
+            chunk = best_indices_list[start : start + 900]
+            ph = ",".join("?" * len(chunk))
+            rowid_to_url.update(db.execute(
+                f"SELECT search_rowid, url FROM pages WHERE search_rowid IN ({ph})",
+                chunk,
+            ).fetchall())
+
+        # Preserve relevance order; a KeyError here means a page was deleted
+        # after the last Indexer build — verify_db_integrity() guards against
+        # this in production.
+        best_elems  = [rowid_to_url[i] for i in best_indices_list]
         best_scores = aggregates[best_indices]
 
         if self.collocations and len(tokens) > 2 and fine_search:
             indexed_query = self.word2vec.tokens_to_indices(tokens)
-            # find_query_pattern may reassign scores, so a sort is required here.
             ranked = self.find_query_pattern(
                 indexed_query,
-                zip(best_indices.tolist(), best_elems.tolist(), best_scores.tolist()),
+                zip(best_indices_list, best_elems, best_scores.tolist()),
             )
             return sorted(ranked, key=lambda x: x[2], reverse=True)
 
-        # Data is already sorted descending from the argsort above — no re-sort needed.
-        # .tolist() on a numpy array is a fast, vectorised type conversion that produces
-        # native Python ints/strs/floats as required by the return type annotation.
-        return list(zip(best_indices.tolist(), best_elems.tolist(), best_scores.tolist()))
+        # Data is already sorted descending from the argsort above.
+        return list(zip(best_indices_list, best_elems, best_scores.tolist()))
 
 
     def get_related(self, tokens: list[str], n: int = 15, k: int = 5) -> list:
@@ -1013,7 +1103,7 @@ class Indexer():
             self.cluster_centroids:   (K, D) float32 — one centroid per cluster.
             self.cluster_doc_indices: dict[int, np.ndarray[int32]] — maps each
                                       cluster label to its member row indices in
-                                      `self.vectors` / `self.index` / `self.ranker`.
+                                      `self.vectors` / `self.ranker` (i.e. ``search_rowid`` positions).
         """
 
         # 1. Cluster document vectors
