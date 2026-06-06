@@ -1037,3 +1037,70 @@ class Indexer():
         for i, c in enumerate(self.cluster_centroids):
             print(f"cluster {i}/{n_clusters} :", [word for word, _ in self.word2vec.wv.similar_by_vector(c, topn=5)])
             
+
+    def compute_ctfidf_labels(self, labels: np.ndarray, top_n: int = 10) -> dict[int, list[str]]:
+        """
+        Compute c-TF-IDF topic keywords for each cluster using the existing BM25+ ranker.
+
+        Returns a dict mapping cluster label → list of top_n discriminative keywords.
+        """
+        unique_labels = [l for l in np.unique(labels) if l != -1]   # skip noise
+        n_clusters = len(unique_labels)
+        label_to_pos = {l: i for i, l in enumerate(unique_labels)}
+        vocab_size = len(self.ranker.indptr) - 1
+
+        # Map each document to its cluster position (-1 = noise, excluded)
+        doc_to_pos = np.full(self.ranker.corpus_size, -1, dtype=np.int32)
+        for l in unique_labels:
+            doc_to_pos[labels == l] = label_to_pos[l]
+
+        # Reconstruct token_id for every posting from the CSR indptr
+        # indptr[t+1] - indptr[t] = number of postings for token t
+        token_ids = np.repeat(
+            np.arange(vocab_size, dtype=np.int32),
+            np.diff(self.ranker.indptr)
+        )                                                    # (n_postings,)
+
+        # Assign each posting to a cluster position
+        posting_cluster_pos = doc_to_pos[self.ranker.doc_ids]   # (n_postings,)
+
+        # Keep only postings that belong to a real cluster (not noise)
+        valid = posting_cluster_pos >= 0
+
+        # Build sparse (vocab_size × n_clusters) TF matrix
+        tf_matrix = csr_matrix(
+            (
+                self.ranker.tfs[valid].astype(np.float32),
+                (token_ids[valid], posting_cluster_pos[valid]),
+            ),
+            shape=(vocab_size, n_clusters),
+        )
+
+        # Normalise each cluster column by its document count
+        cluster_sizes = np.array(
+            [(labels == l).sum() for l in unique_labels], dtype=np.float32
+        )
+        tf_norm = tf_matrix.multiply(1.0 / cluster_sizes[np.newaxis, :])
+
+        # IDF across clusters: how many clusters contain this token at all
+        cluster_df = np.diff(tf_matrix.indptr) if tf_matrix.format == "csc" \
+                    else (tf_matrix > 0).sum(axis=1).A1      # (vocab_size,)
+        idf = np.log(1.0 + n_clusters / (cluster_df + 1.0)).astype(np.float32)
+
+        # c-TF-IDF = normalised TF × IDF
+        ctfidf = tf_norm.multiply(idf[:, np.newaxis])         # sparse broadcast
+
+        # Extract top_n tokens per cluster
+        wv = self.word2vec.wv
+        topic_labels = {}
+        for i, l in enumerate(unique_labels):
+            col = ctfidf.getcol(i).toarray().ravel()          # (vocab_size,)
+            top_token_ids = np.argpartition(col, -top_n)[-top_n:]
+            top_token_ids = top_token_ids[np.argsort(col[top_token_ids])[::-1]]
+            topic_labels[int(l)] = [
+                wv.index_to_key[t]
+                for t in top_token_ids
+                if t < len(wv.index_to_key)
+            ]
+
+        return topic_labels
