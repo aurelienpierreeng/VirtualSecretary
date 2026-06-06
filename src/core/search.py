@@ -6,10 +6,13 @@ import joblib
 import pickle
 import numpy as np
 import regex as re
+import os
 
 from rank_bm25 import BM25Plus
 from collections import Counter
 from sklearn.decomposition import PCA
+from sklearn.cluster import MiniBatchKMeans
+from scipy.sparse import csr_matrix
 
 from .utils import get_models_folder, timeit
 from .nlp import Lexicon, Word2Vec
@@ -281,6 +284,9 @@ class Indexer():
 
         self.save_search_stats(db, self.stats)
         self.save_categories_index(db, self.stats["category_counts"])
+
+        # Clusterize/quantize pages for performance and "topic" extraction
+        self.get_clusters(db)
 
         # 5. Save the pickled object to disk for reuse
         self.save(name)
@@ -648,7 +654,7 @@ class Indexer():
         """
 
         # Get the the centroid of the word embedding vector
-        vector = self.word2vec.get_features(tokenized_query, embed="IN")
+        vector = self.word2vec.get_features(tokenized_query, embed="IN", use_sif=True)
 
         # Remove the principal component from the vector
         vector = self.normalize_pc(vector)
@@ -692,6 +698,9 @@ class Indexer():
             https://arxiv.org/pdf/1602.06359.pdf
 
         """
+        if self.collocations is None:
+            raise ValueError("Collocations have not been precomputed for this indexer.")
+        
         if not fast:
             kernel_direct = np.eye(indexed_query.size, dtype=np.float32) / indexed_query.size
             kernel_reverse = np.rot90(np.eye(3, dtype=np.float32)) / 3.
@@ -745,32 +754,70 @@ class Indexer():
 
     @timeit()
     def rank_ai(self, tokens: list[str], fast: bool = False, clip: bool = True) -> np.ndarray:
+        """Cosine-similarity ranking against document centroid vectors.
+
+        Arguments:
+            tokens:     tokenised query (output of ``tokenize_query``).
+            fast:       use a single dot-product against the aggregate query
+                        vector instead of the per-token dual-embedding loop.
+            clip:       clamp scores to [0, 1] (recommended for RRF blending).
+            n_clusters: if > 0 **and** cluster data has been loaded, restrict
+                        the matmul to the documents that belong to the
+                        ``n_clusters`` closest clusters.  Documents outside
+                        the selected clusters keep a score of 0, so the
+                        BM25+ component of the blend can still surface them.
+                        Set to 0 (default) to score the full corpus.
+        """
 
         if fast:
             # The following seems very close to the next in terms of results.
-            # Experimentally, I saw very little difference in rankings, at least not in the first results.
+            # Experimentally, I saw very little difference in rankings, at least not in the first results.
             # The by-the-book is perhaps more immune to keywords stuffing and more sensitive to structure.
             # Differences appear in the tail of the ranking, mostly.
             # Note: self.vector_all and vector are already normalized if using `self.vectorize_query`
-            return np.nan_to_num(np.dot(self.vectors, self.vectorize_query(tokens)))
-        
+            query_vec = self.vectorize_query(tokens)
+
+            if self.cluster_centroids is not None:
+                candidate_indices = self._cluster_candidate_indices(query_vec)
+                if candidate_indices:
+                    aggregate = np.zeros(self.vectors.shape[0], dtype=np.float32)
+                    aggregate[candidate_indices] = np.nan_to_num(
+                        self.vectors[candidate_indices] @ query_vec
+                    )
+                    return aggregate
+
+            return np.nan_to_num(np.dot(self.vectors, query_vec))
+
         else:
 
             # This is the by-the-book dual embedding space as defined in
             # https://arxiv.org/pdf/1602.01137.pdf
             aggregate = np.zeros(self.vectors.shape[0], dtype=np.float32)
             weights = 0.
+
+            # When clustering is active, build one candidate mask upfront from
+            # the mean query direction so we don't recompute it per token.
+            candidate_indices: np.ndarray | None = None
+            if self.cluster_centroids is not None:
+                mean_vec = self.vectorize_query(tokens)
+                candidate_indices = self._cluster_candidate_indices(mean_vec)
+
             for token in tokens:
                 # Compute the cosine similarity of centroids between query and documents,
                 # Note: self.vector_all and vector are already normalized if using `self.vectorize_query`
                 vector = self.word2vec.get_wordvec(token, embed="IN", normalize=True)
                 if vector is not None:
                     vector = self.normalize_pc(vector)
-                    aggregate += np.nan_to_num(np.dot(self.vectors, vector))
+                    if candidate_indices is not None:
+                        aggregate[candidate_indices] += np.nan_to_num(
+                            self.vectors[candidate_indices] @ vector
+                        )
+                    else:
+                        aggregate += np.nan_to_num(np.dot(self.vectors, vector))
                     weights += 1.
                 else:
                     print(f"token {token} was not found in embedding vocabulary")
-            
+
             # Cosine similarity is bounded in [-1; 1].
             # 0 means unrelated or orthogonal.
             # Negative means we are in the opposite direction to the request.
@@ -780,7 +827,34 @@ class Indexer():
                 return np.clip(aggregate / weights if weights > 0. else aggregate, 0., 1.)
             else:
                 return aggregate / weights if weights > 0. else aggregate
-        
+
+    @timeit()
+    def _cluster_candidate_indices(self, query_vec: np.ndarray, n_clusters: int = 3) -> np.ndarray | None:
+        """Return the row indices of all documents in the ``n_clusters`` nearest
+        clusters to ``query_vec``.
+
+        The centroid comparison is a (K x D) matmul where K <= 500, adding
+        ~0.1 ms overhead while reducing the subsequent per-document matmul from
+        N rows to roughly ``N / K * n_clusters`` rows.
+
+        Arguments:
+            query_vec:  normalised query vector, shape (D,).
+            n_clusters: number of nearest clusters to include.
+        """
+        # Score every cluster centroid against the query.
+        # Centroids are unit-normalised (mean of normalised vectors, then
+        # re-normalised in get_clusters), so dot product == cosine similarity.
+        cluster_similarity = self.cluster_centroids @ query_vec
+        cluster_indices = np.argpartition(cluster_similarity, -n_clusters)[-n_clusters:]
+
+        # cluster_doc_indices keys are ordered identically to centroid rows
+        # (both built from the same np.unique(labels) pass).
+        labels_ordered = list(self.cluster_doc_indices.keys())
+        return np.concatenate([
+            self.cluster_doc_indices[labels_ordered[pos]]
+            for pos in cluster_indices
+        ])
+
 
     def rrf(self, ranks_1: np.ndarray, ranks_2: np.ndarray, coeff: float = 60) -> np.ndarray:
         """Reciprocal Rank Fusion
@@ -906,3 +980,60 @@ class Indexer():
         related = sorted(from_query + from_tokens, key=lambda x:x[1], reverse=True)
 
         return list(set([elem[0] for elem in related if elem[0] not in tokens]))
+
+    @timeit()
+    def get_clusters(self, db: sqlite3.Connection):
+        """Find document latent topics modelled as clusters of document centroids.
+
+        Writes to the database:
+            - `clusters` table   — one row per cluster: label (PK), human-legible
+                                   keyword labels, centroid BLOB, and max cosine
+                                   radius so callers can gauge cluster tightness.
+            - `pages.cluster`    — integer FK into `clusters.label` for each page.
+            - `search` table     — three new BLOB columns (`cluster_labels_raw`,
+                                   `cluster_centroids_raw`, `cluster_centroids_shape`)
+                                   that mirror the pattern used for `vectors_raw` so
+                                   the data loads at the same speed on startup without
+                                   touching `pages` at all.
+
+        Sets on self (immediately usable without reloading):
+            self.cluster_centroids:   (K, D) float32 — one centroid per cluster.
+            self.cluster_doc_indices: dict[int, np.ndarray[int32]] — maps each
+                                      cluster label to its member row indices in
+                                      `self.vectors` / `self.index` / `self.ranker`.
+        """
+
+        # 1. Cluster document vectors
+        num_cpu = os.cpu_count() or 1
+        n_clusters = int(self.pages / 200)
+        birch = MiniBatchKMeans(n_clusters=n_clusters, batch_size=512 * num_cpu, random_state=0)
+        labels = birch.fit_predict(self.vectors)       # shape (N,), dtype int32/int64
+        unique_labels = np.unique(labels)              # shape (K,)
+
+        # 2. Associate docs with their clusters now, speed things up later
+        self.cluster_doc_indices: dict[int, np.ndarray] = {
+            int(l): np.where(labels == l)[0].astype(np.int32)
+            for l in unique_labels
+        }
+
+        # 2. Derive per-cluster statistics
+        # Centroid: mean of all member vectors (which are already L2-normalised).
+        # Re-normalising the mean gives the "direction" of the cluster.
+        self.cluster_centroids = birch.cluster_centers_.astype(np.float32)
+        self.cluster_centroids /= (
+            np.linalg.norm(self.cluster_centroids, axis=1, keepdims=True) + 1e-8
+        )
+
+        # Max cosine *distance* from centroid — 0 means perfectly tight,
+        # 2 means perfectly spread.  Because vectors are unit-normalised,
+        # cosine similarity = dot product, so distance = 1 − similarity.
+        self.max_radii = np.array([
+            1.0 - (self.vectors[idx] @ self.cluster_centroids[i]).min()
+            for i, idx in self.cluster_doc_indices.items()
+        ], dtype=np.float32)                           # shape (K,)
+
+        # Human-legible keywords: the 5 vocabulary tokens whose input embedding
+        # is most similar to the cluster centroid direction.
+        for i, c in enumerate(self.cluster_centroids):
+            print(f"cluster {i}/{n_clusters} :", [word for word, _ in self.word2vec.wv.similar_by_vector(c, topn=5)])
+            
