@@ -331,45 +331,39 @@ class Deduplicator():
     def run_on_db(self, db: sqlite3.Connection, chunksize: int = 4096) -> None:
         """Deduplicate the ``pages`` table in-place, matching the full ``__call__`` pipeline.
 
-        The method runs four sequential phases that mirror ``__call__``:
+        Runs six sequential phases:
 
         1. **URL canonicalization** – stream every row through
-           :meth:`prepare_posts_parallel` (threaded, I/O-bound), normalise URLs,
-           compute a SHA-1 content hash, and write results to the temporary
-           ``_prepared`` table.
+           :meth:`_canonicalize_url` (threaded, I/O-bound), normalise URLs,
+           populate ``_prepared`` with canonical URL, domain, and metadata
+           copied verbatim from ``pages`` (pre-computed by ``batch_parse_web_page``).
         2. **URL deduplication** – for each canonical URL keep the single best row
-           using SQL window functions with :attr:`_ELECTION_ORDER`.
+           via SQL window functions ordered by :attr:`_ELECTION_ORDER_URL`.
         3. **Exact-content deduplication** – among URL winners, collapse rows that
-           share the same SHA-1 hash using the same election order.
-        4. **Near-duplicate removal** (skipped when ``threshold == 1.0``) – load the
-           survivors into memory, run the Levenshtein window scan with parallelised
-           comparisons (threaded; ``python-Levenshtein`` releases the GIL), write
-           the final winner set back to a temp table.
+           share the same ``content_hash`` using :attr:`_ELECTION_ORDER_CONTENT`.
+           Rows without a hash (archival stubs) pass through unchanged.
+        4. **Near-duplicate removal** (skipped when ``threshold == 1.0``) – load
+           survivors with non-``NULL`` ``parsed`` text into memory, run the
+           parallel Levenshtein window scan, write the final winner set back.
+           Archival stubs bypass this phase entirely.
+        5. **Domain frequency filter** (skipped when ``n_min == 0``) – drop every
+           row whose canonical domain appears fewer than :attr:`n_min` times in
+           the survivor set.  Rows with ``NULL`` domain are kept unconditionally.
+        6. **Table rebuild** – atomically replace ``pages`` with the winner rows,
+           writing back canonicalised ``url``, ``domain``, and ``wayback``.
 
-        The ``pages`` table is atomically replaced by the winner set at the end.
-        All intermediate ``_prepared / _url_winners / _content_winners /
-        _near_winners`` temp tables are cleaned up on success.
-
-        Assumptions:
-        - ``pages`` has at least the columns: ``url, title, content, date,
-          datetime, parsed, category``.
-        - ``datetime`` values, when present, are ISO-8601 strings (SQLite TEXT).
-          NULL is treated as "oldest possible" in the election.
-        - The ``external`` category label means the page was crawled by following
-          external links and contains the full ``<body>``; any other category means
-          it was crawled from a sitemap / REST-API and contains cleaner markup.
-          Non-external therefore wins over external in the election.
+        All intermediate temp tables are cleaned up on success.
 
         Args:
             db:        Open ``sqlite3.Connection`` to the database.
-            chunksize: Number of rows fetched per batch during Phase 1.
+            chunksize: Rows fetched per batch during Phase 1.
         """
         cursor = db.cursor()
 
         before = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
         print(f"[dedup] Phase 0  – initial records                      : {before}")
 
-        # ── Phase 1: URL canonicalization + hash computation ──────────────────
+        # ── Phase 1: URL canonicalization ─────────────────────────────────────
         self._fill_prepared(db, chunksize)
         after_prep = cursor.execute("SELECT COUNT(*) FROM _prepared").fetchone()[0]
         print(f"[dedup] Phase 1  – after URL canonicalization           : {after_prep}")
@@ -398,7 +392,16 @@ class Deduplicator():
             final_table = "_content_winners"
             print("[dedup] Phase 4  – near-duplicate removal skipped (threshold=1.0)")
 
-        # ── Phase 5: Rebuild pages table with winners ─────────────────────────
+        # ── Phase 5: Domain frequency filter (optional) ───────────────────────
+        if self.n_min > 0:
+            final_table = self._filter_by_n_min(db, final_table)
+            after_nmin  = cursor.execute(f"SELECT COUNT(*) FROM {final_table}").fetchone()[0]
+            print(f"[dedup] Phase 5  – after n_min={self.n_min} domain filter           : {after_nmin}")
+            database.compress_db(db)
+        else:
+            print(f"[dedup] Phase 5  – domain frequency filter skipped (n_min=0)")
+
+        # ── Phase 6: Rebuild pages table with winners ─────────────────────────
         self._rebuild_pages(db, final_table)
         database.compress_db(db)
 
@@ -408,6 +411,72 @@ class Deduplicator():
     # ─────────────────────────────────────────────────────────────────────────────────────
     # Private DB pipeline helpers
     # ─────────────────────────────────────────────────────────────────────────────────────
+
+    def _filter_by_n_min(self, db: sqlite3.Connection, source_table: str) -> str:
+        """Phase 5 – drop rows belonging to under-represented domains.
+
+        Any domain that appears fewer than :attr:`n_min` times in *source_table*
+        is considered too sparse to be a reliable source (e.g. a single blog post
+        found via an external link).  Every row whose canonical domain falls below
+        the threshold is removed from the survivor set.
+
+        The domain is taken from ``_prepared.domain`` (canonical, freshly
+        extracted by :meth:`_canonicalize_url`) rather than from the original
+        ``pages.domain`` column, which may be stale or incorrect.
+
+        Rows with ``NULL`` domain are **always kept** — a missing domain is an
+        extraction failure (e.g. an unusual URL scheme), not evidence of a sparse
+        or unreliable source.
+
+        Args:
+            db:           Open database connection.
+            source_table: Name of the current winners temp table
+                          (``_near_winners`` or ``_content_winners``).
+
+        Returns:
+            ``"_domain_winners"`` — the name of the newly created temp table
+            containing the filtered ``source_rowid`` values.
+        """
+        cursor = db.cursor()
+        cursor.execute("DROP TABLE IF EXISTS _domain_winners")
+
+        cursor.execute(f"""
+            CREATE TABLE _domain_winners AS
+            SELECT w.source_rowid
+            FROM {source_table}  w
+            JOIN _prepared       p USING (source_rowid)
+            WHERE p.domain IS NULL          -- keep rows whose domain could not be extracted
+               OR p.domain IN (
+                   SELECT domain
+                   FROM (
+                       SELECT p2.domain,
+                              COUNT(*) AS n
+                       FROM {source_table}  w2
+                       JOIN _prepared       p2 USING (source_rowid)
+                       WHERE p2.domain IS NOT NULL
+                       GROUP BY p2.domain
+                   )
+                   WHERE n >= {self.n_min}
+               )
+        """)
+        cursor.execute("CREATE INDEX idx_dw ON _domain_winners (source_rowid)")
+
+        # Report how many rows and domains were removed
+        n_before = cursor.execute(f"SELECT COUNT(*) FROM {source_table}").fetchone()[0]
+        n_after  = cursor.execute("SELECT COUNT(*) FROM _domain_winners").fetchone()[0]
+        n_domains_kept = cursor.execute("""
+            SELECT COUNT(DISTINCT p.domain)
+            FROM _domain_winners dw
+            JOIN _prepared p ON p.source_rowid = dw.source_rowid
+            WHERE p.domain IS NOT NULL
+        """).fetchone()[0]
+
+        print(f"[dedup/nmin]  removed {n_before - n_after} rows from domains with < {self.n_min} pages"
+              f" ({n_domains_kept} domains retained)")
+
+        db.commit()
+        return "_domain_winners"
+
 
     def _fill_prepared(self, db: sqlite3.Connection, chunksize: int) -> None:
         """Phase 1 – canonicalise every URL, extract domains, populate ``_prepared``.
@@ -879,7 +948,7 @@ class Deduplicator():
         cursor.execute("ALTER TABLE pages_new RENAME TO pages")
         cursor.execute("COMMIT")
 
-        for t in ("_prepared", "_url_winners", "_content_winners", "_near_winners"):
+        for t in ("_prepared", "_url_winners", "_content_winners", "_near_winners", "_domain_winners"):
             cursor.execute(f"DROP TABLE IF EXISTS {t}")
         db.commit()
 
@@ -962,7 +1031,7 @@ class Deduplicator():
     def get_unique_content(self, posts: list[web_page]) -> list[web_page]:
         """Pick the most recent candidate for each canonical content.
 
-        Return:
+        Returns:
             `canonical content: web_page` dictionnary
 
         """
