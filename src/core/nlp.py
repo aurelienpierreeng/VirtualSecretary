@@ -26,6 +26,7 @@ from gensim.models.phrases import Phrases, Phraser
 import joblib
 import pickle
 import json
+import sqlite3
 
 import numpy as np
 
@@ -203,13 +204,15 @@ def tokenize_document_to_sentences(text: str, language: str | None = None, backe
 class Lexicon:
     """
     Mutable token frequency index with canonicalization helpers for:
+
     - malformed n-grams,
     - merged/split variants,
     - plural compound normalization.
 
     Examples:
-        liber_tarian  -> libertarian
-        etres_humains -> etre_humain
+
+        - liber_tarian  -> libertarian
+        - etres_humains -> etre_humain
     """
 
     counts: Counter[str] = field(default_factory=Counter)
@@ -284,19 +287,19 @@ class Lexicon:
         Attempt to canonicalize malformed n-grams.
 
         Operations:
-        1. malformed n-grams:
-            liber_tarian -> libertarian
+            1. malformed n-grams:
+                liber_tarian -> libertarian
 
-        2. plural compound reduction:
-            etres_humains -> etre_humain
+            2. plural compound reduction:
+                etres_humains -> etre_humain
 
         Strategy:
-        - if token exists already -> keep it
-        - otherwise:
-            - remove separators,
-            - check if merged variant exists,
-            - compare frequencies,
-            - prefer merged form if sufficiently frequent.
+            - if token exists already -> keep it
+            - otherwise:
+                - remove separators,
+                - check if merged variant exists,
+                - compare frequencies,
+                - prefer merged form if sufficiently frequent.
 
         Args:
             token:
@@ -1087,17 +1090,17 @@ class Tokenizer():
                 Minimum number of occurrences required for a phrase to be
                 considered.
 
-                See `gensim.models.phrases.Phrases` for details.
+                See [gensim.models.phrases.Phrases][] for details.
 
             threshold:
                 Phrase detection sensitivity threshold.
 
-                See `gensim.models.phrases.Phrases`.
+                See [gensim.models.phrases.Phrases][].
 
             scoring:
                 Scoring function used for phrase detection.
 
-                See `gensim.models.phrases.Phrases`.
+                See [gensim.models.phrases.Phrases][].
 
         Warning:
             N-gram training must be performed on *lightly processed* tokenized
@@ -1333,11 +1336,10 @@ class Word2Vec(gensim.models.Word2Vec):
                  n_pc_out: int = 1,
                  **kwargs: dict[str, Any]):
         """
-        Train, re-train, or load a Word2Vec embedding model.
+        Train a Word2Vec embedding model and compute TF-IDF word statistics on the corpus.
 
-        If a model with the given `name` already exists, it is automatically
-        loaded instead of re-trained. Note that in this case, `vector_size`
-        will be overridden by the saved model configuration.
+        The pre-computed object is automatically saved to `VirtualSecretary/models`, as per
+        [core.utils.get_models_folder][]
 
         Args:
             documents:
@@ -1386,12 +1388,17 @@ class Word2Vec(gensim.models.Word2Vec):
 
             **kwargs:
                 Additional parameters forwarded directly to
-                `gensim.models.Word2Vec`.
+                [gensim.models.word2vec.Word2Vec][].
         """
 
-        self.tokenizer   = tokenizer if tokenizer is not None else Tokenizer()
-        self.pathname    = get_models_folder(name)
-        self.vector_size = vector_size
+        self.tokenizer: Tokenizer = tokenizer if tokenizer is not None else Tokenizer()
+        """Tokenizer object, instanciated with word replacements and trained for n-grams if needed."""
+
+        self.pathname: str    = get_models_folder(name)
+        """Path and filename of the saved model"""
+
+        self.vector_size: int = vector_size
+        """Number of vector dimensions used to embed words."""
 
         # ------------------------------------------------------------------
         # Single-pass streaming statistics — O(vocab) memory, zero copies
@@ -1422,9 +1429,16 @@ class Word2Vec(gensim.models.Word2Vec):
                 total_doc_len += doc_len
 
         self.N_docs      = N_docs
+        """Number of documents used at training time"""
+
         self.N_sentences = N_sentences
+        """Number of sentences found in the training corpus"""
+
         self.N_words     = N_words
+        """Number of words (tokens) found in the training corpus"""
+
         self.N_terms     = len(counts)
+        """Number of unique terms found in the training corpus"""
 
         print(f"got {self.N_docs}      documents")
         print(f"got {self.N_sentences} sentences")
@@ -1432,7 +1446,10 @@ class Word2Vec(gensim.models.Word2Vec):
         print(f"got {self.N_terms}     unique terms")
 
         self.idf: dict[str, float] | None = None
+        """Inverse document frequency of words. Computed only if [Word2Vec][core.nlp.Word2Vec] is instanciated with `compute_idf=True`"""
+
         self.avg_doc_len: float | None     = None
+        """Average document length.  Computed only if [Word2Vec][core.nlp.Word2Vec] is instanciated with `compute_idf=True`"""
 
         if compute_idf:
             self.idf         = {term: N_docs / df for term, df in df_counts.items()}
@@ -1444,6 +1461,7 @@ class Word2Vec(gensim.models.Word2Vec):
             ((w, c / total) for w, c in counts.items()),
             key=lambda kv: kv[1],
         ))
+
         with open(get_models_folder("stopwords"), "w", encoding="utf8") as f:
             for word, value in freq.items():
                 f.write(f"{word}: {value}\n")
@@ -1929,11 +1947,28 @@ def _process_document(args):
 
 
 class StemTokenIndex:
-    """
-    Reverse normalized stem -> token lookup index.
-    """
-
     def __init__(self, db: sqlite3.Connection, tokenizer: Tokenizer):
+        """
+        Build a reverse-lookup table in `db` mapping stems to tokens.
+
+        The rationale is that [core.nlp.Tokenizer.tokenize_text][] 
+        (and the higher-level method calling it internally), when used with
+        `stem=True`, produces unlegible tokens for humans. This class
+        helps building a translation dictionnary mapping back the stemmed
+        tokens to the most probable non-stemmed token for UI purposes.
+
+        Returns:
+            None:
+                A new indexed `stem_tokens` table in `db` containing 3 columns:
+
+                - `stem`,
+                - `token`,
+                - `occurences`.
+
+                Each row records the frequency of the `(stem, token)` couple.
+
+        """
+
         self.tokenizer = tokenizer
 
         db.execute("""
