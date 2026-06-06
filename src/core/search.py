@@ -557,7 +557,7 @@ class Indexer():
                 can be a single vector (1D) or a document-wise stack of vectors (2D).
                 We always consider the embedding vector to be on the last axis, document-wise
                 vectors should be vertically stacked.
-        Return:
+        Returns:
             normalized vector
         """
         vector = vector - np.matmul(np.matmul(vector, self.pc.T), self.pc)
@@ -755,7 +755,7 @@ class Indexer():
         return self.ranker.get_scores(symbolic_tokens)
 
     @timeit()
-    def rank_ai(self, tokens: list[str], fast: bool = False, clip: bool = True) -> np.ndarray:
+    def rank_ai(self, tokens: list[str], fast: bool = False, clip: bool = True, n_clusters: int = 3) -> np.ndarray:
         """Cosine-similarity ranking against document centroid vectors.
 
         Arguments:
@@ -780,7 +780,7 @@ class Indexer():
             query_vec = self.vectorize_query(tokens)
 
             if self.cluster_centroids is not None:
-                candidate_indices = self._cluster_candidate_indices(query_vec)
+                candidate_indices = self._cluster_candidate_indices(query_vec, n_clusters=n_clusters)
                 if candidate_indices:
                     aggregate = np.zeros(self.vectors.shape[0], dtype=np.float32)
                     aggregate[candidate_indices] = np.nan_to_num(
@@ -802,7 +802,7 @@ class Indexer():
             candidate_indices: np.ndarray | None = None
             if self.cluster_centroids is not None:
                 mean_vec = self.vectorize_query(tokens)
-                candidate_indices = self._cluster_candidate_indices(mean_vec)
+                candidate_indices = self._cluster_candidate_indices(mean_vec, n_clusters=n_clusters)
 
             for token in tokens:
                 # Compute the cosine similarity of centroids between query and documents,
