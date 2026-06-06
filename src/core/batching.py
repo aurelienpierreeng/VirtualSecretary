@@ -338,6 +338,9 @@ def batch_stem(db: sqlite3.Connection,
         cursor = db.execute('SELECT rowid, tokenized, lang FROM pages')
 
     processed_batches = 0
+    row_count = cursor.rowcount
+    num_batches = int(np.ceil(row_count / batch_size))
+    print(f"Batch stemming: {row_count} to update, {num_batches} batches")
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_cpu,
@@ -354,7 +357,7 @@ def batch_stem(db: sqlite3.Connection,
             db.commit()
 
             processed_batches += 1
-            print(f"Batch {processed_batches} processed")
+            print(f"Batch {processed_batches} over {num_batches} processed")
 
 
 def _init_vectorizer_worker(word2vec):
