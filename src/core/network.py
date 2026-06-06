@@ -493,7 +493,7 @@ def get_url(url: str,
     Get the content of an URL using requests.
     `.pdf`, `.xml` and `.txt` URLs always use requests.
 
-    Return:
+    Returns:
         content: the raw DOM,
         url: the final URL after possible redirections
         status: the HTTP code (integer)
