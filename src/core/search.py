@@ -14,7 +14,6 @@ from sklearn.decomposition import PCA
 from sklearn.cluster import MiniBatchKMeans
 from scipy.sparse import csr_matrix
 
-from concurrent.futures import ThreadPoolExecutor
 
 from .utils import get_models_folder, timeit
 from .nlp import Lexicon, Word2Vec
@@ -273,6 +272,12 @@ class Indexer():
         # to restore at runtime than unrolling it from SQL `SELECT url FROM pages`.
         self.index: list[str] = self.build_index(db)
         """LUT of document URLs as ordered when building the ranker, lazily loaded from the database."""
+
+        # Pre-built numpy view of self.index for O(k) vectorised fancy-indexing in rank().
+        # Must be built here, not inside rank() — np.asarray(list_of_strings) is O(N)
+        # over the full corpus (two passes: max-length scan + copy), which at scale
+        # costs ~1–2 s per query call.
+        self._index_arr: np.ndarray = np.asarray(self.index)
 
         self.url_to_index: dict[str, int] = self.build_index_reverse()
         """Reverse LUT of `self.index`"""
@@ -932,19 +937,13 @@ class Indexer():
             case search_methods.AI:
                 # Aggregate vector embedding method with the ranking from BM25+ to it for each URL.
                 # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
-                # RRF works very poorly here, so we do "alpha blending"
-                # rank_ai and rank_fuzzy are independent; both call into NumPy/C extensions
-                # which release the GIL, so threads genuinely overlap instead of taking turns.
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    fut_ai    = pool.submit(self.rank_ai,    tokens)
-                    fut_fuzzy = pool.submit(self.rank_fuzzy, tokens)
-                    # Coeffs adapted from https://arxiv.org/pdf/1602.01137.pdf
-                    aggregates = 0.98 * fut_ai.result() + 0.02 * fut_fuzzy.result()
+                # RRF works very poorly here, so we do "alpha blending".
+                aggregates = 0.98 * self.rank_ai(tokens) + 0.02 * self.rank_fuzzy(tokens)
             case search_methods.FUZZY:
                 aggregates = self.rank_fuzzy(tokens)
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
-    
+
         # O(n) partition to isolate the top-n_results candidates, then O(k log k) sort on
         # just that small slice — much cheaper than a full O(n log n) argsort.
         n_results = min(n_results, aggregates.size - 1)
@@ -959,14 +958,13 @@ class Indexer():
             # assume_unique=True: argpartition over a flat array guarantees unique indices,
             # so NumPy can skip an internal hash/sort pass — roughly halves np.isin cost.
             best_indices = best_indices[np.isin(best_indices, sql_hits, assume_unique=True)]
-    
-        # Vectorised gather: a single C-level fancy-index instead of a Python loop.
-        # For hot paths, cache `self._index_arr = np.asarray(self.index)` in __init__ to
-        # avoid re-wrapping on every call.
-        index_arr    = np.asarray(self.index)
-        best_elems   = index_arr[best_indices]
-        best_scores  = aggregates[best_indices]
-    
+
+        # Vectorised gather using the array cached in __init__.
+        # NEVER call np.asarray(self.index) here — it is O(N) over the full corpus
+        # (two passes: max-length scan + string copy) and costs ~1–2 s on a large index.
+        best_elems  = self._index_arr[best_indices]
+        best_scores = aggregates[best_indices]
+
         if self.collocations and len(tokens) > 2 and fine_search:
             indexed_query = self.word2vec.tokens_to_indices(tokens)
             # find_query_pattern may reassign scores, so a sort is required here.
@@ -975,7 +973,7 @@ class Indexer():
                 zip(best_indices.tolist(), best_elems.tolist(), best_scores.tolist()),
             )
             return sorted(ranked, key=lambda x: x[2], reverse=True)
-    
+
         # Data is already sorted descending from the argsort above — no re-sort needed.
         # .tolist() on a numpy array is a fast, vectorised type conversion that produces
         # native Python ints/strs/floats as required by the return type annotation.
