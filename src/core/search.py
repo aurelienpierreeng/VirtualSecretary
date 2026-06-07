@@ -895,13 +895,15 @@ class Indexer():
                 vector = self.word2vec.get_wordvec(token, embed="IN", normalize=True)
                 if vector is not None:
                     vector = self.normalize_pc(vector)
+
                     if candidate_indices is not None:
                         aggregate[candidate_indices] += np.nan_to_num(
                             self.vectors[candidate_indices] @ vector
                         )
                     else:
-                        aggregate += np.nan_to_num(np.dot(self.vectors, vector))
-                    weights += 1.
+                        aggregate += np.nan_to_num(self.vectors @ vector)
+
+                    weights += self.word2vec.SIF(token)
                 else:
                     print(f"token {token} was not found in embedding vocabulary")
 
