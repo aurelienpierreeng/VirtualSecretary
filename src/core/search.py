@@ -861,7 +861,7 @@ class Indexer():
         return self.ranker.get_scores(symbolic_tokens)
 
     @timeit()
-    def rank_ai(self, tokens: list[str], fast: bool = False, clip: bool = True, n_clusters: int = 3) -> np.ndarray:
+    def rank_ai(self, tokens: list[str], fast: bool = False, clip: bool = True, n_clusters: int = 4) -> np.ndarray:
         """Cosine-similarity ranking against document centroid vectors.
 
         Arguments:
@@ -1157,8 +1157,8 @@ class Indexer():
 
         # Human-legible keywords: the 5 vocabulary tokens whose input embedding
         # is most similar to the cluster centroid direction.
-        for i, c in enumerate(self.cluster_centroids):
-            print(f"cluster {i}/{n_clusters} :", [word for word, _ in self.word2vec.wv.similar_by_vector(c, topn=5)])
+        #for i, c in enumerate(self.cluster_centroids):
+        #    print(f"cluster {i}/{n_clusters} :", [word for word, _ in self.word2vec.wv.similar_by_vector(c, topn=5)])
             
 
     def compute_ctfidf_labels(self, labels: np.ndarray, top_n: int = 10) -> dict[int, list[str]]:
