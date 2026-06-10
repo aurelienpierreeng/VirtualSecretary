@@ -1333,7 +1333,7 @@ class Word2Vec(gensim.models.Word2Vec):
                  tokenizer: Tokenizer | None = None,
                  compute_idf: bool = True,
                  n_pc_in: int = 3,
-                 n_pc_out: int = 1,
+                 n_pc_out: int = 0,
                  **kwargs: dict[str, Any]):
         """
         Train a Word2Vec embedding model and compute TF-IDF word statistics on the corpus.
@@ -1519,7 +1519,7 @@ class Word2Vec(gensim.models.Word2Vec):
         print(f"pruned idf: {original} -> {len(self.idf)} terms")
 
 
-    def apply_abtt(self, n_components_in: int = 3, n_components_out: int = 1) -> None:
+    def apply_abtt(self, n_components_in: int = 3, n_components_out: int = 0) -> None:
         """Post-process IN and OUT word vectors using All-but-the-Top.
 
         Applies mean subtraction (and optionally PC removal) to W_IN and
@@ -1541,45 +1541,75 @@ class Word2Vec(gensim.models.Word2Vec):
                 PCs to remove from W_IN (query space) beyond the mean.
                 For a specialty corpus, 3–10 is typical. Removing too many
                 components induces a risk of loosing semantic meaning.
+                `0` performs only the mean substraction (no principal components). 
+                `-1` disables principal components and mean substraction (bypass).
 
             n_components_out:
                 PCs to remove from W_OUT (document space) beyond the mean.
                 Default 0 (mean only) is recommended unless you observe
                 residual domain bias in document clusters after indexing.
+                `0` performs only the mean substraction (no principal components). 
+                `-1` disables principal components and mean substraction (bypass).
         """
 
-        def _abtt(matrix: np.ndarray, n_components: int, label: str) -> tuple[np.ndarray, np.ndarray]:
+        def _select_abtt_components(explained_variance_ratio: np.ndarray,
+                            min_ratio: float = 1.5,
+                            min_variance: float = 0.02) -> int:
+            """Return how many leading PCs to remove.
+
+            Stops at the first PC whose explained variance either:
+            - drops below `min_variance` (absolute floor — don't remove weak PCs), or
+            - is less than `min_ratio` times the next PC's variance (gap closed —
+                we've reached the semantic floor).
+            """
+            evr = explained_variance_ratio
+            for i in range(len(evr)):
+                if evr[i] < min_variance:
+                    return i
+                if i + 1 < len(evr) and evr[i] / evr[i + 1] < min_ratio:
+                    return i
+            return len(evr)
+
+
+        def _abtt(matrix: np.ndarray, max_k: int, label: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
             v = matrix.astype(np.float64)
             mean = v.mean(axis=0, keepdims=True)
             v -= mean
 
-            if n_components > 0:
-                pca = PCA(n_components=n_components, random_state=0)
+            if max_k > 0:
+                pca = PCA(n_components=max_k, random_state=0)
                 pca.fit(v)
-                coords = v @ pca.components_.T
-                v -= coords @ pca.components_
-                print(f"AbTT {label}: mean + {n_components} PCs removed "
-                    f"(var explained: {pca.explained_variance_ratio_.sum():.1%})")
+                n_remove = _select_abtt_components(pca.explained_variance_ratio_)
+                components = pca.components_[:n_remove]
+                if n_remove > 0:
+                    v -= (v @ components.T) @ components
+                print(f"AbTT {label}: removed mean + {n_remove}/{max_k} PCs "
+                    f"({pca.explained_variance_ratio_[:n_remove].sum():.1%} variance); "
+                    f"full budget: {pca.explained_variance_ratio_}")
             else:
-                print(f"AbTT {label}: mean removed")
+                components = np.empty((0, v.shape[1]), dtype=np.float64)
+                print(f"AbTT {label}: removed mean only")
 
-            return v.astype(np.float32), mean.astype(np.float32)
+            return v.astype(np.float32), mean.astype(np.float32), components.astype(np.float32)
+
 
         # W_IN — query embedding
-        self.wv.vectors, self.abtt_mean_in = _abtt(
-            self.wv.vectors, n_components_in, "W_IN"
-        )
-        self.wv.vectors_norm = None   # invalidate gensim's norm cache
+        if n_components_in > -1:
+            self.wv.vectors, self.abtt_mean_in, self.abtt_components_in = _abtt(
+                self.wv.vectors, n_components_in, "W_IN"
+            )
+            self.wv.vectors_norm = None   # invalidate gensim's norm cache
 
         # W_OUT — document embedding
-        if hasattr(self, "syn1neg"):
-            self.syn1neg, self.abtt_mean_out = _abtt(
-                self.syn1neg, n_components_out, "W_OUT"
-            )
-        elif hasattr(self, "syn1"):
-            self.syn1, self.abtt_mean_out = _abtt(
-                self.syn1, n_components_out, "W_OUT (hs)"
-            )
+        if n_components_out > -1:
+            if hasattr(self, "syn1neg"):
+                self.syn1neg, self.abtt_mean_out, self.abtt_components_out = _abtt(
+                    self.syn1neg, n_components_out, "W_OUT"
+                )
+            elif hasattr(self, "syn1"):
+                self.syn1, self.abtt_mean_out, self.abtt_components_out = _abtt(
+                    self.syn1, n_components_out, "W_OUT (hs)"
+                )
 
 
     @classmethod
