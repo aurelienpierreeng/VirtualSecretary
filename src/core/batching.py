@@ -88,16 +88,16 @@ def _init_batch_normalize_process_worker(tokenizer, db_path: str):
     SHARED_DB.execute("PRAGMA busy_timeout = 5000")
 
 
-def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, str, str, None | datetime, None | str, str, int]]:
+def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, str, str, str, None | datetime, None | str, str, int]]:
     """Worker that reads documents from the shared sqlite DB by index, normalizes and returns results."""
     global SHARED_DB, TOKENIZER
     cur = SHARED_DB.cursor()
-    out: list[tuple[int, str, str, str, 'None | datetime', None | str, str, int]] = []
+    out: list[tuple[int, str, str, str, str, 'None | datetime', None | str, str, int]] = []
 
     normalize = TOKENIZER.normalize_text
 
     for i in indices:
-        cur.execute(f'SELECT title, content, date, lang FROM pages WHERE rowid=?', (i,))
+        cur.execute(f'SELECT title, content, excerpt, date, lang FROM pages WHERE rowid=?', (i,))
         row = cur.fetchone()
         if row is None:
             continue
@@ -112,9 +112,14 @@ def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, 
         if lang is None:   
             lang = detect_language(parsed)
 
+        if row['excerpt'] is None:
+            excerpt = content[:800]
+        else:
+            excerpt = row['excerpt']
+
         content_hash = hashlib.sha1(parsed.encode("utf-8")).hexdigest()
         
-        out.append((i, title, content, parsed, datetime, lang, content_hash, length))
+        out.append((i, title, content, excerpt, parsed, datetime, lang, content_hash, length))
 
     return out
 
@@ -177,16 +182,16 @@ def batch_parse_web_page(documents: sqlite3.Connection, tokenizer: Tokenizer, ch
         # Collect updates and commit in batches to minimize write-lock churn
         pending_updates = []
         for results in executor.map(_batch_normalize_process_worker, batches):
-            for rowid, title, content, parsed, datetime, lang, content_hash, length in results:
-                pending_updates.append((title, content, parsed, datetime, lang, content_hash, length, rowid))
+            for rowid, title, content, excerpt, parsed, datetime, lang, content_hash, length in results:
+                pending_updates.append((title, content, excerpt, parsed, datetime, lang, content_hash, length, rowid))
 
                 if len(pending_updates) >= 2048:
-                    cursor.executemany('UPDATE pages SET title=?, content=?, parsed=?, datetime=?, lang=?, content_hash=?, length=? WHERE rowid=?', pending_updates)
+                    cursor.executemany('UPDATE pages SET title=?, content=?, excerpt=?, parsed=?, datetime=?, lang=?, content_hash=?, length=? WHERE rowid=?', pending_updates)
                     documents.commit()
                     pending_updates.clear()
 
         if pending_updates:
-            cursor.executemany('UPDATE pages SET title=?, content=?, parsed=?, datetime=?, lang=?, content_hash=?, length=? WHERE rowid=?', pending_updates)
+            cursor.executemany('UPDATE pages SET title=?, content=?, excerpt=?, parsed=?, datetime=?, lang=?, content_hash=?, length=? WHERE rowid=?', pending_updates)
             documents.commit()
 
     return documents
