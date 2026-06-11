@@ -36,15 +36,14 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.decomposition import PCA
 
+# Force fast_langdetect to save the downloaded model in home directory,
+# otherwise it goes it /tmp and gets nuked between reboots.
 from pathlib import Path
-
 cache_dir = Path.home() / ".cache" / "fast_langdetect"
 cache_dir.mkdir(parents=True, exist_ok=True)
-
 os.environ["FTLANG_CACHE"] = str(cache_dir)
 
 from fast_langdetect import detect
-
 # Ensure we download the model out of multi-threading
 detect("", model="full")
 
