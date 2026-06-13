@@ -1327,11 +1327,401 @@ class _SentenceCorpus:
             yield from doc                   # doc → sentences, one at a time
 
 
-class Word2Vec(gensim.models.Word2Vec):
+class WordEmbedding:
+    """Shared interface and post-processing for word-embedding models.
+
+    Gensim-agnostic mixin implementing corpus statistics (IDF/SIF),
+    All-but-the-Top post-processing and the word/document vector-retrieval API
+    used by the search engine. It is combined with a concrete gensim training
+    class ([core.nlp.Word2Vec][] or [core.nlp.FastText][]), which must provide
+    `self.wv`, an output matrix (`syn1neg` or `syn1`) and `save()`.
+
+    Both [core.nlp.Word2Vec][] and [core.nlp.FastText][] inherit it, so they
+    expose the same interface and are interchangeable wherever the search
+    [core.search.Indexer][] expects an embedding model. Type-hint against
+    [core.nlp.WordEmbedding][] to depend on the interface rather than a
+    concrete model.
+    """
+
+    tokenizer: "Tokenizer"
+    """Tokenizer object, instanciated with word replacements and trained for n-grams if needed."""
+
+    vector_size: int
+    """Number of vector dimensions used to embed words."""
+
+    N_docs: int
+    """Number of documents used at training time"""
+
+    N_sentences: int
+    """Number of sentences found in the training corpus"""
+
+    N_words: int
+    """Number of words (tokens) found in the training corpus"""
+
+    N_terms: int
+    """Number of unique terms found in the training corpus"""
+
+    idf: "dict[str, float] | None"
+    """Inverse document frequency of words. Computed only if [core.nlp.WordEmbedding][] is instanciated with `compute_idf=True`"""
+
+    avg_doc_len: "float | None"
+    """Average document length. Computed only if [core.nlp.WordEmbedding][] is instanciated with `compute_idf=True`"""
+
+    def _compute_corpus_stats(self,
+                              documents: Iterable[Iterable[list[str]]],
+                              compute_idf: bool = True) -> None:
+        """Single-pass streaming statistics over the tokenized corpus.
+
+        Sets `N_docs`, `N_sentences`, `N_words`, `N_terms`, and (when
+        `compute_idf`) `idf` and `avg_doc_len`. Also dumps the global
+        term-frequency table to `models/stopwords` for inspection.
+        """
+        # ------------------------------------------------------------------
+        # Single-pass streaming statistics — O(vocab) memory, zero copies
+        # ------------------------------------------------------------------
+        N_docs = N_sentences = N_words = 0
+        counts: Counter[str] = Counter()
+        df_counts: Counter[str] | None = Counter() if compute_idf else None
+        total_doc_len: int = 0
+
+        for doc in documents:                       # plain iteration, no call
+            N_docs += 1
+
+            if compute_idf:
+                doc_terms: set[str] = set()
+                doc_len: int = 0
+
+            for sentence in doc:
+                N_sentences += 1
+                N_words += len(sentence)
+                counts.update(sentence)
+
+                if compute_idf:
+                    doc_terms.update(sentence)
+                    doc_len += len(sentence)
+
+            if compute_idf:
+                df_counts.update(doc_terms)
+                total_doc_len += doc_len
+
+        self.N_docs = N_docs
+        self.N_sentences = N_sentences
+        self.N_words = N_words
+        self.N_terms = len(counts)
+
+        print(f"got {self.N_docs}      documents")
+        print(f"got {self.N_sentences} sentences")
+        print(f"got {self.N_words}     words (tokens)")
+        print(f"got {self.N_terms}     unique terms")
+
+        self.idf = None
+        self.avg_doc_len = None
+
+        if compute_idf:
+            self.idf = {term: N_docs / df for term, df in df_counts.items()}
+            self.avg_doc_len = total_doc_len / N_docs if N_docs > 0 else 1.0
+            del df_counts
+
+        total = self.N_words or 1
+        freq = dict(sorted(
+            ((w, c / total) for w, c in counts.items()),
+            key=lambda kv: kv[1],
+        ))
+
+        with open(get_models_folder("stopwords"), "w", encoding="utf8") as f:
+            for word, value in freq.items():
+                f.write(f"{word}: {value}\n")
+        print("stopwords saved")
+
+        del freq, counts
+
+
+    def prune_idf(self):
+        """Prune IDF entries to the actual model vocabulary (remove tokens
+        that were filtered out by gensim during `super().__init__`).
+        """
+        if getattr(self, "idf", None) is None:
+            return
+
+        vocab = set(self.wv.key_to_index.keys())
+        original = len(self.idf)
+        self.idf = {t: v for t, v in self.idf.items() if t in vocab}
+        print(f"pruned idf: {original} -> {len(self.idf)} terms")
+
+
+    def apply_abtt(self, n_components_in: int = 3, n_components_out: int = 0) -> None:
+        """Post-process IN and OUT word vectors using All-but-the-Top.
+
+        Applies mean subtraction (and optionally PC removal) to W_IN and
+        W_OUT independently.  W_OUT receives lighter treatment because its
+        common component is weaker under negative sampling and because it
+        feeds into document centroids that are already corrected by
+        `normalize_pc()` in the search index.
+
+        The intuition is that the principal components of the embedding vector
+        space encode frequency rather than semantics.
+
+        For the FastText drop-in this adjusts only the in-vocabulary full-word
+        vectors (`wv.vectors`) and the output matrix; OOV vectors reconstructed
+        on the fly from sub-word n-grams are left untouched.
+
+        Reference:
+            Mu & Viswanath (2018) "All-but-the-Top: Simple and Effective
+            Postprocessing for Word Representations"
+            https://arxiv.org/abs/1702.01417
+
+        Arguments:
+            n_components_in:
+                PCs to remove from W_IN (query space) beyond the mean.
+                For a specialty corpus, 3-10 is typical. Removing too many
+                components induces a risk of loosing semantic meaning.
+                `0` performs only the mean substraction (no principal components).
+                `-1` disables principal components and mean substraction (bypass).
+
+            n_components_out:
+                PCs to remove from W_OUT (document space) beyond the mean.
+                Default 0 (mean only) is recommended unless you observe
+                residual domain bias in document clusters after indexing.
+                `0` performs only the mean substraction (no principal components).
+                `-1` disables principal components and mean substraction (bypass).
+        """
+
+        def _select_abtt_components(explained_variance_ratio: np.ndarray,
+                            min_ratio: float = 1.5,
+                            min_variance: float = 0.02) -> int:
+            """Return how many leading PCs to remove.
+
+            Stops at the first PC whose explained variance either:
+            - drops below `min_variance` (absolute floor — don't remove weak PCs), or
+            - is less than `min_ratio` times the next PC's variance (gap closed —
+                we've reached the semantic floor).
+            """
+            evr = explained_variance_ratio
+            for i in range(len(evr)):
+                if evr[i] < min_variance:
+                    return i
+                if i + 1 < len(evr) and evr[i] / evr[i + 1] < min_ratio:
+                    return i
+            return len(evr)
+
+
+        def _abtt(matrix: np.ndarray, max_k: int, label: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+            v = matrix.astype(np.float64)
+            mean = v.mean(axis=0, keepdims=True)
+            v -= mean
+
+            if max_k > 0:
+                pca = PCA(n_components=max_k, random_state=0)
+                pca.fit(v)
+                n_remove = _select_abtt_components(pca.explained_variance_ratio_)
+                components = pca.components_[:n_remove]
+                if n_remove > 0:
+                    v -= (v @ components.T) @ components
+                print(f"AbTT {label}: removed mean + {n_remove}/{max_k} PCs "
+                    f"({pca.explained_variance_ratio_[:n_remove].sum():.1%} variance); "
+                    f"full budget: {pca.explained_variance_ratio_}")
+            else:
+                components = np.empty((0, v.shape[1]), dtype=np.float64)
+                print(f"AbTT {label}: removed mean only")
+
+            return v.astype(np.float32), mean.astype(np.float32), components.astype(np.float32)
+
+
+        # W_IN — query embedding
+        if n_components_in > -1:
+            self.wv.vectors, self.abtt_mean_in, self.abtt_components_in = _abtt(
+                self.wv.vectors, n_components_in, "W_IN"
+            )
+            self.wv.vectors_norm = None   # invalidate gensim's norm cache
+
+        # W_OUT — document embedding
+        if n_components_out > -1:
+            if hasattr(self, "syn1neg"):
+                self.syn1neg, self.abtt_mean_out, self.abtt_components_out = _abtt(
+                    self.syn1neg, n_components_out, "W_OUT"
+                )
+            elif hasattr(self, "syn1"):
+                self.syn1, self.abtt_mean_out, self.abtt_components_out = _abtt(
+                    self.syn1, n_components_out, "W_OUT (hs)"
+                )
+
+
+    @classmethod
+    def load_model(cls, name: str):
+        """Load a trained model saved in `models` folders"""
+        return cls.load(get_models_folder(name))
+
+
+    def get_word(self, word: str) -> str | None:
+        """Find out if word is in dictionary, optionnaly attempting spell-checking if not found.
+
+        For [core.nlp.Word2Vec][] this means the word is in vocabulary. For
+        [core.nlp.FastText][] it is also true for out-of-vocabulary words that
+        can be reconstructed from sub-word n-grams.
+
+        Arguments:
+            word: word to find
+
+        Returns:
+            (str | None):
+                - the original word if found in dictionnary,
+                - `None` if both previous conditions were not matched.
+        """
+        if word and word in self.wv:
+            # Word exists in dictionnary
+            return word
+
+        return None
+
+
+    def get_wordvec(self, word: str, embed: str = "IN", normalize: bool = True) -> np.ndarray[np.float32] | None:
+        """Return the embedding vector associated to a word.
+
+        Arguments:
+            word: the word to convert to a vector.
+            embed:
+                - `IN` uses the input embedding matrix (query/document encoding).
+                - `OUT` uses the output embedding matrix (dual-embedding space
+                  document ranking). [^1]
+
+        [^1]: A Dual Embedding Space Model for Document Ranking (2016), Bhaskar
+        Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana
+        https://arxiv.org/pdf/1602.01137.pdf
+
+        Returns:
+            the nD vector if the word can be vectorized, or `None`. For
+            FastText, OOV words have no `OUT` vector (output embeddings exist
+            only for in-vocabulary words) and return `None` for `embed="OUT"`.
+        """
+        x = self.get_word(word)
+        norm = 0.
+
+        if x is not None:
+            if embed == "OUT":
+                idx = self.wv.key_to_index.get(x)
+                if idx is None:
+                    # FastText OOV: sub-word reconstruction exists for the IN
+                    # space but there is no output (OUT) vector.
+                    return None
+
+                if hasattr(self, 'syn1'):
+                    # Model was trained with hierarchical softmax
+                    embedding = self.syn1
+                elif hasattr(self, 'syn1neg'):
+                    # Model was trained with negative sampling
+                    embedding = self.syn1neg
+                else:
+                    raise RuntimeError("No output embedding matrix found in the model")
+
+                vec = embedding[idx].astype(np.float32)
+            elif embed == "IN":
+                vec = self.wv[x].astype(np.float32)
+            else:
+                raise ValueError("Invalid option")
+
+            if normalize:
+                norm = np.linalg.norm(vec)
+
+            return vec / norm if (normalize and norm > 0.) else vec
+        else:
+            return None
+
+
+    def get_features(self, tokens: list[str], embed: str = "IN", use_sif: bool = False, sif_smoothing: float = 1e-3) -> np.ndarray[np.float32]:
+        """Calls [core.nlp.WordEmbedding.get_wordvec][] over a list of tokens and returns a single
+        centroid vector representing the whole list.
+
+        Arguments:
+            tokens:
+                list of text tokens.
+
+            embed:
+                see [core.nlp.WordEmbedding.get_wordvec][]
+
+            use_sif:
+                Use SIF weighting on each term when embedding a full sentence
+                or document. See [core.nlp.WordEmbedding.SIF][].
+
+            sif_smoothing:
+                The SIF smoothing coefficient.
+
+        Returns:
+            the normalized centroid of word embedding vectors associated with the input tokens
+            (aka the average vector), or the null vector if no word from the list was found in dictionnary.
+        """
+        features = np.zeros(self.vector_size, dtype=np.float32)
+        weights = 0.
+
+        for token in tokens:
+            vector = self.get_wordvec(token, normalize=True, embed=embed)
+            if vector is None:
+                continue
+
+            weight = self.SIF(token, a=sif_smoothing) if use_sif else 1.0
+            features += vector * weight
+            weights += weight
+
+        if weights > 0:
+            features /= weights
+
+        # Normalize by the L2 norm
+        features /= (np.linalg.norm(features) + 1e-8)
+
+        return features
+
+
+    def SIF(self, token: str, a: float = 5e-3) -> float:
+        """Smooth inverse frequency weighting.
+
+        This helps refining semantics by under-weighting stopwords, when aggregating
+        word vectors into a document centroid.
+
+        Reference:
+            _A simple but tough-to-beat baseline for sentence embeddings_ (2017).
+            Sanjeev Arora, Yingyu Liang, Tengyu Ma. https://openreview.net/pdf?id=SyK00v5xx
+
+        Arguments:
+            token: the token to weight. It should be in the model vocabulary.
+
+        Returns:
+            The SIF weight associated with the token or 0. if the token was not found in the vocabulary.
+
+        Warning:
+            The [core.nlp.WordEmbedding][] model needs to have been trained with `compute_idf=True`
+            to prepare the statistics needed by SIF weighting.
+            The method will raise an error if the stats are not available.
+        """
+        if getattr(self, "idf", None) is None:
+            raise RuntimeError("IDF stats were not computed for this model, you cannot use SIF weighting.")
+
+        # We use document frequency (TF-IDF style) as the unigram probability proxy.
+        freq = 1. / self.idf.get(token, 1.0)
+        return a / (a + freq)
+
+
+    def tokens_to_indices(self, tokens: list[str]) -> np.ndarray[np.int32]:
+        """Convert a list of tokens to a list of their index number in the vocabulary.
+        This yields a more compact, albeit purely symbolic, representation of a tokenized document
+        as a series of integers.
+
+        Only in-vocabulary tokens are kept (out-of-vocabulary FastText tokens have no stable
+        vocabulary index). The conversion is reversible and the original token can be found with
+        `self.wv.index_to_key[i]`, where `i` is the index number output (for each token) from here.
+
+        Returns:
+            the list of indices as 32 bits integers, meaning the vocabulary needs to contain fewer
+            than 4.29 billions words.
+        """
+        return np.array([self.wv.key_to_index[token]
+                         for token in tokens
+                         if token in self.wv.key_to_index], dtype=np.int32)
+
+
+class Word2Vec(WordEmbedding, gensim.models.Word2Vec):
     @timeit()
-    def __init__(self, 
+    def __init__(self,
                  documents: Iterable[Iterable[list[str]]],
-                 name: str = "word2vec", 
+                 name: str = "word2vec",
                  vector_size: int = 300, 
                  epochs: int = 200, 
                  window: int = 5, 
@@ -1407,74 +1797,10 @@ class Word2Vec(gensim.models.Word2Vec):
         self.vector_size: int = vector_size
         """Number of vector dimensions used to embed words."""
 
-        # ------------------------------------------------------------------
-        # Single-pass streaming statistics — O(vocab) memory, zero copies
-        # ------------------------------------------------------------------
-        N_docs = N_sentences = N_words = 0
-        counts:    Counter[str] = Counter()
-        df_counts: Counter[str] = Counter() if compute_idf else None
-        total_doc_len: int = 0
-
-        for doc in documents:                       # plain iteration, no call
-            N_docs += 1
-
-            if compute_idf:
-                doc_terms: set[str] = set()
-                doc_len:   int      = 0
-
-            for sentence in doc:
-                N_sentences += 1
-                N_words     += len(sentence)
-                counts.update(sentence)
-
-                if compute_idf:
-                    doc_terms.update(sentence)
-                    doc_len += len(sentence)
-
-            if compute_idf:
-                df_counts.update(doc_terms)
-                total_doc_len += doc_len
-
-        self.N_docs      = N_docs
-        """Number of documents used at training time"""
-
-        self.N_sentences = N_sentences
-        """Number of sentences found in the training corpus"""
-
-        self.N_words     = N_words
-        """Number of words (tokens) found in the training corpus"""
-
-        self.N_terms     = len(counts)
-        """Number of unique terms found in the training corpus"""
-
-        print(f"got {self.N_docs}      documents")
-        print(f"got {self.N_sentences} sentences")
-        print(f"got {self.N_words}     words (tokens)")
-        print(f"got {self.N_terms}     unique terms")
-
-        self.idf: dict[str, float] | None = None
-        """Inverse document frequency of words. Computed only if [Word2Vec][core.nlp.Word2Vec] is instanciated with `compute_idf=True`"""
-
-        self.avg_doc_len: float | None     = None
-        """Average document length.  Computed only if [Word2Vec][core.nlp.Word2Vec] is instanciated with `compute_idf=True`"""
-
-        if compute_idf:
-            self.idf         = {term: N_docs / df for term, df in df_counts.items()}
-            self.avg_doc_len = total_doc_len / N_docs if N_docs > 0 else 1.0
-            del df_counts
-
-        total = self.N_words or 1
-        freq  = dict(sorted(
-            ((w, c / total) for w, c in counts.items()),
-            key=lambda kv: kv[1],
-        ))
-
-        with open(get_models_folder("stopwords"), "w", encoding="utf8") as f:
-            for word, value in freq.items():
-                f.write(f"{word}: {value}\n")
-        print("stopwords saved")
-
-        del freq, counts
+        # Single-pass streaming corpus statistics (term counts, IDF, average
+        # document length, stopwords dump). Shared with the FastText drop-in
+        # through the WordEmbedding base.
+        self._compute_corpus_stats(documents, compute_idf=compute_idf)
 
         # ------------------------------------------------------------------
         # Training
@@ -1510,317 +1836,100 @@ class Word2Vec(gensim.models.Word2Vec):
 
         self.save(self.pathname)
         print("saving done")
-    
-
-    def prune_idf(self):
-        """Prune IDF entries to the actual model vocabulary (remove tokens
-        that were filtered out by gensim during `super().__init__`).
-        """
-
-        if getattr(self, "idf", None) is None:
-            return
-
-        vocab = set(self.wv.key_to_index.keys())
-        original = len(self.idf)
-        self.idf = {t: v for t, v in self.idf.items() if t in vocab}
-        print(f"pruned idf: {original} -> {len(self.idf)} terms")
 
 
-    def apply_abtt(self, n_components_in: int = 3, n_components_out: int = 0) -> None:
-        """Post-process IN and OUT word vectors using All-but-the-Top.
-
-        Applies mean subtraction (and optionally PC removal) to W_IN and
-        W_OUT independently.  W_OUT receives lighter treatment because its
-        common component is weaker under negative sampling and because it
-        feeds into document centroids that are already corrected by
-        `normalize_pc()` in the search index.
-
-        The intuition is that the principal components of the embedding vector space
-        encode frequency rather than semantics.
-
-        Reference:
-            Mu & Viswanath (2018) "All-but-the-Top: Simple and Effective
-            Postprocessing for Word Representations"
-            https://arxiv.org/abs/1702.01417
-
-        Arguments:
-            n_components_in:
-                PCs to remove from W_IN (query space) beyond the mean.
-                For a specialty corpus, 3–10 is typical. Removing too many
-                components induces a risk of loosing semantic meaning.
-                `0` performs only the mean substraction (no principal components). 
-                `-1` disables principal components and mean substraction (bypass).
-
-            n_components_out:
-                PCs to remove from W_OUT (document space) beyond the mean.
-                Default 0 (mean only) is recommended unless you observe
-                residual domain bias in document clusters after indexing.
-                `0` performs only the mean substraction (no principal components). 
-                `-1` disables principal components and mean substraction (bypass).
-        """
-
-        def _select_abtt_components(explained_variance_ratio: np.ndarray,
-                            min_ratio: float = 1.5,
-                            min_variance: float = 0.02) -> int:
-            """Return how many leading PCs to remove.
-
-            Stops at the first PC whose explained variance either:
-            - drops below `min_variance` (absolute floor — don't remove weak PCs), or
-            - is less than `min_ratio` times the next PC's variance (gap closed —
-                we've reached the semantic floor).
-            """
-            evr = explained_variance_ratio
-            for i in range(len(evr)):
-                if evr[i] < min_variance:
-                    return i
-                if i + 1 < len(evr) and evr[i] / evr[i + 1] < min_ratio:
-                    return i
-            return len(evr)
-
-
-        def _abtt(matrix: np.ndarray, max_k: int, label: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-            v = matrix.astype(np.float64)
-            mean = v.mean(axis=0, keepdims=True)
-            v -= mean
-
-            if max_k > 0:
-                pca = PCA(n_components=max_k, random_state=0)
-                pca.fit(v)
-                n_remove = _select_abtt_components(pca.explained_variance_ratio_)
-                components = pca.components_[:n_remove]
-                if n_remove > 0:
-                    v -= (v @ components.T) @ components
-                print(f"AbTT {label}: removed mean + {n_remove}/{max_k} PCs "
-                    f"({pca.explained_variance_ratio_[:n_remove].sum():.1%} variance); "
-                    f"full budget: {pca.explained_variance_ratio_}")
-            else:
-                components = np.empty((0, v.shape[1]), dtype=np.float64)
-                print(f"AbTT {label}: removed mean only")
-
-            return v.astype(np.float32), mean.astype(np.float32), components.astype(np.float32)
-
-
-        # W_IN — query embedding
-        if n_components_in > -1:
-            self.wv.vectors, self.abtt_mean_in, self.abtt_components_in = _abtt(
-                self.wv.vectors, n_components_in, "W_IN"
-            )
-            self.wv.vectors_norm = None   # invalidate gensim's norm cache
-
-        # W_OUT — document embedding
-        if n_components_out > -1:
-            if hasattr(self, "syn1neg"):
-                self.syn1neg, self.abtt_mean_out, self.abtt_components_out = _abtt(
-                    self.syn1neg, n_components_out, "W_OUT"
-                )
-            elif hasattr(self, "syn1"):
-                self.syn1, self.abtt_mean_out, self.abtt_components_out = _abtt(
-                    self.syn1, n_components_out, "W_OUT (hs)"
-                )
-
-
-    @classmethod
-    def load_model(cls, name: str):
-        """Load a trained model saved in `models` folders"""
-        return cls.load(get_models_folder(name))
-
-
-    def get_word(self, word: str) -> str | None:
-        """Find out if word is in dictionary, optionnaly attempting spell-checking if not found.
-
-        Arguments:
-            word: word to find
-
-        Returns:
-            (str | None):
-                - the original word if found in dictionnary,
-                - `None` if both previous conditions were not matched.
-        """
-        if word and word in self.wv:
-            # Word exists in dictionnary
-            return word
-
-        return None
-
-
-    def get_wordvec(self, word: str, embed:str = "IN", normalize: bool = True) -> np.ndarray[np.float32] | None:
-        """Return the vector associated to a word, through a dictionnary of words.
-
-        Arguments:
-            word: the word to convert to a vector.
-            embed:
-                - `IN` uses the input embedding matrix [gensim.models.word2vec.Word2Vec.wv][], useful to vectorize queries and documents for classification training.
-                - `OUT` uses the output embedding matrix [gensim.models.word2vec.Word2Vec][], useful for the dual-space embedding scheme, to train search engines. [^1]
-
-        [^1]: A Dual Embedding Space Model for Document Ranking (2016), Bhaskar Mitra, Eric Nalisnick, Nick Craswell, Rich Caruana https://arxiv.org/pdf/1602.01137.pdf
-
-        Returns:
-            the nD vector if the word was found in the dictionnary, or `None`.
-        """
-        x = self.get_word(word)
-        norm = 0.
-
-        # The word or its correction are found in DB
-        if x is not None:
-            if embed == "OUT":
-                if hasattr(self, 'syn1'):
-                    # Model was trained with hierarchical softmax
-                    embedding = self.syn1
-                elif hasattr(self, 'syn1neg'):
-                    # Model was trained with negative sampling
-                    embedding = self.syn1neg
-                else:
-                    raise RuntimeError("No output embedding matrix found in the model")
-
-                vec = embedding[self.wv.key_to_index[x]].astype(np.float32)
-            elif embed == "IN":
-                vec = self.wv[x].astype(np.float32)
-            else:
-                raise ValueError("Invalid option")
-
-            if normalize:
-                norm = np.linalg.norm(vec)
-
-            return vec / norm if (normalize and norm > 0.) else vec
-        else:
-            return None
-
-
-    def get_features(self, tokens: list[str], embed: str = "IN", use_sif: bool = False, sif_smoothing: float = 1e-3) -> np.ndarray[np.float32]:
-        """Calls [core.nlp.Word2Vec.get_wordvec][] over a list of tokens and returns a single 
-        centroid vector representing the whole list.
-
-        Arguments:
-            tokens: 
-                list of text tokens.
-
-            embed: 
-                see [core.nlp.Word2Vec.get_wordvec][]
-
-            use_sif: 
-                Use SIF weighting on each term when embedding a full sentence
-                or document. See [core.nlp.Word2Vec.SIF][].
-
-            sif_smoothing: 
-                The SIF smoothing coefficient.
-
-        Returns:
-            the normalized centroid of word embedding vectors associated with the input tokens 
-            (aka the average vector), or the null vector if no word from the list was found in dictionnary.
-        """
-        features = np.zeros(self.vector_size, dtype=np.float32)
-        weights = 0.
-
-        for token in tokens:
-            vector = self.get_wordvec(token, normalize=True, embed=embed)
-            if vector is None:
-                continue
-
-            weight = self.SIF(token, a=sif_smoothing) if use_sif else 1.0
-            features += vector * weight
-            weights += weight
-
-        if weights > 0:
-            features /= weights
-
-        # Normalize by the L2 norm
-        features /= (np.linalg.norm(features) + 1e-8)
-        
-        return features
-
-
-    def SIF(self, token: str, a: float = 5e-3) -> float:
-        """Smooth inverse frequency weighting.
-        
-        This helps refining semantics by under-weighting stopwords, when aggregating
-        word vectors into a document centroid.
-
-        Reference:
-            _A simple but tough-to-beat baseline for sentence embeddings_ (2017).
-            Sanjeev Arora, Yingyu Liang, Tengyu Ma. https://openreview.net/pdf?id=SyK00v5xx
-
-        Arguments:
-            token: the token to weight. It should be in the model vocabulary.
-        
-        Returns:
-            The SIF weight associated with the token or 0. if the token was not found in the vocabulary.
-
-        Warning: 
-            The [Word2Vec][core.nlp.Word2Vec] parent model needs to have been trained with `compute_idf=True`
-            to prepare the statistics needed by SIF weighting.
-            The method will raise an error if the stats are not available.
-        """
-        if getattr(self, "idf", None) is None:
-            raise RuntimeError("IDF stats were not computed for this model, you cannot use SIF weighting.")
-
-        # Note: SIF technically use token frequency in the training dataset, 
-        # aka the number of times the token is found in the whole training bag of words.
-        # Here we use document frequency, aka number of documents in which the token is found (TF-IDF style).
-        freq = 1. / self.idf.get(token, 1.0)
-        return a / (a + freq)
-
-
-    def tokens_to_indices(self, tokens: list[str]) -> np.ndarray[np.int32]:
-        """Convert a list of tokens to a list of their index number in the Word2Vec vocabulary.
-        This yields a more compact, albeit purely symbolic, representation of a tokenized document
-        as a series of integers.
-
-        The conversion is reversible and the original token can be found with `self.wv.index_to_key[i]`,
-        where `i` is the index number output (for each token) from here.
-
-        Returns:
-            the list of indices as 32 bits integers, meaning the Word2Vec vocabulary needs to contain fewer
-            than 4.29 billions words.
-        """
-        return np.array([self.wv.get_index(token)
-                         for token in tokens
-                         if token in self.wv], dtype=np.int32)
-
-
-class Doc2Vec(gensim.models.doc2vec.Doc2Vec):
+class FastText(WordEmbedding, gensim.models.FastText):
     @timeit()
     def __init__(self,
-                 training_set: list[web_page],
-                 tags_list: list[any],
-                 tokenizer: Tokenizer = None,
-                 name: str = "doc2vec",
-                 ):
+                 documents: Iterable[Iterable[list[str]]],
+                 name: str = "fasttext",
+                 vector_size: int = 300,
+                 epochs: int = 200,
+                 window: int = 5,
+                 min_count: int = 5,
+                 sample: float = 0.0005,
+                 tokenizer: Tokenizer | None = None,
+                 compute_idf: bool = True,
+                 n_pc_in: int = 3,
+                 n_pc_out: int = 0,
+                 min_n: int = 3,
+                 max_n: int = 6,
+                 bucket: int = 2_000_000,
+                 **kwargs: dict[str, Any]):
+        """
+        Drop-in alternative to [core.nlp.Word2Vec][] backed by
+        [gensim.models.fasttext.FastText][].
 
-        if tokenizer is not None:
-            self.tokenizer = tokenizer
-        else:
-            self.tokenizer = Tokenizer()
+        Same API, corpus statistics (IDF/SIF), All-but-the-Top post-processing
+        and vector-retrieval interface as Word2Vec (both inherit
+        [core.nlp.WordEmbedding][]), so it is interchangeable everywhere the
+        search [core.search.Indexer][] expects an embedding model. The
+        difference is that word vectors are composed from character n-grams,
+        which gives:
 
-        sentences = [post["parsed"]
-                     if "parsed" in post else self.tokenizer.normalize_text(clean_whitespaces(post["content"]))
-                     for post in training_set]
+            - sensible vectors for out-of-vocabulary tokens (rare domain jargon,
+              misspellings, morphological variants) on the query (IN) side,
+            - robustness to FR/EN morphology, allowing lighter stemming upstream.
 
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            sentences = executor.map(self.tokenizer.tokenize_document_flat, sentences, chunksize=32)
+        Notes:
+            - Output (OUT) embeddings exist only for in-vocabulary words, so
+              document vectorization (`embed="OUT"`) still skips OOV tokens.
+            - All-but-the-Top adjusts only the in-vocabulary full-word vectors;
+              OOV vectors reconstructed from sub-word n-grams are left raw.
 
-        train_corpus = [gensim.models.doc2vec.TaggedDocument(tokens, tags)
-                        for tokens, tags in zip(sentences, tags_list)]
+        Args:
+            min_n:  smallest character n-gram length for sub-word vectors.
+            max_n:  largest character n-gram length for sub-word vectors.
+            bucket: number of hash buckets for sub-word n-grams.
+            
+        Other arguments: see [core.nlp.Word2Vec][].
+        """
+        self.tokenizer: Tokenizer = tokenizer if tokenizer is not None else Tokenizer()
+        """Tokenizer object, instanciated with word replacements and trained for n-grams if needed."""
 
-        super().__init__(vector_size=512, epochs=20, window=7, min_count=10, sample=0.00001, dm_concat=1)
+        self.pathname: str = get_models_folder(name)
+        """Path and filename of the saved model"""
 
-        self.build_vocab(train_corpus)
-        print("vocab built")
+        self.vector_size: int = vector_size
+        """Number of vector dimensions used to embed words."""
 
-        self.train(train_corpus, total_examples=self.corpus_count, epochs=self.epochs)
-        print("model trained")
+        # Single-pass streaming corpus statistics, shared with Word2Vec.
+        self._compute_corpus_stats(documents, compute_idf=compute_idf)
 
-        self.save(get_models_folder(name))
-        print("model saved")
+        # _SentenceCorpus re-iterates `documents` on each gensim pass and
+        # flattens doc -> sentences so gensim sees list[str] per item.
+        corpus = _SentenceCorpus(documents)
+        loss_logger = LossLogger()
 
-        ranks = []
-        for doc_id in range(len(train_corpus)):
-            inferred_vector = self.infer_vector(train_corpus[doc_id].words, epochs=20)
-            sims = self.dv.most_similar([inferred_vector], topn=len(self.dv))
-            rank = [docid for docid, sim in sims].index(doc_id)
-            ranks.append(rank)
+        gensim.models.FastText.__init__(
+            self,
+            corpus,
+            vector_size=vector_size,
+            window=window,
+            min_count=min_count,
+            epochs=epochs,
+            sample=sample,
+            callbacks=[loss_logger],
+            sg=1,
+            min_n=min_n,
+            max_n=max_n,
+            bucket=bucket,
+            max_final_vocab=100_000,
+            hs=0,
+            workers=os.cpu_count() or 1,
+            batch_words=100_000,
+            **kwargs,
+        )
+        print("training done")
 
-        counter = Counter(ranks)
-        print(counter)
+        if self.idf is not None:
+            self.prune_idf()
+
+        # Post-process word vectors (mean / All-but-the-Top).
+        self.apply_abtt(n_components_in=n_pc_in, n_components_out=n_pc_out)
+
+        self.save(self.pathname)
+        print("saving done")
 
 
 class Classifier(nltk.classify.SklearnClassifier):
@@ -1984,7 +2093,7 @@ def _process_document(args):
 
 
 class StemTokenIndex:
-    def __init__(self, db: sqlite3.Connection, tokenizer: Tokenizer):
+    def __init__(self, db: sqlite3.Connection, tokenizer: Tokenizer) -> None:
         """
         Build a reverse-lookup table in `db` mapping stems to tokens.
 
