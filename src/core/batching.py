@@ -26,6 +26,9 @@ import hashlib
 
 TOKENIZER: nlp.Tokenizer | None = None
 WORD2VEC: nlp.Word2Vec | None = None
+TITLE_WEIGHT: float = 0.5
+USE_SIF: bool = True
+SIF_SMOOTHING: float = 1e-3
 
 
 def _guess_dates_batch(batch: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -365,41 +368,78 @@ def batch_stem(db: sqlite3.Connection,
             print(f"Batch {processed_batches} over {num_batches} processed")
 
 
-def _init_vectorizer_worker(word2vec):
-    global WORD2VEC
+def _init_vectorizer_worker(word2vec, title_weight: float = 0.5, use_sif: bool = True, sif_smoothing: float = 1e-3):
+    global WORD2VEC, TITLE_WEIGHT, USE_SIF, SIF_SMOOTHING
     WORD2VEC = word2vec
+    TITLE_WEIGHT = title_weight
+    USE_SIF = use_sif
+    SIF_SMOOTHING = sif_smoothing
 
 
-def _batch_vectorize_worker(inputs: tuple[int, list[list[str]]]) -> tuple[np.ndarray[np.float32], int]:
-    rowid, tokenized = inputs
+def _batch_vectorize_worker(inputs: tuple[int, list[list[str]], str | None, str | None]) -> tuple[np.ndarray[np.float32], int]:
+    rowid, stemmed, title, lang = inputs
 
-    # NOTE: tokens are per-sentence/paragraph, so it's a list of list
-    vector = WORD2VEC.get_features([word for sentence in tokenized for word in sentence], embed="OUT", use_sif=True)
+    # Body centroid: SIF-weighted mean of OUT vectors over the whole document
+    # (title + content, as stored in `stemmed`). NOTE: tokens are
+    # per-sentence/paragraph, so `stemmed` is a list of lists.
+    body_vec = WORD2VEC.get_features(
+        [word for sentence in stemmed for word in sentence],
+        embed="OUT", use_sif=USE_SIF, sif_smoothing=SIF_SMOOTHING,
+    )
 
-    #TODO:
-    #indices = word2vec.tokens_to_indices(tokens)
+    # Title boost: a focused page repeats its subject in the title, but in the
+    # body mean that single line is drowned by hundreds of body tokens, so long
+    # on-topic documents get a diluted centroid. Blend a separate title centroid
+    # back in (re-stemmed the same way as the body) so keyword-in-title
+    # documents point toward those keywords.
+    vector = body_vec
+    if title and TITLE_WEIGHT > 0.:
+        title_tokens = WORD2VEC.tokenizer.tokenize_document_flat(
+            WORD2VEC.tokenizer.normalize_text(title),
+            language=parse_lang_to_iso639_1(lang),
+            n_grams=True, normalize=True, meta_tokens=True,
+            stem=True, remove_stopwords=True,
+        )
+        title_vec = WORD2VEC.get_features(title_tokens, embed="OUT", use_sif=USE_SIF, sif_smoothing=SIF_SMOOTHING)
+
+        # Both centroids are unit vectors (or zero when empty); weighted sum then
+        # renormalize gives a direction pulled toward the title.
+        blended = body_vec + TITLE_WEIGHT * title_vec
+        norm = np.linalg.norm(blended)
+        if norm > 0.:
+            vector = blended / norm
 
     return vector, rowid # keep in sync with SQL query
 
 
 @timeit()
-def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int = 256):
-    """Vectorize a column of the `db` database using the provided `word2vec` model
-    using all available cores.
+def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int = 256, title_weight: float = 0.5,
+                    use_sif: bool = True, sif_smoothing: float = 1e-3):
+    """Vectorize the documents of the `db` database using the provided embedding
+    model, using all available cores.
 
-    Works on the `tokenized` column of the database and writes the `vectorized` column.
-    Vectors are normalized as per `nlp.Word2Vec.get_features()` output.    
+    Reads the `stemmed` and `title` columns and writes the `vectorized` column.
+    Each document vector is the SIF-weighted OUT-embedding centroid of the body,
+    blended with a separate centroid of the (re-stemmed) title weighted by
+    `title_weight`, then L2-normalized. Title-boosting counteracts the centroid
+    dilution that buries long, focused pages under their own body text.
+
+    Arguments:
+        title_weight:  relative weight of the title centroid in the blend. `0`
+                       reproduces the plain body-only centroid.
+        use_sif:       SIF-weight terms when building the centroids.
+        sif_smoothing: SIF smoothing constant `a` (see [core.nlp.WordEmbedding.SIF][]).
     """
 
     num_cpu = os.cpu_count() or 1
-    cursor = db.execute('SELECT rowid, stemmed FROM pages')
+    cursor = db.execute('SELECT rowid, stemmed, title, lang FROM pages')
     batch_size = num_cpu * chunksize
 
     with futures.ProcessPoolExecutor(
         max_workers=num_cpu,
         initializer=_init_vectorizer_worker,
-        initargs=(word2vec,),
-    ) as executor:  
+        initargs=(word2vec, title_weight, use_sif, sif_smoothing),
+    ) as executor:
         while True:
             batch = cursor.fetchmany(batch_size)
             if not batch:
