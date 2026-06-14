@@ -754,7 +754,7 @@ class Indexer():
         return [token for token in tokens if self.word2vec.get_word(token) is not None]
 
 
-    def vectorize_query(self, tokenized_query: list[str]) -> np.ndarray:
+    def vectorize_query(self, tokenized_query: list[str], use_sif: bool = True, sif_smoothing: float = 1e-3) -> np.ndarray:
         """Prepare a text search query: cleanup, tokenize and get the centroid vector.
 
         Returns:
@@ -770,7 +770,7 @@ class Indexer():
         # geometrically inconsistent and mismatches the two spaces. PC removal
         # stays on the document side only (build time). `get_features` already
         # returns an L2-normalized centroid.
-        return self.word2vec.get_features(tokenized_query, embed="IN", use_sif=True)
+        return self.word2vec.get_features(tokenized_query, embed="IN", use_sif=use_sif, sif_smoothing=sif_smoothing)
 
 
     @timeit()
@@ -864,7 +864,8 @@ class Indexer():
         return self.ranker.get_scores(symbolic_tokens)
 
     @timeit()
-    def rank_ai(self, tokens: list[str], fast: bool = False, clip: bool = False, coverage: float = 0.2) -> np.ndarray:
+    def rank_ai(self, tokens: list[str], fast: bool = False, clip: bool = False, coverage: float = 0.2,
+                use_sif: bool = True, sif_smoothing: float = 1e-3) -> np.ndarray:
         """Cosine-similarity ranking against document centroid vectors.
 
         Arguments:
@@ -890,7 +891,7 @@ class Indexer():
             # The by-the-book is perhaps more immune to keywords stuffing and more sensitive to structure.
             # Differences appear in the tail of the ranking, mostly.
             # Note: self.vector_all and vector are already normalized if using `self.vectorize_query`
-            query_vec = self.vectorize_query(tokens)
+            query_vec = self.vectorize_query(tokens, use_sif=use_sif, sif_smoothing=sif_smoothing)
 
             if self.cluster_centroids is not None:
                 candidate_indices = self._cluster_candidate_indices(query_vec, coverage=coverage)
@@ -914,7 +915,7 @@ class Indexer():
             # the mean query direction so we don't recompute it per token.
             candidate_indices: np.ndarray | None = None
             if self.cluster_centroids is not None:
-                mean_vec = self.vectorize_query(tokens)
+                mean_vec = self.vectorize_query(tokens, use_sif=use_sif, sif_smoothing=sif_smoothing)
                 candidate_indices = self._cluster_candidate_indices(mean_vec, coverage=coverage)
 
             for token in tokens:
@@ -928,7 +929,7 @@ class Indexer():
                     # L2-normalized (normalize=True).
                     # SIF-weight each term's cosine so rare, discriminative
                     # tokens ("darktable") dominate common ones ("install").
-                    weight = self.word2vec.SIF(token)
+                    weight = self.word2vec.SIF(token, a=sif_smoothing) if use_sif else 1.
                     if candidate_indices is not None:
                         aggregate[candidate_indices] += weight * np.nan_to_num(
                             self.vectors[candidate_indices] @ vector
@@ -1144,10 +1145,10 @@ class Indexer():
         return list(zip(best_indices_list, best_elems, best_scores.tolist()))
 
 
-    def get_related(self, tokens: list[str], n: int = 15, k: int = 5) -> list:
+    def get_related(self, tokens: list[str], n: int = 15, k: int = 5, use_sif: bool = True, sif_smoothing: float = 1e-3) -> list:
         """Get the n closest keywords from the query."""
 
-        vector = self.word2vec.get_features(tokens)
+        vector = self.word2vec.get_features(tokens, use_sif=use_sif, sif_smoothing=sif_smoothing)
 
         # wv.similar_by_vector returns a list of (word, distance) tuples
         from_query = [elem for elem in self.word2vec.wv.similar_by_vector(vector, topn=n)]
@@ -1157,6 +1158,7 @@ class Indexer():
         related = sorted(from_query + from_tokens, key=lambda x:x[1], reverse=True)
 
         return list(set([elem[0] for elem in related if elem[0] not in tokens]))
+
 
     @timeit()
     def get_clusters(self, db: sqlite3.Connection):
