@@ -314,14 +314,25 @@ def compress_db(db: sqlite3.Connection, delete_query: str | None = None, delete_
             db.commit()
             print(f"Deleted columns {", ".join(columns)}")
 
-    # Memory-friendly vacuum
-    db.execute("PRAGMA incremental_vacuum;")
+    # Reclaim disk space on disk.
+    #
+    # In WAL mode the pages freed by the UPDATE/DELETE above pile up in the
+    # `-wal` sidecar; without a checkpoint they never fold back into the main
+    # file, so it does not shrink and a stale (smaller) `-wal` lingers next to
+    # the deliverable. We therefore checkpoint the WAL, switch to a rollback
+    # journal so VACUUM rewrites the *main* file directly and leaves no `-wal`,
+    # then run a real VACUUM (which transiently needs ~2x the DB size on disk).
     db.commit()
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    db.execute("PRAGMA journal_mode = DELETE")
 
-    # For some reason, the above is not enough to really remove old stuff.
-    # Problem is, the following needs twice the size of the DB available on disk.
-    db.execute("PRAGMA VACUUM")
-    db.commit()
+    # VACUUM cannot run inside a transaction; force autocommit for it.
+    prev_isolation = db.isolation_level
+    db.isolation_level = None
+    try:
+        db.execute("VACUUM")
+    finally:
+        db.isolation_level = prev_isolation
 
 
 def is_primary_key(db: sqlite3.Connection, table: str, column: str) -> bool:
