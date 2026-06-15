@@ -29,6 +29,7 @@ WORD2VEC: nlp.Word2Vec | None = None
 TITLE_WEIGHT: float = 0.5
 USE_SIF: bool = True
 SIF_SMOOTHING: float = 1e-3
+BODY_TOP_K: int = 48
 
 
 def _guess_dates_batch(batch: list[tuple[int, str]]) -> list[tuple[int, str]]:
@@ -368,23 +369,30 @@ def batch_stem(db: sqlite3.Connection,
             print(f"Batch {processed_batches} over {num_batches} processed")
 
 
-def _init_vectorizer_worker(word2vec, title_weight: float = 0.5, use_sif: bool = True, sif_smoothing: float = 1e-3):
-    global WORD2VEC, TITLE_WEIGHT, USE_SIF, SIF_SMOOTHING
+def _init_vectorizer_worker(word2vec, title_weight: float = 0.5, use_sif: bool = True,
+                            sif_smoothing: float = 1e-3, body_top_k: int = 48):
+    global WORD2VEC, TITLE_WEIGHT, USE_SIF, SIF_SMOOTHING, BODY_TOP_K
     WORD2VEC = word2vec
     TITLE_WEIGHT = title_weight
     USE_SIF = use_sif
     SIF_SMOOTHING = sif_smoothing
+    BODY_TOP_K = body_top_k
 
 
 def _batch_vectorize_worker(inputs: tuple[int, list[list[str]], str | None, str | None]) -> tuple[np.ndarray[np.float32], int]:
     rowid, stemmed, title, lang = inputs
 
-    # Body centroid: SIF-weighted mean of OUT vectors over the whole document
+    # Body centroid: SIF-weighted mean of OUT vectors over the document
     # (title + content, as stored in `stemmed`). NOTE: tokens are
     # per-sentence/paragraph, so `stemmed` is a list of lists.
+    #
+    # Length-aware pooling (BODY_TOP_K): keep only the most salient tokens so a
+    # long page is represented by its topical content, not diluted toward the
+    # corpus mean by its long tail of low-salience words. Short pages (fewer
+    # than BODY_TOP_K unique tokens) are unaffected.
     body_vec = WORD2VEC.get_features(
         [word for sentence in stemmed for word in sentence],
-        embed="OUT", use_sif=USE_SIF, sif_smoothing=SIF_SMOOTHING,
+        embed="OUT", use_sif=USE_SIF, sif_smoothing=SIF_SMOOTHING, top_k=BODY_TOP_K,
     )
 
     # Title boost: a focused page repeats its subject in the title, but in the
@@ -414,7 +422,7 @@ def _batch_vectorize_worker(inputs: tuple[int, list[list[str]], str | None, str 
 
 @timeit()
 def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int = 256, title_weight: float = 0.5,
-                    use_sif: bool = True, sif_smoothing: float = 1e-3):
+                    use_sif: bool = True, sif_smoothing: float = 1e-3, body_top_k: int = 48):
     """Vectorize the documents of the `db` database using the provided embedding
     model, using all available cores.
 
@@ -429,6 +437,11 @@ def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int =
                        reproduces the plain body-only centroid.
         use_sif:       SIF-weight terms when building the centroids.
         sif_smoothing: SIF smoothing constant `a` (see [core.nlp.WordEmbedding.SIF][]).
+        body_top_k:    length-aware pooling for the body centroid: keep only the
+                       `body_top_k` most salient tokens per document so long
+                       pages are de-diluted (see [core.nlp.WordEmbedding.get_features][]).
+                       `0` disables it (plain full-document centroid). The title
+                       centroid is always built from all title tokens.
     """
 
     num_cpu = os.cpu_count() or 1
@@ -438,7 +451,7 @@ def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int =
     with futures.ProcessPoolExecutor(
         max_workers=num_cpu,
         initializer=_init_vectorizer_worker,
-        initargs=(word2vec, title_weight, use_sif, sif_smoothing),
+        initargs=(word2vec, title_weight, use_sif, sif_smoothing, body_top_k),
     ) as executor:
         while True:
             batch = cursor.fetchmany(batch_size)
