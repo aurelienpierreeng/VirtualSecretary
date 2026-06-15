@@ -1366,6 +1366,9 @@ class WordEmbedding:
 
     avg_doc_len: "float | None"
     """Average document length. Computed only if [core.nlp.WordEmbedding][] is instanciated with `compute_idf=True`"""
+    
+    wv: gensim.models.KeyedVectors
+    """Gensim keyed vectors"""
 
     def _compute_corpus_stats(self,
                               documents: Iterable[Iterable[list[str]]],
@@ -1627,9 +1630,15 @@ class WordEmbedding:
             return None
 
 
-    def get_features(self, tokens: list[str], embed: str = "IN", use_sif: bool = False, sif_smoothing: float = 1e-3) -> np.ndarray[np.float32]:
+    def get_features(self, tokens: list[str], embed: str = "IN", use_sif: bool = False,
+                     sif_smoothing: float = 1e-3, top_k: int = 0) -> np.ndarray[np.float32]:
         """Calls [core.nlp.WordEmbedding.get_wordvec][] over a list of tokens and returns a single
         centroid vector representing the whole list.
+
+        Tokens are aggregated per unique word, so a word's contribution scales
+        with its in-list frequency (a word occurring *n* times contributes
+        *n × weight*). This is mathematically identical to summing over every
+        occurrence, but it also exposes a per-word salience used by `top_k`.
 
         Arguments:
             tokens:
@@ -1645,21 +1654,47 @@ class WordEmbedding:
             sif_smoothing:
                 The SIF smoothing coefficient.
 
+            top_k:
+                length-aware pooling. When `> 0`, keep only the `top_k` most
+                salient unique tokens (highest accumulated `frequency × SIF`
+                weight) before averaging; `0` (default) uses every token.
+                Long documents otherwise drown their topical signal under a long
+                tail of low-salience words, which pulls the centroid toward the
+                corpus mean (centroid dilution) and makes comprehensive pages
+                rank *below* short, keyword-peaky ones. Capping to the most
+                discriminative tokens de-dilutes long documents while leaving
+                short ones (fewer than `top_k` tokens) untouched. Used at
+                document-vectorization time (see [core.batching.batch_vectorize][]);
+                the default `0` keeps the query path unchanged.
+
         Returns:
             the normalized centroid of word embedding vectors associated with the input tokens
             (aka the average vector), or the null vector if no word from the list was found in dictionnary.
         """
+        # Cache unit vectors once per unique token and accumulate its weight
+        # (count × SIF). `None` marks tokens with no vector in this embedding
+        # space (e.g. FastText OOV words have no OUT vector) so we skip them.
+        vecs: dict[str, np.ndarray | None] = {}
+        weight: dict[str, float] = {}
+
+        for token in tokens:
+            if token not in vecs:
+                vecs[token] = self.get_wordvec(token, normalize=True, embed=embed)
+            if vecs[token] is None:
+                continue
+            weight[token] = weight.get(token, 0.0) + (self.SIF(token, a=sif_smoothing) if use_sif else 1.0)
+
+        items = weight.items()
+        if top_k > 0 and len(weight) > top_k:
+            # Most discriminative / frequent content words first.
+            items = sorted(weight.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
+
         features = np.zeros(self.vector_size, dtype=np.float32)
         weights = 0.
 
-        for token in tokens:
-            vector = self.get_wordvec(token, normalize=True, embed=embed)
-            if vector is None:
-                continue
-
-            weight = self.SIF(token, a=sif_smoothing) if use_sif else 1.0
-            features += vector * weight
-            weights += weight
+        for token, w in items:
+            features += vecs[token] * w
+            weights += w
 
         if weights > 0:
             features /= weights
