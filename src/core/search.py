@@ -157,7 +157,13 @@ class BM25PlusCSR:
 class search_methods(IntEnum):
     """Search methods available"""
     AI = 1
+    """Vector-based similarity on document centroid in embedding space"""
+    
     FUZZY = 2
+    """BM25+ keywords statistics on normalized and stemmed content"""
+    
+    MIXED = 3
+    """Combination of `AI` and `FUZZY` aggregated by Reciprocal Rank Fusion."""
 
 class Indexer():
     @timeit()
@@ -1074,22 +1080,51 @@ class Indexer():
         return ranks
 
 
-    def rrf(self, ranks_1: np.ndarray, ranks_2: np.ndarray, coeff: float = 60) -> np.ndarray:
+    def rrf(self, ranks_1: np.ndarray, ranks_2: np.ndarray, coeff: float = 60,
+            weight_1: float = 1.0, weight_2: float = 1.0) -> np.ndarray:
         """Reciprocal Rank Fusion
-        
+
         Aggregate 2 sets of page rankings obtained from different semantic geometries and weighted differently.
 
-        From _Reciprocal rank fusion outperforms condorcet and individual rank learning methods_,
-        Gordon V. Cormack, Charles L A Clarke, Stefan Buettcher.
-        https://dl.acm.org/doi/10.1145/1571941.1572114
+        Reference:
+            _Reciprocal rank fusion outperforms condorcet and individual rank learning methods_,
+            Gordon V. Cormack, Charles L A Clarke, Stefan Buettcher.
+            https://dl.acm.org/doi/10.1145/1571941.1572114
+
+        Arguments:
+            ranks_1:
+                0-based ranks from the first ranker (best = 0).
+            ranks_2:
+                0-based ranks from the second ranker (best = 0).
+            coeff:
+                RRF smoothing constant ``k``; larger flattens the contribution
+                of top ranks.
+            weight_1:
+                vote weight of ``ranks_1``.
+            weight_2:
+                vote weight of ``ranks_2``. Plain RRF (both weights ``1.0``)
+                gives each ranker an equal say, which is only sound when *both*
+                input rankings are individually trustworthy. Here the AI centroid
+                ranker is not: on this small, domain-specific corpus it
+                confidently places off-topic documents in its own top-10
+                whenever a query word is semantically generic (e.g. "waterfall"
+                pulling in paintings/3D-renders, "backup" pulling in a generic
+                encyclopedia article), and it simultaneously *buries* canonical
+                but short/link-heavy pages whose centroid is diluted toward the
+                corpus mean. Down-weighting its vote lets BM25 — the
+                higher-precision lexical signal for keyword queries — own the
+                top of the ranking while the AI ranker re-orders within the
+                lexically-supported set. See [core.search.Indexer.rank][].
         """
-        return 1. / (coeff + ranks_1) + 1. / (coeff + ranks_2)
+        return weight_1 / (coeff + ranks_1) + weight_2 / (coeff + ranks_2)
 
 
     @timeit()
-    def rank(self, db: sqlite3.Connection, tokens: list[str], method: search_methods,
-             n_results: int = 500, fine_search: bool = False, 
-             sql_query: str = "", sql_params: list[str] = []) -> list[tuple[int, str, float]]:
+    def rank(self, db: sqlite3.Connection, tokens: list[str], 
+             method: search_methods,
+             n_results: int = 500, fine_search: bool = False,
+             sql_query: str = "", sql_params: list[str] = [],
+             ai_weight: float = 0.33) -> list[tuple[int, str, float]]:
         """Apply a label on a post based on the trained model.
 
         Arguments:
@@ -1103,7 +1138,8 @@ class Indexer():
                 `ai`, `fuzzy` or `grep`:
                     - `ai` use word embedding and meta-tokens with dual-embedding space, 
                     - `fuzzy` uses meta-tokens with BM25Okapi stats model, 
-                    - `grep` uses direct string and regex search.
+                    - `mixed` use a combination of `ai` and `fuzzy` merged by
+                      Reciprocal Rank Fusion, using the `ai_weight` factor.
 
             n_results: 
                 number of results to retain
@@ -1131,6 +1167,18 @@ class Indexer():
                 ```
                 and `sql_params = ['google.com']` will filter all URLs from Google.
 
+            ai_weight:
+                vote weight of the AI (embedding) ranker in the weighted RRF
+                fusion with BM25+ (which keeps weight 1.0), for `method=MIXED`.
+                - ``0.0`` effectively disables the AI part and is equivalent to `method=FUZZY`.
+                - ``< 0.5`` makes BM25 the primary signal and lets the noisier
+                centroid ranker only re-order within lexically-supported
+                candidates.
+                - ``0.33`` is the tuned default (drives top-10 junk to
+                zero); 
+                - ``0.5`` uses plain symmetric RRF: AI and FUZZY contribute as much
+                - ``1.0` effectively disables the FUZZY part and is equivalent to `method=AI`.
+
         Note:
             Both SQL search into the database and Python filtering into the index are supported,
             and can be combined. The local index is a partial copy of the database and is already
@@ -1142,27 +1190,47 @@ class Indexer():
 
         [1]: https://eng.aurelienpierre.com/2024/03/designing-an-ai-search-engine-from-scratch-in-the-2020s/#accounting-for-words-patterns
         """
+        
+        # Weighting the AI to 0 effectively removes them from ranking,
+        # in this case, spare the matrix product.
+        if ai_weight == 0 and search_methods.MIXED:
+            method = search_methods.FUZZY
+        elif ai_weight == 1 and search_methods.MIXED:
+            method = search_methods.AI
 
         # Note: match needs at least Python 3.10
         match method:
-            case search_methods.AI:
+            case search_methods.MIXED:
                 # Hybrid retrieval: fuse the dual-embedding cosine ranking with
-                # BM25+ via Reciprocal Rank Fusion. RRF is rank-based, so a
-                # document BM25 ranks highly surfaces even when the AI path
-                # misses it (diluted long-doc centroid, or cluster-gated out) —
-                # which the previous near-zero alpha weight on BM25 could never
-                # rescue.
+                # BM25+ via *weighted* Reciprocal Rank Fusion. RRF is rank-based,
+                # so a document BM25 ranks highly surfaces even when the AI path
+                # misses it (diluted long-doc centroid, or cluster-gated out).
+                #
+                # The AI vote is down-weighted (ai_weight < 1) on purpose: the
+                # centroid ranker, on this small domain corpus, confidently puts
+                # off-topic documents in its own top-10 for semantically generic
+                # query words, and buries canonical short/link-heavy pages whose
+                # centroid is diluted toward the corpus mean. Equal-weight RRF
+                # therefore let lexically-unsupported junk ride to the top while
+                # pushing the right pages down. BM25 is the higher-precision
+                # signal for keyword queries, so it owns the top of the ranking
+                # and the AI ranker re-orders within the lexically-supported set.
+                # Empirically, ai_weight=0.5 drives top-10 junk (results with no
+                # BM25 support) to zero without collapsing into pure BM25.
                 ai_ranks = self._scores_to_ranks(self.rank_ai(tokens))
                 bm_ranks = self._scores_to_ranks(self.rank_fuzzy(tokens))
-                aggregates = self.rrf(ai_ranks, bm_ranks)
-                # Normalize to [0, 1] for stable, legible display scores.
-                peak = aggregates.max()
-                if peak > 0:
-                    aggregates = aggregates / peak
+                aggregates = self.rrf(ai_ranks, bm_ranks, weight_1=ai_weight, weight_2=1.0 - ai_weight)
+            case search_methods.AI:
+                aggregates = self.rank_ai(tokens)
             case search_methods.FUZZY:
                 aggregates = self.rank_fuzzy(tokens)
             case _:
                 raise ValueError("Unknown ranking method (%s)" % method)
+            
+        # Normalize to [0, 1] for stable, legible display scores.
+        peak = aggregates.max()
+        if peak > 0:
+            aggregates = aggregates / peak
 
         # O(n) partition to isolate the top-n_results candidates, then O(k log k) sort on
         # just that small slice — much cheaper than a full O(n log n) argsort.
