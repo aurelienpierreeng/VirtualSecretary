@@ -309,7 +309,7 @@ def _wayback_fallback(archive_url, is_archive_url, url, delay, timeout):
     """Centralise the repeated Wayback fallback to avoid copy-paste."""
     if is_archive_url:
         return None, None, url
-    return try_url(archive_url, delay, timeout=timeout)
+    return _try_url(archive_url, delay, timeout=timeout)
 
 
 @utils.exit_after(120)
@@ -339,6 +339,18 @@ def try_url(url, delay: DelayedClass, timeout: int | float = 30, bypass_robots_t
         headers: the HTTP client headers that succeeded in spoofing the server, if any,
         url: the final, redirected, URL (can be the same as the input one).
     """
+    response, headers, new_url = _try_url(url, delay, timeout, bypass_robots_txt)
+    
+    try:
+        check_response("Headers", url, new_url, response.status_code)
+    except:
+        pass
+    
+    return response, headers, new_url
+    
+
+    
+def _try_url(url, delay: DelayedClass, timeout: int | float = 30, bypass_robots_txt: bool = False) -> tuple[HTTPResponse | None, dict | None, str]:
 
     # URL inside non-processed Markdown syntax can have an orphan/unmatched trailing )
     # But beware of Wikipedia links that can have non-orphan final ) for disambiguation
