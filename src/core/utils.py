@@ -21,6 +21,9 @@ import unicodedata
 import sqlite3
 import tempfile
 import subprocess
+import shutil
+import gzip
+import sys
 
 from collections.abc import Iterable
 
@@ -758,6 +761,42 @@ def get_models_folder(filename: str) -> str:
                             os.path.dirname(current_path)))
     models_path = os.path.join(install_path, "models")
     return os.path.abspath(os.path.join(models_path, filename))
+
+
+def ensure_decompressed(path: str) -> str:
+    """Inflate a gzip sibling `path + ".gz"` into `path` if it is newer, then return `path`.
+
+    Deploying over FTP gives us no way to run a remote command, so the heavy
+    `search_engine.joblib` / `chantal-slim.db` deploy artifacts are gzipped locally
+    (the `.db` shrinks ~60%) and inflated here instead: whichever worker handles the
+    first request after a deploy pays the one-time gunzip cost via an atomic
+    replace, and every later worker sees an up-to-date plain file and just returns
+    immediately (a single `stat`).
+
+    If `path + ".gz"` is missing, older than `path`, or fails to decompress (e.g.
+    caught mid-upload), this is a no-op and the existing `path` -- if any -- is left
+    untouched, so a request never breaks because of a deploy in flight.
+    """
+    gz_path = path + ".gz"
+
+    if not os.path.exists(gz_path):
+        return path
+
+    if os.path.exists(path) and os.path.getmtime(path) >= os.path.getmtime(gz_path):
+        return path
+
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=os.path.basename(path) + ".")
+    try:
+        with os.fdopen(fd, "wb") as dst, gzip.open(gz_path, "rb") as src:
+            shutil.copyfileobj(src, dst)
+        os.replace(tmp_path, path)
+    except Exception as e:
+        os.unlink(tmp_path)
+        print(f"ensure_decompressed: failed to inflate {gz_path}: {e}", file=sys.stderr)
+        if not os.path.exists(path):
+            raise
+
+    return path
 
 
 def get_stopwords_file(filename: str) -> dict:

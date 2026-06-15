@@ -15,7 +15,7 @@ from sklearn.cluster import MiniBatchKMeans
 from scipy.sparse import csr_matrix
 
 
-from .utils import get_models_folder, timeit
+from .utils import get_models_folder, ensure_decompressed, timeit
 from .nlp import Lexicon, Word2Vec, WordEmbedding
 from . import database
     
@@ -716,84 +716,51 @@ class Indexer():
         return [row[0] for row in db.execute(query, sql_params)]
 
 
-    def strip_for_serving(self):
-        """Drop the arrays only needed to *build* the index, not to serve queries.
-
-        The embedded FastText/Word2Vec model carries large structures the live
-        query path never touches, because:
-
-          - queries are filtered to in-vocabulary tokens before any embedding
-            lookup (see [core.search.Indexer.tokenize_query][]), so FastText's
-            subword / OOV machinery is dead weight at serve time;
-          - document vectors are precomputed in ``self.vectors`` at index time,
-            so the OUT-space ``syn1neg`` matrix is never re-read online.
-
-        Removing them roughly halves the pickled engine on disk (≈ 2.4 GB →
-        1.3 GB) and — more importantly for load latency — eliminates
-        ``wv.buckets_word``, a list holding one tiny array per vocabulary entry.
-        That list-of-arrays is what makes the pickle stream explode into
-        millions of small objects, and its element-by-element reconstruction,
-        not array I/O, dominates load time (≈ 8.4 s → 3 s warm). This matters on
-        the deployment server, where Phusion Passenger spawns fresh workers
-        on demand and each pays the full load cost before serving its first
-        request.
-
-        Dropped:
-            - ``wv.vectors_ngrams`` : FastText subword bucket matrix (~1 GB).
-            - ``wv.buckets_word``   : per-word ngram bucket index (load killer).
-            - ``syn1neg`` / ``syn1``: OUT/HS matrices (docs already vectorized).
-
-        After this call the model can still tokenize, look up IN vectors by
-        index, score BM25+, rank, and run ``most_similar`` / ``get_related``.
-        It can NOT vectorize out-of-vocabulary words or do OUT-space lookups —
-        neither of which happens at serve time.
-
-        NOTE:
-            Mutates the in-memory model in place. Call it on an engine loaded
-            from disk specifically to build the slim serving artifact; do not
-            call it on an engine you intend to keep using for index building.
-        """
-        w = self.word2vec
-        wv = getattr(w, "wv", None)
-        if wv is not None:
-            # Can't strip vectors_ngrams here, it breaks OOV reconstruction
-            for attr in ("buckets_word"):
-                if getattr(wv, attr, None) is not None:
-                    setattr(wv, attr, None)
-        for attr in ("syn1neg", "syn1"):
-            if getattr(w, attr, None) is not None:
-                setattr(w, attr, None)
-        self.collocations = None
-
-
     def save(self, name: str):
-        # Save the model to a reusable object
-        joblib.dump(self, get_models_folder(name + ".joblib"), compress=0, protocol=pickle.HIGHEST_PROTOCOL)
+        # Save the model to a reusable object.
+        #
+        # FastText's `wv.buckets_word` is a recomputable cache — one tiny array
+        # per vocabulary word, mapping it to its character-n-gram bucket ids.
+        # Pickling it explodes the artifact into ~one-array-per-word objects, and
+        # reconstructing those millions of small objects (not array I/O) is what
+        # dominates engine load time. The query path never reads it (in-vocab
+        # lookups use `wv.vectors`; OOV reconstruction hashes n-grams on the
+        # fly), so we drop it from the artifact and rebuild it in O(vocab) on
+        # load (see `load`). `wv.vectors_ngrams`, which OOV reconstruction *does*
+        # need, is kept. Word2Vec models have no `buckets_word` and are unaffected.
+        wv = getattr(self.word2vec, "wv", None)
+        cached_buckets = getattr(wv, "buckets_word", None) if wv is not None else None
+        try:
+            if cached_buckets is not None:
+                wv.buckets_word = None
+            joblib.dump(self, get_models_folder(name + ".joblib"), compress=0, protocol=pickle.HIGHEST_PROTOCOL)
+        finally:
+            # Keep the live, in-memory model fully usable after saving.
+            if cached_buckets is not None:
+                wv.buckets_word = cached_buckets
 
 
     @classmethod
     @timeit()
-    def load(cls, name: str, db: sqlite3.Connection, mmap_mode: str | None = None):
-        """Load an existing trained model by its name from the `../models` folder.
-
-        Arguments:
-            mmap_mode:
-                passed through to ``joblib.load``. With ``"r"`` the engine's
-                numpy arrays are memory-mapped read-only instead of copied into
-                the process heap. On a fork-on-demand server (Phusion Passenger)
-                this lets every worker share a single physical copy of the
-                arrays via the OS page cache, rather than each allocating its
-                own — bounding total RAM and keeping warm worker spawns cheap.
-                Only works on an uncompressed ``.joblib`` (``compress=0``); the
-                ``.joblib.bz2`` fallback is always loaded in full.
-        """
+    def load(cls, name: str, db: sqlite3.Connection):
+        """Load an existing trained model by its name from the `../models` folder."""
         try:
-            model = joblib.load(get_models_folder(name) + ".joblib", mmap_mode=mmap_mode)
+            model = joblib.load(ensure_decompressed(get_models_folder(name) + ".joblib"))
         except FileNotFoundError:
             model = joblib.load(get_models_folder(name) + ".joblib.bz2")
 
         if not isinstance(model, Indexer):
             raise AttributeError("Model of type %s can't be loaded by %s" % (type(model), str(cls)))
+
+        # Rebuild the FastText `buckets_word` cache that `save` dropped from the
+        # artifact. This is O(vocab) and far cheaper than unpickling one array
+        # per word. No-op for Word2Vec (no such cache) and for older artifacts
+        # that still carry buckets_word.
+        wv = getattr(model.word2vec, "wv", None)
+        if (wv is not None
+                and getattr(wv, "buckets_word", None) is None
+                and hasattr(wv, "recalc_char_ngram_buckets")):
+            wv.recalc_char_ngram_buckets()
 
         # Ensure indexes introduced in later versions exist in the live DB.
         # CREATE INDEX IF NOT EXISTS and ALTER TABLE … ADD COLUMN are both

@@ -16,7 +16,7 @@ from pathlib import Path
 import os
 import shutil
 
-from .utils import get_models_folder, timeit
+from .utils import get_models_folder, ensure_decompressed, timeit
 from .types import web_page, sanitize_web_page
 from .patterns import *
 
@@ -214,7 +214,7 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
         sqlite3.Connection
     """
 
-    path = Path(get_models_folder(name))
+    path = Path(ensure_decompressed(get_models_folder(name)))
 
     common_kwargs = {
         "detect_types": sqlite3.PARSE_DECLTYPES,
