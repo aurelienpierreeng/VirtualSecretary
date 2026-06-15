@@ -262,9 +262,6 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
 
     else:
         raise ValueError(f"Invalid SQLite mode: {mode!r}")
-    
-    db.execute("PRAGMA auto_vacuum = INCREMENTAL;")
-    db.commit()
 
     # Add regex support to SQLite3
     def regexp(pattern, string):
