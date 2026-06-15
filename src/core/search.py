@@ -750,7 +750,8 @@ class Indexer():
         w = self.word2vec
         wv = getattr(w, "wv", None)
         if wv is not None:
-            for attr in ("vectors_ngrams", "buckets_word"):
+            # Can't strip vectors_ngrams here, it breaks OOV reconstruction
+            for attr in ("buckets_word"):
                 if getattr(wv, attr, None) is not None:
                     setattr(wv, attr, None)
         for attr in ("syn1neg", "syn1"):
