@@ -165,13 +165,15 @@ def create_temp_db(min_free: float = 2.0, filename: str | None = None) -> sqlite
     # Create connection with bulk pragmas
     # Enable WAL and tune timeouts to allow many concurrent readers with one writer.
     db = sqlite3.connect(path, detect_types=sqlite3.PARSE_DECLTYPES, timeout=30)
+    # auto_vacuum must be set before journal_mode=WAL: the WAL switch writes the
+    # header on a fresh file, after which the auto_vacuum change is ignored.
+    db.execute("PRAGMA auto_vacuum = INCREMENTAL;")
     db.execute("PRAGMA journal_mode = WAL")
     db.execute("PRAGMA synchronous = NORMAL")
     db.execute("PRAGMA temp_store = MEMORY")
     db.execute("PRAGMA cache_size = -200000")
     db.execute("PRAGMA mmap_size = 8000000000")
     db.execute("PRAGMA busy_timeout = 30000")
-    db.execute("PRAGMA auto_vacuum = INCREMENTAL;")
 
     cursor = db.cursor()
     keys = list(web_page.__annotations__.items())
@@ -242,6 +244,13 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
     elif mode == "bulk":
         db = sqlite3.connect(path, **common_kwargs)
 
+        # Enable in-place free-page reclaim (compress_db's cheap path). On a new
+        # file this takes effect immediately; on a pre-existing one it is pending
+        # until the next full repack (VACUUM), which compress_db performs. This
+        # MUST run before journal_mode=WAL: switching journal mode writes the DB
+        # header on a fresh file, after which the auto_vacuum change is ignored.
+        db.execute("PRAGMA auto_vacuum = INCREMENTAL")
+
         db.execute("PRAGMA journal_mode = WAL")
         db.execute("PRAGMA busy_timeout = 5000")
         db.execute("PRAGMA synchronous = NORMAL")
@@ -277,20 +286,38 @@ def get_db_filename(db: sqlite3.Connection) -> str:
 
 
 def close_db(db: sqlite3.Connection):
-   db.execute("PRAGMA incremental_vacuum;")
+   # incremental_vacuum does its work as its result rows are stepped, so it must
+   # be drained to run fully (a bare execute frees at most one page).
+   db.execute("PRAGMA incremental_vacuum").fetchall()
    db.commit()
    db.close()
 
 
-def compress_db(db: sqlite3.Connection, delete_query: str | None = None, delete_params: tuple | None = None, delete_columns: list[str] | None = None):
+def compress_db(db: sqlite3.Connection, delete_query: str | None = None, delete_params: tuple | None = None, delete_columns: list[str] | None = None, repack: bool = False):
     """
     Optionally delete rows, then reclaim SQLite disk space.
+
+    Two reclaim strategies, picked automatically:
+
+    * Incremental (cheap, default): when the database was created with
+      ``auto_vacuum = INCREMENTAL`` (see :func:`open_db`), free pages are
+      returned to the OS *in place* via ``PRAGMA incremental_vacuum``. No full
+      copy is made, so this needs no scratch space and cannot hit the
+      "database or disk is full" trap. It does **not** defragment.
+
+    * Full repack (``repack=True``, or as a fallback when the DB predates the
+      ``auto_vacuum`` setting): rewrites the whole DB tightly via
+      ``VACUUM INTO`` + online backup. Defragments and, as a side effect,
+      applies any pending ``auto_vacuum`` mode change so legacy DBs convert to
+      incremental on their first full repack.
 
     Args:
         db: SQLite connection
         delete_query: full DELETE SQL query
         delete_params: optional SQL parameters
-    """        
+        delete_columns: columns to NULL out before reclaiming space
+        repack: force a full defragmenting rewrite (use for slim deliverables)
+    """
 
     if delete_query:
         cursor = db.cursor()
@@ -312,24 +339,80 @@ def compress_db(db: sqlite3.Connection, delete_query: str | None = None, delete_
             print(f"Deleted columns {", ".join(columns)}")
 
     # Reclaim disk space on disk.
+    db.commit()
+    db_path = get_db_filename(db)
+
+    # Cheap path: when the DB carries auto_vacuum (INCREMENTAL/FULL), return
+    # free pages to the OS in place. No copy, no scratch file, so this can never
+    # hit the "disk is full" trap and costs almost no I/O. A pending auto_vacuum
+    # change reads back as 0 here, so this only triggers once the DB is actually
+    # converted (which a prior full repack below does for legacy files).
+    auto_vacuum = db.execute("PRAGMA auto_vacuum").fetchone()[0]
+
+    if not repack and auto_vacuum != 0:
+        # NB: incremental_vacuum is a result-producing PRAGMA that does its work
+        # as its rows are stepped — it must be drained (fetchall) to run fully.
+        db.execute("PRAGMA incremental_vacuum").fetchall()
+        db.commit()
+        # In WAL mode the truncation only lands in the main file on checkpoint.
+        db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return
+
+    # Full repack path.
     #
     # In WAL mode the pages freed by the UPDATE/DELETE above pile up in the
     # `-wal` sidecar; without a checkpoint they never fold back into the main
     # file, so it does not shrink and a stale (smaller) `-wal` lingers next to
-    # the deliverable. We therefore checkpoint the WAL, switch to a rollback
-    # journal so VACUUM rewrites the *main* file directly and leaves no `-wal`,
-    # then run a real VACUUM (which transiently needs ~2x the DB size on disk).
-    db.commit()
+    # the deliverable. We therefore checkpoint the WAL and switch to a rollback
+    # journal so the rewrite below touches the *main* file and leaves no `-wal`.
     db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     db.execute("PRAGMA journal_mode = DELETE")
+
+    # In-memory databases (":memory:" → empty path) have no file to compact on
+    # disk; a plain VACUUM reorganizes them without ever touching disk.
+    if not db_path:
+        prev_isolation = db.isolation_level
+        db.isolation_level = None
+        try:
+            db.execute("VACUUM")
+        finally:
+            db.isolation_level = prev_isolation
+        return
+
+    # Plain VACUUM copies the whole database into a scratch file placed in
+    # SQLite's temp directory, which defaults to /var/tmp — frequently the root
+    # filesystem, which may be small/near-full. That raises "database or disk is
+    # full" even when the volume holding the DB has plenty of room.
+    #
+    # VACUUM INTO instead writes a freshly compacted copy *directly* to a named
+    # file, so we can land it on the DB's own (roomy) volume. We then fold that
+    # copy back into the live connection with the online backup API: the backup
+    # writes through this connection's own pager, so the caller's connection
+    # stays valid and immediately sees the compacted content (no close/reopen).
+    # VACUUM INTO also applies any pending auto_vacuum mode change, so legacy
+    # DBs convert to INCREMENTAL here and use the cheap path from then on.
+    db_dir = os.path.dirname(os.path.abspath(db_path))
+    tmp_path = os.path.join(db_dir, f".{os.path.basename(db_path)}.vacuum")
+
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
 
     # VACUUM cannot run inside a transaction; force autocommit for it.
     prev_isolation = db.isolation_level
     db.isolation_level = None
     try:
-        db.execute("VACUUM")
+        db.execute("VACUUM INTO ?", (tmp_path,))
     finally:
         db.isolation_level = prev_isolation
+
+    compacted = sqlite3.connect(tmp_path)
+    try:
+        # source.backup(target) → overwrite the live DB with the compacted copy,
+        # truncating the destination file to the compacted size on completion.
+        compacted.backup(db)
+    finally:
+        compacted.close()
+        os.remove(tmp_path)
 
 
 def is_primary_key(db: sqlite3.Connection, table: str, column: str) -> bool:
