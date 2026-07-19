@@ -551,9 +551,28 @@ class Tokenizer():
 
         This will loose accents, diacritics and capitals, which means some nuance will be lost
         at the benefit of generality. In case this does not suit your usecase, you may
-        inherit the `Tokenizer` class, build a child class and re-implement this method
+        inherit the `Tokenizer` class, build a child class and re-implement this method.
+
+        The crawler computes `content_hash` at crawl time by calling this same method on the
+        Tokenizer instance it was given (see [core.nlp.Tokenizer.compute_parsed][]), so a custom
+        subclass overriding this normalization is honored end-to-end and the normalized text can
+        be reused downstream without recomputation or inconsistency.
         """
         return clean_whitespaces(typography_undo(document.lower())).strip(" \n\r")
+
+
+    def compute_parsed(self, title, content) -> str:
+        """Build the canonical `parsed` text of a `web_page` from its raw `title` and `content`.
+
+        This is the single, overridable definition of "how a page's text is normalized before
+        hashing/tokenization": sanitize both fields, join them, and run [normalize_text][core.nlp.Tokenizer.normalize_text].
+        [core.batching.batch_parse_web_page][] and the crawler both call it on the same Tokenizer
+        instance, so the `parsed` text — and therefore `content_hash = SHA-1(parsed)` — is identical
+        whether produced at crawl time or during batch parsing, and can be stored once and reused.
+        """
+        title = clean_whitespaces(sanitize_unicode(title))
+        content = clean_whitespaces(sanitize_unicode(content))
+        return self.normalize_text(f"{title}\n\n{content}")
 
 
     def normalize_token(self, 

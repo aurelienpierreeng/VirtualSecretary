@@ -24,7 +24,7 @@ import sqlite3
 
 from . import patterns, utils
 from .pdf import get_pdf_content
-from .types import web_page, sanitize_web_page
+from .types import web_page, sanitize_web_page, compute_content_hash
 from .network import try_url, get_url, DelayedClass
 from .parser import ParsedHTML
 
@@ -196,11 +196,12 @@ def get_page_content(url: str | None,
         return None, url, -1
 
 
-def parse_page(page: ParsedHTML, 
+def parse_page(page: ParsedHTML,
                url: str,
                lang: str | None, markup: str|tuple|list[str]|list[tuple]|None,
                date: str | None = None,
-               category: str | None = None) -> list[web_page]:
+               category: str | None = None,
+               tokenizer=None) -> list[web_page]:
     """Get the requested markup from the requested page URL.
 
     This chains in a single call:
@@ -231,6 +232,18 @@ def parse_page(page: ParsedHTML,
     page.parse(markup)
 
     if page.content and page.title:
+        # When a Tokenizer is available, do the reusable NLP prep at crawl time:
+        # normalize the text once (via the SAME Tokenizer the batch stages use, so a custom
+        # subclass is honored), STORE the normalized `parsed` so it is reused downstream
+        # without recomputation, and fingerprint it. The `content_hash` is identical to what
+        # batch_parse_web_page would compute, so identical content under a different URL — or
+        # from a previous crawl — can be detected and skipped early.
+        parsed = None
+        content_hash = None
+        if tokenizer is not None:
+            parsed = tokenizer.compute_parsed(page.title, page.content)
+            content_hash = compute_content_hash(parsed)
+
         result = sanitize_web_page(web_page(
             title=page.title,
             url=url,
@@ -241,7 +254,9 @@ def parse_page(page: ParsedHTML,
             h2=page.h2,
             lang=page.lang or lang,
             category=category,
-            crawled=datetime.datetime.now(datetime.timezone.utc)
+            crawled=datetime.datetime.now(datetime.timezone.utc),
+            parsed=parsed,
+            content_hash=content_hash,
         ))
         print(result)
         return [result]
@@ -369,7 +384,8 @@ class Crawler(DelayedClass):
 
     def __init__(self, delay: float = 1., no_follow: list[str] = [],
                  known_urls: dict[str, datetime.datetime] | None = None,
-                 since: datetime.datetime | None = None):
+                 since: datetime.datetime | None = None,
+                 tokenizer=None):
         """Crawl a website from its sitemap or by following internal links recusively from an index page.
         This class needs therefore to be used within a `with` statement that will take care of resources
         allocations and releases in background.
@@ -419,6 +435,12 @@ class Crawler(DelayedClass):
         self.crawled_content: list[str] = []
         """List of hashes of content already known"""
 
+        self.known_content_hashes: set[str] = set()
+        """Canonical `content_hash` values (SHA-1 of normalized content) already indexed.
+        Seeded from an existing index via [load_known_content][core.crawler.Crawler.load_known_content]
+        and extended with hashes seen during this crawl, so the same content reached under a
+        different URL — within this crawl or from a previous one — is not indexed twice."""
+
         self.known_urls: dict[str, datetime.datetime] = dict(known_urls) if known_urls else {}
         """Mapping of URL → last-crawled datetime for incremental updates.
         Populated at construction time or via [load_known_urls][core.crawler.Crawler.load_known_urls].
@@ -431,6 +453,13 @@ class Crawler(DelayedClass):
         """Global freshness cut-off for recursive and API-based crawling.
         Pages in *known_urls* last crawled on or after this datetime are skipped."""
 
+        self._tokenizer = tokenizer
+        """Tokenizer used to normalize page text at crawl time. Lazily defaults to a bare
+        `nlp.Tokenizer()` (see the `tokenizer` property) — the same configuration
+        post_process_crawling / chantal-03 use for batch parsing, so the `parsed` text and
+        `content_hash` computed here match downstream and can be reused. Inject a custom
+        (e.g. subclassed) Tokenizer to override normalization for a non-FR/EN corpus."""
+
         self.no_follow += no_follow
         self.delay = delay
         self.last_request = datetime.datetime.now().timestamp()
@@ -440,6 +469,17 @@ class Crawler(DelayedClass):
 
         self.notfound = []
         """URLs returning error 404 - not found"""
+
+
+    @property
+    def tokenizer(self):
+        """The Tokenizer used for crawl-time normalization. Defaults to a bare
+        `nlp.Tokenizer()`, imported lazily so `crawler` never imports `nlp` at module
+        load time (that would be a circular import: `nlp` imports `crawler`)."""
+        if self._tokenizer is None:
+            from .nlp import Tokenizer  # deferred: breaks the crawler↔nlp import cycle
+            self._tokenizer = Tokenizer()
+        return self._tokenizer
 
 
     def __enter__(self):
@@ -503,7 +543,39 @@ class Crawler(DelayedClass):
 
         print(f"Loaded {count} known URLs for incremental crawling")
         return count
-    
+
+
+    def load_known_content(self, db: sqlite3.Connection) -> int:
+        """Seed [known_content_hashes][core.crawler.Crawler.known_content_hashes] from an
+        existing index so the crawler can skip re-indexing content that is already stored
+        under any URL (see the content-dedup step in
+        [get_website_from_crawling][core.crawler.Crawler.get_website_from_crawling]).
+
+        Safe on legacy databases that predate the ``content_hash`` column (returns 0).
+
+        Arguments:
+            db: an open SQLite connection to a Virtual Secretary database.
+
+        Returns:
+            Number of content hashes loaded.
+        """
+        try:
+            cursor = db.execute(
+                "SELECT content_hash FROM pages WHERE content_hash IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            # No content_hash column yet (old bundle) — nothing to seed.
+            return 0
+
+        count = 0
+        for (content_hash,) in cursor:
+            if content_hash:
+                self.known_content_hashes.add(content_hash)
+                count += 1
+
+        print(f"Loaded {count} known content hashes for content dedup")
+        return count
+
 
     def get_most_recent_page(self, db:sqlite3.Connection) -> datetime.datetime | None:
         """Get the datetime of the most recent `web_page` indexed in the `db` database"""
@@ -790,8 +862,22 @@ class Crawler(DelayedClass):
                     
                 # Parse current page content
                 if include or _recursion_level == 0:
-                    output += self._parse_original(index, index_url, default_lang, markup, None, category)
-                    output += self._parse_translations(index, domain, index_url, markup, None, langs, category)
+                    produced = self._parse_original(index, index_url, default_lang, markup, None, category)
+                    produced += self._parse_translations(index, domain, index_url, markup, None, langs, category)
+
+                    # Content dedup: drop pages whose canonical content is already indexed
+                    # (under any URL, this crawl or a previous one — content_hash was seeded
+                    # from the index by load_known_content and is computed at crawl time in
+                    # parse_page). Link-following below is intentionally left untouched so the
+                    # incremental crawl still discovers new URLs from unchanged index pages.
+                    for candidate in produced:
+                        content_hash = candidate.get("content_hash")
+                        if content_hash and content_hash in self.known_content_hashes:
+                            print(f"Skip (duplicate content): {candidate['url']}")
+                            continue
+                        if content_hash:
+                            self.known_content_hashes.add(content_hash)
+                        output.append(candidate)
                     #print("page object")
                     
                 # Follow internal links whether or not this page was mined, if we didn't reach the final recursion level
@@ -1340,7 +1426,7 @@ class Crawler(DelayedClass):
             if entry is None:
                 return []
 
-            pages = parse_page(entry, item_url, "en", "body", date, category)
+            pages = parse_page(entry, item_url, "en", "body", date, category, tokenizer=self.tokenizer)
 
             # Extract bare URLs from raw Markdown (regex match covers URLs that are
             # not wrapped in Markdown link syntax and thus absent from the rendered HTML)
@@ -1593,7 +1679,7 @@ class Crawler(DelayedClass):
             if entry is None:
                 return []
 
-            pages = parse_page(entry, post_url, "en", "body", date, category)
+            pages = parse_page(entry, post_url, "en", "body", date, category, tokenizer=self.tokenizer)
 
             # Add bare URLs from Markdown text; exclude internal SE links
             # (those are covered by API pagination, not link-following)
@@ -1705,7 +1791,8 @@ class Crawler(DelayedClass):
 
 
     def _parse_original(self, page, url, default_lang, markup, date, category):
-        return parse_page(page, url, default_lang, markup=markup, date=date, category=category) if page else []
+        return parse_page(page, url, default_lang, markup=markup, date=date, category=category,
+                          tokenizer=self.tokenizer) if page else []
 
 
     def _parse_translations(self, page, domain, current_url, markup, date, langs, category):
