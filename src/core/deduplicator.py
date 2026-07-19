@@ -363,23 +363,26 @@ class Deduplicator():
         before = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
         print(f"[dedup] Phase 0  – initial records                      : {before}")
 
+        # NOTE: `pages` is not modified until Phase 6 (_rebuild_pages) — Phases 1-5
+        # only build small temp tables of winning source_rowids. So compacting the
+        # main DB between phases reclaims almost nothing while risking a full VACUUM
+        # each time (when auto_vacuum is off). We compact exactly once, after the
+        # rebuild, which is the only step that actually frees pages.
+
         # ── Phase 1: URL canonicalization ─────────────────────────────────────
         self._fill_prepared(db, chunksize)
         after_prep = cursor.execute("SELECT COUNT(*) FROM _prepared").fetchone()[0]
         print(f"[dedup] Phase 1  – after URL canonicalization           : {after_prep}")
-        database.compress_db(db)
 
         # ── Phase 2: URL deduplication ────────────────────────────────────────
         self._elect_by_url(db)
         after_url = cursor.execute("SELECT COUNT(*) FROM _url_winners").fetchone()[0]
         print(f"[dedup] Phase 2  – after URL deduplication              : {after_url}")
-        database.compress_db(db)
 
         # ── Phase 3: Exact content deduplication ──────────────────────────────
         self._elect_by_content(db)
         after_content = cursor.execute("SELECT COUNT(*) FROM _content_winners").fetchone()[0]
         print(f"[dedup] Phase 3  – after exact-content deduplication    : {after_content}")
-        database.compress_db(db)
 
         # ── Phase 4: Near-duplicate removal (optional) ────────────────────────
         if self.threshold < 1.0:
@@ -387,7 +390,6 @@ class Deduplicator():
             final_table = "_near_winners"
             after_near = cursor.execute(f"SELECT COUNT(*) FROM {final_table}").fetchone()[0]
             print(f"[dedup] Phase 4  – after near-duplicate removal         : {after_near}")
-            database.compress_db(db)
         else:
             final_table = "_content_winners"
             print("[dedup] Phase 4  – near-duplicate removal skipped (threshold=1.0)")
@@ -397,7 +399,6 @@ class Deduplicator():
             final_table = self._filter_by_n_min(db, final_table)
             after_nmin  = cursor.execute(f"SELECT COUNT(*) FROM {final_table}").fetchone()[0]
             print(f"[dedup] Phase 5  – after n_min={self.n_min} domain filter           : {after_nmin}")
-            database.compress_db(db)
         else:
             print(f"[dedup] Phase 5  – domain frequency filter skipped (n_min=0)")
 
@@ -407,6 +408,101 @@ class Deduplicator():
 
         final = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
         print(f"[dedup] Done     – {before - final} removed, {final} remain.")
+
+
+    def run_incremental(self, db: sqlite3.Connection, changed_urls: list[str] | None = None) -> int:
+        """Lightweight daily deduplication: resolve **exact-content** duplicates that
+        involve rows changed this run, using targeted ``DELETE``s — no ``_prepared``
+        build and no full-table rebuild (contrast with :meth:`run_on_db`, which rewrites
+        the whole ``pages`` table and is meant for periodic full passes).
+
+        Only exact ``content_hash`` collisions are handled here, because that is the case
+        a daily update actually introduces: a freshly-crawled page whose normalized content
+        already exists under another URL. URL canonicalization, Levenshtein near-duplicates,
+        and the ``n_min`` domain-frequency filter are corpus-wide operations that remain in
+        :meth:`run_on_db` and should be scheduled periodically, not per day.
+
+        For every ``content_hash`` group that has more than one row and (when *changed_urls*
+        is given) contains at least one changed row, the single winner is kept using the same
+        ordering as Phase 3 (:attr:`_ELECTION_ORDER_CONTENT`; the stored ``url`` stands in for
+        the canonical URL, which the crawler already canonicalizes) and the losers are deleted.
+        Freed space is reclaimed by the caller's incremental ``compress_db``.
+
+        Arguments:
+            db: open connection to the index database.
+            changed_urls: URLs touched this run (typically the freshly-merged set). When
+                provided, only content-hash groups containing one of these URLs are considered,
+                so the work scales with the daily delta. When ``None``, every duplicated
+                content-hash group is resolved (still only ``DELETE``s, no table rewrite).
+
+        Returns:
+            Number of rows deleted.
+        """
+        cursor = db.cursor()
+
+        # Exact-content lookups rely on this index (idempotent — no-op if it exists).
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pages_content_hash ON pages (content_hash)"
+        )
+
+        before = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+
+        if changed_urls:
+            cursor.execute("DROP TABLE IF EXISTS _changed_urls")
+            cursor.execute("CREATE TEMP TABLE _changed_urls (url TEXT PRIMARY KEY)")
+            cursor.executemany(
+                "INSERT OR IGNORE INTO _changed_urls(url) VALUES (?)",
+                [(u,) for u in changed_urls if u],
+            )
+            group_filter = """
+                content_hash IN (
+                    SELECT p.content_hash
+                    FROM pages p
+                    JOIN _changed_urls c ON c.url = p.url
+                    WHERE p.content_hash IS NOT NULL
+                )
+            """
+        else:
+            group_filter = "content_hash IS NOT NULL"
+
+        # Elect one winner per duplicated content_hash (same priority as Phase 3) and
+        # delete the rest. The window/CTE subquery is fully materialized before the DELETE
+        # runs, so reading and deleting `pages` in one statement is safe.
+        cursor.execute(f"""
+            WITH dup_groups AS (
+                SELECT content_hash
+                FROM pages
+                WHERE {group_filter}
+                GROUP BY content_hash
+                HAVING COUNT(*) > 1
+            ),
+            ranked AS (
+                SELECT p.rowid AS rid,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY p.content_hash
+                           ORDER BY
+                               CASE WHEN p.category = 'external' THEN 1 ELSE 0 END ASC,
+                               p.datetime DESC NULLS LAST,
+                               p.crawled  DESC NULLS LAST,
+                               LENGTH(p.url) ASC,
+                               p.rowid    ASC
+                       ) AS rn
+                FROM pages p
+                JOIN dup_groups g ON g.content_hash = p.content_hash
+            )
+            DELETE FROM pages WHERE rowid IN (SELECT rid FROM ranked WHERE rn > 1)
+        """)
+        cursor.execute("DROP TABLE IF EXISTS _changed_urls")
+        db.commit()
+
+        # cursor.rowcount is unreliable for a WITH…DELETE, so derive the count from the
+        # row totals instead.
+        after = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+        deleted = before - after
+        print(f"[dedup-incremental] {deleted} exact-content duplicates removed "
+              f"({before} → {after})")
+        return deleted
+
 
     # ─────────────────────────────────────────────────────────────────────────────────────
     # Private DB pipeline helpers

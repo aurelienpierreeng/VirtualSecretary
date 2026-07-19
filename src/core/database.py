@@ -293,6 +293,42 @@ def close_db(db: sqlite3.Connection):
    db.close()
 
 
+def ensure_incremental_autovacuum(db: sqlite3.Connection) -> bool:
+    """Guarantee the database uses ``auto_vacuum = INCREMENTAL`` so that
+    [core.database.compress_db][] can reclaim space via the cheap in-place
+    ``PRAGMA incremental_vacuum`` instead of a full ``VACUUM`` copy.
+
+    ``auto_vacuum`` is a header setting that only takes effect on a fresh file or
+    after a full ``VACUUM``. A DB created before this policy (or opened in a mode
+    that never set it) reads back ``auto_vacuum = 0 (NONE)``; for those, every
+    ``compress_db(repack=False)`` silently falls back to a full 8 GB rewrite. This
+    performs the **one-time** conversion (set the pragma, then a single ``VACUUM``);
+    subsequent daily runs are cheap and this becomes a no-op.
+
+    Returns:
+        ``True`` if a conversion VACUUM was performed, ``False`` if the DB already
+        carried an auto-vacuum mode (nothing to do).
+    """
+    mode = db.execute("PRAGMA auto_vacuum").fetchone()[0]
+    if mode != 0:
+        return False  # already INCREMENTAL (2) or FULL (1)
+
+    print("Converting DB to auto_vacuum=INCREMENTAL (one-time full VACUUM)…")
+    # The pragma is recorded but only applied by the next VACUUM. VACUUM cannot run
+    # inside a transaction, so force autocommit. In WAL mode, checkpoint/switch to a
+    # rollback journal first so the rewrite lands in the main file (mirrors compress_db).
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    db.execute("PRAGMA journal_mode = DELETE")
+    db.execute("PRAGMA auto_vacuum = INCREMENTAL")
+    prev_isolation = db.isolation_level
+    db.isolation_level = None
+    try:
+        db.execute("VACUUM")
+    finally:
+        db.isolation_level = prev_isolation
+    return True
+
+
 def compress_db(db: sqlite3.Connection, delete_query: str | None = None, delete_params: tuple | None = None, delete_columns: list[str] | None = None, repack: bool = False):
     """
     Optionally delete rows, then reclaim SQLite disk space.
@@ -814,6 +850,7 @@ def _import_via_attach(
     where_clause: str,
     params: tuple,
     preserve_derived: list[str] | None = None,
+    skip_unchanged: bool = False,
 ) -> int:
     dest.execute("ATTACH DATABASE ? AS _src", (source_path,))
     cursor = None
@@ -829,9 +866,22 @@ def _import_via_attach(
         quoted      = ", ".join(dest_cols)
         on_conflict = _on_conflict_sql(dest_cols, pk_cols, preserve_derived)
 
+        # Skip source rows whose (url, content_hash) already exist in the destination —
+        # only genuinely new / content-changed rows are imported (NULL-safe compare).
+        unchanged_filter = ""
+        if skip_unchanged and "content_hash" in src_cols and "content_hash" in dest_cols:
+            unchanged_filter = """
+              AND NOT EXISTS (
+                  SELECT 1 FROM pages d
+                  WHERE d.url = _src.pages.url
+                    AND d.content_hash IS _src.pages.content_hash
+              )
+            """
+
         cursor = dest.execute(f"""
             INSERT INTO pages ({quoted})
             SELECT {select_list} FROM _src.pages WHERE {where_clause}
+            {unchanged_filter}
             {on_conflict}
         """, params)
         return cursor.rowcount
@@ -855,6 +905,7 @@ def _import_via_bridge(
     where_clause: str,
     params: tuple,
     preserve_derived: list[str] | None = None,
+    skip_unchanged: bool = False,
 ) -> int:
     dest_cols = _table_columns(dest, "pages")
     src_cols  = set(_table_columns(source, "pages"))
@@ -871,6 +922,17 @@ def _import_via_bridge(
 
     if not rows:
         return 0
+
+    # Skip source rows whose (url, content_hash) already exist in the destination, so the
+    # merge scales with the delta. Live (often in-memory) sources can't be ATTACHed/joined,
+    # so we load the destination's (url, content_hash) pairs once and filter in Python.
+    if skip_unchanged and "content_hash" in src_cols and "content_hash" in dest_cols:
+        url_i  = dest_cols.index("url")
+        hash_i = dest_cols.index("content_hash")
+        existing = set(dest.execute("SELECT url, content_hash FROM pages"))
+        rows = [r for r in rows if (r[url_i], r[hash_i]) not in existing]
+        if not rows:
+            return 0
 
     quoted       = ", ".join(dest_cols)
     placeholders = ", ".join("?" * len(dest_cols))
@@ -892,6 +954,7 @@ def import_pages(
     where_clause: str = "1=1",
     params: tuple = (),
     preserve_derived: list[str] | None = None,
+    skip_unchanged: bool = False,
 ) -> int:
     """
     Import rows from one SQLite database into another.
@@ -939,8 +1002,18 @@ def import_pages(
             (e.g. ``["tokenized", "stemmed", "vectorized"]``). ``None`` keeps
             the plain "overwrite everything" upsert behaviour.
 
+        skip_unchanged:
+            when ``True``, source rows whose ``(url, content_hash)`` pair already
+            exists in the destination are not imported at all. This makes the merge
+            scale with the delta: re-importing a source whose pages are mostly
+            unchanged touches only the genuinely new or content-changed rows, instead
+            of upserting every row every run. Requires a ``content_hash`` column on
+            both sides (ignored otherwise). Combine with *preserve_derived* so the few
+            changed rows still keep/refresh their derived columns correctly.
+
     Returns:
-        Number of affected rows.
+        Number of affected rows (rows actually imported; with *skip_unchanged* this is
+        the size of the delta).
 
     Examples::
 
@@ -967,11 +1040,11 @@ def import_pages(
     try:
         if src_is_conn:
             # Live connections cannot be addressed via ATTACH; bridge through Python.
-            rowcount = _import_via_bridge(source_db, dest, where_clause, params, preserve_derived)
+            rowcount = _import_via_bridge(source_db, dest, where_clause, params, preserve_derived, skip_unchanged)
         else:
             # File paths can be ATTACHed for a single-statement INSERT … SELECT.
             rowcount = _import_via_attach(
-                get_models_folder(source_db), dest, where_clause, params, preserve_derived
+                get_models_folder(source_db), dest, where_clause, params, preserve_derived, skip_unchanged
             )
 
         dest.commit()
