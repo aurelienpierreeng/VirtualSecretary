@@ -3,6 +3,31 @@ from datetime import datetime as dt
 import numpy as np
 import sys
 import copy
+import hashlib
+
+
+def compute_content_hash(parsed: str | None) -> str | None:
+    """Canonical content fingerprint for a `web_page`.
+
+    This is the SINGLE source of truth for the `content_hash` column: SHA-1 of the
+    normalized (`parsed`) text, UTF-8 encoded. Every place that (re)computes a page's
+    `content_hash` MUST go through this function so the value stays comparable across
+    the whole pipeline.
+
+    The hash is deliberately taken over `parsed` (the normalized content), not the raw
+    `content`, because that is exactly the text the downstream NLP stages consume. The
+    incremental index update relies on this: a page is re-tokenized/re-stemmed/re-vectorized
+    if and only if its `content_hash` changed (see `core.database.import_pages`'s
+    `preserve_derived`), and pages are only re-parsed when `parsed` is NULL (see
+    `core.batching.batch_parse_web_page`'s `only_none`). If `parsed` ever changes without
+    this hash being recomputed in the same write, those invariants silently break.
+
+    Returns `None` for a NULL/empty `parsed`, mirroring how such rows are treated as
+    "no extractable content" by the deduplicator and skipped by change-detection.
+    """
+    if not parsed:
+        return None
+    return hashlib.sha1(parsed.encode("utf-8")).hexdigest()
 
 class web_page(TypedDict):
     """Typed dictionnary representing a web page and its metadata. It can also be used for any text document having an URL/URI.

@@ -332,6 +332,12 @@ def compress_db(db: sqlite3.Connection, delete_query: str | None = None, delete_
         valid_columns = {row[1] for row in cur.fetchall()}
         columns = [c for c in delete_columns if c in valid_columns]
 
+        # content_hash is the SHA-1 of `parsed`; it must never outlive the text it
+        # fingerprints. If `parsed` is nulled here, null content_hash alongside it so a
+        # later incremental parse/dedup can't trust a hash that describes absent content.
+        if "parsed" in columns and "content_hash" in valid_columns and "content_hash" not in columns:
+            columns.append("content_hash")
+
         if columns:
             set_clause = ", ".join(f"{col} = NULL" for col in columns)
             db.execute(f"UPDATE pages SET {set_clause}")
@@ -737,12 +743,31 @@ def _table_pk(conn: sqlite3.Connection, table: str, schema: str | None = None) -
     return [name for _, name in pairs]
 
 
-def _on_conflict_sql(columns: list[str], pk_cols: list[str]) -> str:
+def _on_conflict_sql(
+    columns: list[str],
+    pk_cols: list[str],
+    preserve_derived: list[str] | None = None,
+    hash_column: str = "content_hash",
+) -> str:
     """
     Build the trailing ON CONFLICT … fragment for an upsert.
 
     Returns an empty string when *pk_cols* is empty (no PK → plain INSERT).
     Returns DO NOTHING when all columns are part of the PK (nothing to update).
+
+    Arguments:
+        preserve_derived:
+            columns whose existing value must be KEPT when the row's content is
+            unchanged, and only overwritten (typically reset to NULL by a
+            freshly-crawled source) when the content changed. "Unchanged" is
+            decided by comparing the destination and source *hash_column*. This
+            avoids invalidating expensive derived artifacts (tokenized, stemmed,
+            vectorized) for pages that were merely re-crawled without changing.
+            Columns listed here that are part of the PK, or equal to
+            *hash_column*, are ignored.
+
+        hash_column:
+            the column holding the content fingerprint used to detect changes.
     """
     if not pk_cols:
         return ""
@@ -753,7 +778,24 @@ def _on_conflict_sql(columns: list[str], pk_cols: list[str]) -> str:
     if not non_pk:
         return f"ON CONFLICT{target} DO NOTHING"
 
-    updates = ", ".join(f"{col}=excluded.{col}" for col in non_pk)
+    preserve = set(preserve_derived or ())
+    preserve.discard(hash_column)
+    preserve.difference_update(pk_cols)
+
+    assignments = []
+    for col in non_pk:
+        if col in preserve:
+            # Keep the existing derived value when the content fingerprint is
+            # unchanged (NULL-safe compare); otherwise take the incoming value
+            # (NULL from a freshly-crawled source), which forces recomputation.
+            assignments.append(
+                f"{col}=CASE WHEN pages.{hash_column} IS excluded.{hash_column} "
+                f"THEN pages.{col} ELSE excluded.{col} END"
+            )
+        else:
+            assignments.append(f"{col}=excluded.{col}")
+
+    updates = ", ".join(assignments)
     return f"ON CONFLICT{target} DO UPDATE SET {updates}"
 
 
@@ -771,6 +813,7 @@ def _import_via_attach(
     dest: sqlite3.Connection,
     where_clause: str,
     params: tuple,
+    preserve_derived: list[str] | None = None,
 ) -> int:
     dest.execute("ATTACH DATABASE ? AS _src", (source_path,))
     cursor = None
@@ -784,7 +827,7 @@ def _import_via_attach(
             for col in dest_cols
         )
         quoted      = ", ".join(dest_cols)
-        on_conflict = _on_conflict_sql(dest_cols, pk_cols)
+        on_conflict = _on_conflict_sql(dest_cols, pk_cols, preserve_derived)
 
         cursor = dest.execute(f"""
             INSERT INTO pages ({quoted})
@@ -811,6 +854,7 @@ def _import_via_bridge(
     dest: sqlite3.Connection,
     where_clause: str,
     params: tuple,
+    preserve_derived: list[str] | None = None,
 ) -> int:
     dest_cols = _table_columns(dest, "pages")
     src_cols  = set(_table_columns(source, "pages"))
@@ -830,7 +874,7 @@ def _import_via_bridge(
 
     quoted       = ", ".join(dest_cols)
     placeholders = ", ".join("?" * len(dest_cols))
-    on_conflict  = _on_conflict_sql(dest_cols, pk_cols)               # ← dynamic
+    on_conflict  = _on_conflict_sql(dest_cols, pk_cols, preserve_derived)  # ← dynamic
 
     dest.executemany(f"""
         INSERT INTO pages ({quoted})
@@ -846,7 +890,8 @@ def import_pages(
     source_db: str | sqlite3.Connection,
     destination_db: str | sqlite3.Connection,
     where_clause: str = "1=1",
-    params: tuple = ()
+    params: tuple = (),
+    preserve_derived: list[str] | None = None,
 ) -> int:
     """
     Import rows from one SQLite database into another.
@@ -884,6 +929,16 @@ def import_pages(
         params:
             Positional parameters bound to *where_clause*.
 
+        preserve_derived:
+            columns whose existing value in the destination must be preserved
+            when a conflicting (same-``url``) row's content is unchanged, and
+            only overwritten when the content changed (detected via
+            ``content_hash``). Use this when merging a freshly-crawled source
+            that has not computed these derived columns yet, so re-crawling an
+            unchanged page does not wipe its expensive artifacts
+            (e.g. ``["tokenized", "stemmed", "vectorized"]``). ``None`` keeps
+            the plain "overwrite everything" upsert behaviour.
+
     Returns:
         Number of affected rows.
 
@@ -912,11 +967,11 @@ def import_pages(
     try:
         if src_is_conn:
             # Live connections cannot be addressed via ATTACH; bridge through Python.
-            rowcount = _import_via_bridge(source_db, dest, where_clause, params)
+            rowcount = _import_via_bridge(source_db, dest, where_clause, params, preserve_derived)
         else:
             # File paths can be ATTACHed for a single-statement INSERT … SELECT.
             rowcount = _import_via_attach(
-                get_models_folder(source_db), dest, where_clause, params
+                get_models_folder(source_db), dest, where_clause, params, preserve_derived
             )
 
         dest.commit()

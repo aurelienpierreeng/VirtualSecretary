@@ -21,7 +21,7 @@ import os
 from . import patterns
 from . import nlp
 from . import database
-from .types import web_page, sanitize_web_page
+from .types import web_page, sanitize_web_page, compute_content_hash
 from .utils import guess_date, get_models_folder, timeit
 
 def _normalise_date(d) -> str:
@@ -977,8 +977,6 @@ class Deduplicator():
         Args:
             db: Open ``sqlite3.Connection`` to the target database.
         """
-        import hashlib
-
         cursor = db.cursor()
 
         columns = {row[1] for row in cursor.execute("PRAGMA table_info(pages)")}
@@ -989,7 +987,8 @@ class Deduplicator():
         updates: list[tuple[str, int]] = []
 
         for rowid, content in rows:
-            digest = hashlib.sha1(content.encode("utf-8")).hexdigest()
+            # Same canonical fingerprint as batch_parse_web_page, so hashes stay comparable.
+            digest = compute_content_hash(content)
             updates.append((digest, rowid))
 
             if len(updates) >= 1024:

@@ -11,6 +11,7 @@ from .patterns import *
 from .utils import get_models_folder, typography_undo, clean_whitespaces, timeit, guess_date, sanitize_unicode
 from .language import *
 from .crawler import web_page
+from .types import compute_content_hash
 from .nlp import *
 from .database import *
 from .deduplicator import *
@@ -21,7 +22,6 @@ import multiprocessing
 import sqlite3
 import os
 from datetime import datetime
-import hashlib
 
 
 TOKENIZER: nlp.Tokenizer | None = None
@@ -121,38 +121,48 @@ def _batch_normalize_process_worker(indices: list[int]) -> list[tuple[int, str, 
         else:
             excerpt = row['excerpt']
 
-        content_hash = hashlib.sha1(parsed.encode("utf-8")).hexdigest()
-        
+        content_hash = compute_content_hash(parsed)
+
         out.append((i, title, content, excerpt, parsed, datetime, lang, content_hash, length))
 
     return out
 
 
 @timeit()
-def batch_parse_web_page(documents: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 512, cores: int | None = None):
+def batch_parse_web_page(documents: sqlite3.Connection, tokenizer: Tokenizer, chunksize: int = 512, cores: int | None = None,
+                         only_none: bool = False):
     """High-performance parallel parsing for [core.types.web_page][] objects
-    
+
     This function is meant to cleanup text encoding issues and multi-spacings in `web_page` title and content.
     It prepares the `web_page["parsed"]` field from title and content for the next stages of tokenization,
     and updates language (using declared ISO code or machine-learned detection).
-    
+
     It is needed to call it before [core.deduplicator.Deduplicator][], so the content duplication
     has a clean parsed version to compare web pages.
 
     Arguments:
-        documents: 
+        documents:
             any database having [core.types.web_page][] rows stored in a `pages` table
             and stored on the filesystem. It cannot be a memory-hosted database: each parallel
             worker will open its own copy by file path.
 
-        tokenizer: 
+        tokenizer:
             we only use it for the the [core.nlp.Tokenizer.normalize_text][] method
 
-        chunksize: 
+        chunksize:
             number of SQLite rows to process at once, too many is not helpful since some batches
             may take longer than others, depending on text length.
 
         cores: CPU cores to use for parallel processing.
+
+        only_none:
+            parse only the rows that have not been parsed yet (`parsed IS NULL`). Each worker
+            recomputes `parsed`/`content_hash`/`length`/`lang` from the raw `title`/`content`,
+            never from the existing `parsed`, so already-parsed rows are byte-for-byte identical
+            on re-run and safe to skip. Use this on an incrementally-updated index (freshly-crawled
+            pages arrive already parsed via the temporary DB) to avoid re-normalizing the whole
+            corpus every day. If `False` (default), the whole database is re-parsed, which is what
+            you want when the normalization logic itself changed.
     """
     # Determine number of worker threads/processes
     if cores is None or cores is True:
@@ -163,7 +173,10 @@ def batch_parse_web_page(documents: sqlite3.Connection, tokenizer: Tokenizer, ch
     cursor = documents.cursor()
 
     # collect rowids in chunks to avoid large memory usage
-    rowid_cursor = cursor.execute('SELECT rowid FROM pages ORDER BY rowid')
+    if only_none:
+        rowid_cursor = cursor.execute('SELECT rowid FROM pages WHERE parsed IS NULL ORDER BY rowid')
+    else:
+        rowid_cursor = cursor.execute('SELECT rowid FROM pages ORDER BY rowid')
     batches = []
     current = []
     for row in rowid_cursor:
@@ -422,7 +435,8 @@ def _batch_vectorize_worker(inputs: tuple[int, list[list[str]], str | None, str 
 
 @timeit()
 def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int = 256, title_weight: float = 0.5,
-                    use_sif: bool = True, sif_smoothing: float = 1e-3, body_top_k: int = 48):
+                    use_sif: bool = True, sif_smoothing: float = 1e-3, body_top_k: int = 48,
+                    only_none: bool = True):
     """Vectorize the documents of the `db` database using the provided embedding
     model, using all available cores.
 
@@ -442,10 +456,21 @@ def batch_vectorize(db: sqlite3.Connection, word2vec: Word2Vec, chunksize: int =
                        pages are de-diluted (see [core.nlp.WordEmbedding.get_features][]).
                        `0` disables it (plain full-document centroid). The title
                        centroid is always built from all title tokens.
+        only_none:     vectorize only the rows that have not been vectorized yet
+                       (`vectorized IS NULL`). On a daily index update this skips
+                       every unchanged page. Retraining the embedding model
+                       (chantal-02) or the tokenizer (chantal-01) wipes the
+                       `vectorized` column, which forces a full re-vectorization
+                       on the next run. Set to `False` to force re-vectorizing the
+                       whole database in place (e.g. when only vectorization
+                       hyper-parameters changed, without a model retrain).
     """
 
     num_cpu = os.cpu_count() or 1
-    cursor = db.execute('SELECT rowid, stemmed, title, lang FROM pages')
+    if only_none:
+        cursor = db.execute('SELECT rowid, stemmed, title, lang FROM pages WHERE vectorized IS NULL')
+    else:
+        cursor = db.execute('SELECT rowid, stemmed, title, lang FROM pages')
     batch_size = num_cpu * chunksize
 
     with futures.ProcessPoolExecutor(
