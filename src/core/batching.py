@@ -265,21 +265,22 @@ def batch_tokenize(db: sqlite3.Connection,
     batch_size = (num_cpu or 1) * chunksize
 
     if urls is not None:
-        cursor = db.execute(
-            f"""
-            SELECT rowid, parsed, lang
-            FROM pages
-            WHERE url IN ({ ",".join(["?" for _ in urls]) })
-            """,
-            urls,
-        )
+        where_sql = f"WHERE url IN ({ ','.join(['?' for _ in urls]) })"
+        params = urls
     elif only_none:
-        cursor = db.execute('SELECT rowid, parsed, lang FROM pages WHERE tokenized is NULL')
+        where_sql = "WHERE tokenized IS NULL"
+        params = []
     else:
-        cursor = db.execute('SELECT rowid, parsed, lang FROM pages')
+        where_sql = ""
+        params = []
+
+    # cursor.rowcount is -1 for SELECT, so count explicitly (mirrors the WHERE) to report
+    # exactly how many rows this run will (re)tokenize — the observable measure of how
+    # incremental the update is.
+    row_count = db.execute(f"SELECT COUNT(*) FROM pages {where_sql}", params).fetchone()[0]
+    cursor = db.execute(f"SELECT rowid, parsed, lang FROM pages {where_sql}", params)
 
     processed_batches = 0
-    row_count = cursor.rowcount
     num_batches = int(np.ceil(row_count / batch_size))
     print(f"Batch tokenization: {row_count} to update, {num_batches} batches")
 
@@ -346,21 +347,21 @@ def batch_stem(db: sqlite3.Connection,
     batch_size = (num_cpu or 1) * chunksize
 
     if urls is not None:
-        cursor = db.execute(
-            f"""
-            SELECT rowid, tokenized, lang
-            FROM pages
-            WHERE url IN ({ ",".join(["?" for _ in urls]) })
-            """,
-            urls,
-        )
+        where_sql = f"WHERE url IN ({ ','.join(['?' for _ in urls]) })"
+        params = urls
     elif only_none:
-        cursor = db.execute('SELECT rowid, tokenized, lang FROM pages WHERE stemmed IS NULL')
+        where_sql = "WHERE stemmed IS NULL"
+        params = []
     else:
-        cursor = db.execute('SELECT rowid, tokenized, lang FROM pages')
+        where_sql = ""
+        params = []
+
+    # cursor.rowcount is -1 for SELECT, so count explicitly to report how many rows this
+    # run will (re)stem — the observable measure of how incremental the update is.
+    row_count = db.execute(f"SELECT COUNT(*) FROM pages {where_sql}", params).fetchone()[0]
+    cursor = db.execute(f"SELECT rowid, tokenized, lang FROM pages {where_sql}", params)
 
     processed_batches = 0
-    row_count = cursor.rowcount
     num_batches = int(np.ceil(row_count / batch_size))
     print(f"Batch stemming: {row_count} to update, {num_batches} batches")
 
