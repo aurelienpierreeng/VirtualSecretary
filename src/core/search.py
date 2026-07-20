@@ -225,7 +225,12 @@ class Indexer():
         ##################################################################
 
         # TODO: replace by database.SQLitePageCorpu
-        cursor = db.execute("SELECT stemmed FROM pages ORDER BY url")
+        # ORDER BY rowid (not url): rowid is always a unique, stable total order, so the
+        # three arrays (this BM25 corpus, self.vectors, and search_rowid) align row-for-row
+        # even when the pages table allows duplicate URLs. ORDER BY url is only a total order
+        # when url is unique (PRIMARY KEY); relying on it would silently misalign the numpy
+        # arrays with search_rowid once the URL primary key is dropped.
+        cursor = db.execute("SELECT stemmed FROM pages ORDER BY rowid")
         rows = cursor.fetchall()
 
         # To spare some memory, build a symbolic corpus representation using
@@ -257,7 +262,8 @@ class Indexer():
         # discrimination between relevant and irrelevant documents. You can see them as the "common glue"
         # between all documents in the corpus, which is the opposite of what we are looking for to retrieve information.
 
-        cursor = db.execute("SELECT vectorized FROM pages ORDER BY url")
+        # ORDER BY rowid to stay aligned with the BM25 corpus and search_rowid (see above).
+        cursor = db.execute("SELECT vectorized FROM pages ORDER BY rowid")
 
         self.vectors = np.array([item[0] for item in cursor.fetchall()], dtype=np.float32)
         """Store the list of document-wise vector embeddings, where the vector represents
@@ -553,12 +559,18 @@ class Indexer():
 
 
     def _build_search_rowids(self, db: sqlite3.Connection):
-        """Assign ``search_rowid = 0, 1, 2, …`` to every page in ``ORDER BY url``.
+        """Assign ``search_rowid = 0, 1, 2, …`` to every page in ``ORDER BY rowid``.
 
         This is the single source of truth that glues the DB to the in-RAM
         numpy arrays (``self.vectors``, ``self.ranker``).  Both are built by
-        reading pages ``ORDER BY url``, so position 0 in every array
+        reading pages ``ORDER BY rowid``, so position 0 in every array
         corresponds to ``search_rowid = 0``, and so on.
+
+        ``rowid`` (not ``url``) is used as the assignment order because it is always a
+        unique, stable total order — the mapping stays a clean bijection even if the
+        pages table permits duplicate URLs. The previous ``ORDER BY url`` + ``WHERE url = ?``
+        implementation required ``url`` to be a UNIQUE/PRIMARY KEY; this one does not, which
+        is what lets the URL primary key be dropped.
 
         Run once per Indexer build; the values survive ``VACUUM`` because
         they live in a real column, not in SQLite's internal b-tree position.
@@ -567,26 +579,24 @@ class Indexer():
         in ``self.index_fingerprint`` so ``verify_db_integrity()`` can detect
         invalidating changes in O(1) at load time.
         """
-        cursor = db.execute("SELECT url FROM pages ORDER BY url")
-        urls = [row[0] for row in cursor.fetchall()]
+        rowids = [row[0] for row in db.execute("SELECT rowid FROM pages ORDER BY rowid")]
 
         db.executemany(
-            "UPDATE pages SET search_rowid = ? WHERE url = ?",
-            enumerate(urls),
+            "UPDATE pages SET search_rowid = ? WHERE rowid = ?",
+            ((i, rid) for i, rid in enumerate(rowids)),
         )
         db.commit()
 
-        # Cheap two-point fingerprint: count + hash of first + last URL.
-        # Catches all insertions, deletions, and URL edits at the boundaries.
-        # Middle-URL mutations without a count change are rare in practice;
-        # callers who need stronger guarantees can call verify_db_integrity()
-        # with full=True (see below) before each query session.
+        # Cheap two-point fingerprint: count + hash of the boundary URLs, read the same way
+        # verify_db_integrity() reads them (ORDER BY search_rowid, which now == rowid order).
         import hashlib
+        first = db.execute("SELECT url FROM pages ORDER BY search_rowid ASC  LIMIT 1").fetchone()
+        last  = db.execute("SELECT url FROM pages ORDER BY search_rowid DESC LIMIT 1").fetchone()
         boundary = "".join([
-            urls[0]  if urls else "",
-            urls[-1] if urls else "",
+            (first[0] if first and first[0] else ""),
+            (last[0]  if last  and last[0]  else ""),
         ]).encode()
-        self.index_fingerprint = (len(urls), hashlib.sha256(boundary).hexdigest())
+        self.index_fingerprint = (len(rowids), hashlib.sha256(boundary).hexdigest())
 
 
     def verify_db_integrity(self, db: sqlite3.Connection, full: bool = False):

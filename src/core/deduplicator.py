@@ -411,39 +411,38 @@ class Deduplicator():
 
 
     def run_incremental(self, db: sqlite3.Connection, changed_urls: list[str] | None = None) -> int:
-        """Lightweight daily deduplication: resolve **exact-content** duplicates that
-        involve rows changed this run, using targeted ``DELETE``s — no ``_prepared``
-        build and no full-table rebuild (contrast with :meth:`run_on_db`, which rewrites
-        the whole ``pages`` table and is meant for periodic full passes).
+        """Lightweight in-place deduplication scoped to the rows changed this run, using
+        targeted ``DELETE``s — no ``_prepared`` build and no full-table rebuild (contrast with
+        :meth:`run_on_db`, which rewrites the whole ``pages`` table for periodic full passes).
 
-        Only exact ``content_hash`` collisions are handled here, because that is the case
-        a daily update actually introduces: a freshly-crawled page whose normalized content
-        already exists under another URL. URL canonicalization, Levenshtein near-duplicates,
-        and the ``n_min`` domain-frequency filter are corpus-wide operations that remain in
-        :meth:`run_on_db` and should be scheduled periodically, not per day.
+        Runs the two election passes a normal crawl/merge needs, both restricted to the delta:
 
-        For every ``content_hash`` group that has more than one row and (when *changed_urls*
-        is given) contains at least one changed row, the single winner is kept using the same
-        ordering as Phase 3 (:attr:`_ELECTION_ORDER_CONTENT`; the stored ``url`` stands in for
-        the canonical URL, which the crawler already canonicalizes) and the losers are deleted.
+        1. **URL election** (Phase 2 equivalent) — collapse the several rows the crawler
+           legitimately produces for one URL (mined via special HTML tags, captured as an
+           external whole-body page, reached under different parameter URLs), keeping the best
+           per URL by :attr:`_ELECTION_ORDER_URL` (non-external, newest, longest, lowest rowid).
+        2. **Content election** (Phase 3 equivalent) — collapse rows with identical
+           ``content_hash`` under *different* URLs, keeping the best by :attr:`_ELECTION_ORDER_CONTENT`.
+
+        URL canonicalization, Levenshtein near-duplicates, and the ``n_min`` domain-frequency
+        filter are corpus-wide operations that remain in :meth:`run_on_db` (periodic), not here.
         Freed space is reclaimed by the caller's incremental ``compress_db``.
 
         Arguments:
-            db: open connection to the index database.
-            changed_urls: URLs touched this run (typically the freshly-merged set). When
-                provided, only content-hash groups containing one of these URLs are considered,
-                so the work scales with the daily delta. When ``None``, every duplicated
-                content-hash group is resolved (still only ``DELETE``s, no table rewrite).
+            db: open connection to the database.
+            changed_urls: URLs touched this run (the freshly-written/crawled set). When given,
+                only URL groups among those URLs and content-hash groups containing one of them
+                are considered, so the work scales with the delta. When ``None``, every duplicated
+                URL and content-hash group is resolved (still only ``DELETE``s, no table rewrite).
 
         Returns:
             Number of rows deleted.
         """
         cursor = db.cursor()
 
-        # Exact-content lookups rely on this index (idempotent — no-op if it exists).
-        cursor.execute(
-            "CREATE INDEX IF NOT EXISTS idx_pages_content_hash ON pages (content_hash)"
-        )
+        # Election passes rely on these indexes (idempotent — no-ops if they exist).
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_url ON pages (url)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_content_hash ON pages (content_hash)")
 
         before = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
 
@@ -454,7 +453,8 @@ class Deduplicator():
                 "INSERT OR IGNORE INTO _changed_urls(url) VALUES (?)",
                 [(u,) for u in changed_urls if u],
             )
-            group_filter = """
+            url_group_filter = "url IN (SELECT url FROM _changed_urls)"
+            content_group_filter = """
                 content_hash IN (
                     SELECT p.content_hash
                     FROM pages p
@@ -463,16 +463,43 @@ class Deduplicator():
                 )
             """
         else:
-            group_filter = "content_hash IS NOT NULL"
+            url_group_filter = "1=1"
+            content_group_filter = "content_hash IS NOT NULL"
 
-        # Elect one winner per duplicated content_hash (same priority as Phase 3) and
-        # delete the rest. The window/CTE subquery is fully materialized before the DELETE
-        # runs, so reading and deleting `pages` in one statement is safe.
+        # ── Pass 1: URL election — keep the best row per URL (same order as Phase 2). ──
+        cursor.execute(f"""
+            WITH url_groups AS (
+                SELECT url
+                FROM pages
+                WHERE {url_group_filter}
+                GROUP BY url
+                HAVING COUNT(*) > 1
+            ),
+            ranked AS (
+                SELECT p.rowid AS rid,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY p.url
+                           ORDER BY
+                               CASE WHEN p.category = 'external' THEN 1 ELSE 0 END ASC,
+                               p.datetime DESC NULLS LAST,
+                               p.crawled  DESC NULLS LAST,
+                               p.length   DESC NULLS LAST,
+                               p.rowid    ASC
+                       ) AS rn
+                FROM pages p
+                JOIN url_groups g ON g.url = p.url
+            )
+            DELETE FROM pages WHERE rowid IN (SELECT rid FROM ranked WHERE rn > 1)
+        """)
+
+        # ── Pass 2: content election — keep the best row per content_hash (Phase 3 order). ──
+        # The window/CTE subquery is fully materialized before the DELETE runs, so reading and
+        # deleting `pages` in one statement is safe.
         cursor.execute(f"""
             WITH dup_groups AS (
                 SELECT content_hash
                 FROM pages
-                WHERE {group_filter}
+                WHERE {content_group_filter}
                 GROUP BY content_hash
                 HAVING COUNT(*) > 1
             ),
@@ -499,7 +526,7 @@ class Deduplicator():
         # row totals instead.
         after = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
         deleted = before - after
-        print(f"[dedup-incremental] {deleted} exact-content duplicates removed "
+        print(f"[dedup-incremental] {deleted} duplicates removed (URL + content election) "
               f"({before} → {after})")
         return deleted
 

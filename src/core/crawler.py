@@ -577,9 +577,13 @@ class Crawler(DelayedClass):
         return count
 
 
-    def get_most_recent_page(self, db:sqlite3.Connection) -> datetime.datetime | None:
-        """Get the datetime of the most recent `web_page` indexed in the `db` database"""
-        cursor = db.execute("SELECT MAX(datetime) from pages")
+    def get_most_recent_page(self, db:sqlite3.Connection, dataset: str | None = None) -> datetime.datetime | None:
+        """Get the datetime of the most recent `web_page` indexed in the `db` database.
+
+        When *dataset* is given, only rows belonging to that source are considered — essential
+        when many sources share one canonical DB, so each keeps its own incremental threshold.
+        """
+        cursor = db.execute(*self._dataset_scoped_sql("MAX(datetime)", db, dataset))
         date = cursor.fetchone()[0]
 
         if date is not None:
@@ -588,25 +592,41 @@ class Crawler(DelayedClass):
             return None
 
 
-    def get_most_recent_crawl(self, db:sqlite3.Connection) -> datetime.datetime | None:
-        """Get the datetime of the most recently crawled `web_page` indexed in the `db` database"""
-        cursor = db.execute("SELECT MAX(crawled) from pages")
+    @staticmethod
+    def _dataset_scoped_sql(agg: str, db: sqlite3.Connection, dataset: str | None) -> tuple:
+        """Build (sql, params) for `SELECT agg FROM pages`, optionally scoped to a dataset via the
+        ',a,b,' membership substring match (`dataset` is a set, not a single value). This is a
+        single aggregate query per crawl and the `dataset` column is small, so the substring scan
+        is cheap (~0.1s at 700k rows)."""
+        if dataset is None:
+            return (f"SELECT {agg} FROM pages",)
+        return (f"SELECT {agg} FROM pages WHERE dataset LIKE ?", (f"%,{dataset},%",))
+
+
+    def get_most_recent_crawl(self, db:sqlite3.Connection, dataset: str | None = None) -> datetime.datetime | None:
+        """Get the datetime of the most recently crawled `web_page` indexed in the `db` database.
+
+        When *dataset* is given, restricts to that source (per-source threshold in a shared DB).
+        """
+        cursor = db.execute(*self._dataset_scoped_sql("MAX(crawled)", db, dataset))
         date = cursor.fetchone()[0]
 
         if date is not None:
             return _normalize_tz(datetime.datetime.fromisoformat(date))
         else:
             return None
-        
 
-    def get_crawling_threshold(self, db:sqlite3.Connection) -> datetime.datetime | None:
+
+    def get_crawling_threshold(self, db:sqlite3.Connection, dataset: str | None = None) -> datetime.datetime | None:
         """Get the safe date from which we should restart incremental crawling of a website.
         We use the oldest among the last crawling date and the most recent page, to account
         for possibly badly-formed page dates set in the future at the time of crawling.
+
+        *dataset* scopes the threshold to a single source when several share one canonical DB.
         """
 
-        recent_page = self.get_most_recent_page(db)
-        recent_crawl = self.get_most_recent_crawl(db)
+        recent_page = self.get_most_recent_page(db, dataset)
+        recent_crawl = self.get_most_recent_crawl(db, dataset)
 
         return min((d for d in (recent_page, recent_crawl) if d is not None), default=None)
 

@@ -102,6 +102,13 @@ class web_page(TypedDict):
     content_hash: str
     """SHA1 hash of the parsed (normalized) content."""
 
+    dataset: str
+    """Name of the origin dataset/source this page was crawled for (e.g. 'pixls',
+    'github-ansel'). In a single canonical corpus DB that merges every source, this is
+    what lets the crawler recover a per-source 'last crawled' threshold
+    (MAX(crawled) WHERE dataset=?) and lets the search index be derived by including or
+    excluding whole sources. NULL on legacy rows until backfilled."""
+
 
 def sanitize_web_page(page: web_page) -> web_page:
     """Ensure existence and validity of `web_page` keys/values.
@@ -174,7 +181,10 @@ def sanitize_web_page(page: web_page) -> web_page:
 
     if "content_hash" not in page:
         page["content_hash"] = None
-    
+
+    if "dataset" not in page or page["dataset"] == "":
+        page["dataset"] = None
+
     if "lang" not in page:
         page["lang"] = None
 

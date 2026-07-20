@@ -56,7 +56,7 @@ sqlite3.register_adapter(list, dump_list_pickle)
 sqlite3.register_converter("list", load_list_pickle)
 
 
-def create_db(name: str) -> sqlite3.Connection:
+def create_db(name: str, url_primary_key: bool = True) -> sqlite3.Connection:
     """Create the `pages` table if needed and add any missing columns.
     This doesn't destroy existing tables, rows or columns, so it's safe
     to run on any database.
@@ -64,12 +64,28 @@ def create_db(name: str) -> sqlite3.Connection:
     Warning:
         Columns are inferred directly from `web_page.__annotations__`.
         Existing columns are preserved unchanged.
-    
-    The `url` column is used as the PRIMARY KEY.
+
+    Arguments:
+        url_primary_key:
+            ``True`` (default) — ``url`` is the PRIMARY KEY, i.e. a UNIQUE index. This is
+            required by the ``ON CONFLICT(url) DO UPDATE`` upsert used by
+            [core.database.import_pages][], and it silently collapses same-URL rows to one.
+            ``False`` — ``url`` is a plain (NON-unique) indexed column. Use this for a
+            **canonical dataset** the crawler writes into directly, where the same URL may
+            legitimately appear several times (a page mined via special HTML tags, as an
+            external whole-body capture, and under several parameter URLs) and duplication is
+            resolved by content-hash deduplication rather than enforced by the schema.
+            Lookups (``WHERE url = ?`` / ``url IN (…)``) stay O(log N) via the plain index;
+            only the uniqueness constraint and upsert capability are dropped.
+
+    Note:
+        This only affects a **freshly created** ``pages`` table. On an existing database the
+        table (and its key) are left as-is — switching an already-populated DB between the two
+        modes requires an explicit table rebuild.
     """
 
     connector = open_db(name, mode="bulk")
-    
+
     cursor = connector.cursor()
 
     keys = list(web_page.__annotations__.items())
@@ -83,13 +99,18 @@ def create_db(name: str) -> sqlite3.Connection:
         if sql_type is None:
             continue
 
-        # url acts as the primary key
-        if key == "url":
+        # url is the PRIMARY KEY only when uniqueness/upsert is wanted; otherwise it is a
+        # plain column indexed below, so the same URL may appear multiple times.
+        if key == "url" and url_primary_key:
             columns.append(f"{key} {sql_type} PRIMARY KEY")
         else:
             columns.append(f"{key} {sql_type}")
 
     cursor.execute(f"CREATE TABLE IF NOT EXISTS pages ({", ".join(columns)})")
+
+    # A non-unique index on url keeps URL lookups fast when url is not the PRIMARY KEY.
+    if not url_primary_key:
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_url ON pages(url)")
 
     # Fetch existing columns
     existing_columns = {
@@ -114,6 +135,114 @@ def create_db(name: str) -> sqlite3.Connection:
     print(cursor.execute("PRAGMA table_info(pages)").fetchall())
 
     return connector
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# Dataset provenance (multi-source membership)
+#
+# A page can legitimately originate from several sources (e.g. the same content crawled for
+# `ansel` and `ansel-old`, or an archived page recovered from a previous DB). To keep that
+# provenance through content deduplication — which collapses a content_hash group to one row —
+# the `dataset` column stores a SET of source names encoded as a delimited string
+# ",a,b,c," (leading/trailing commas as sentinels), so membership is a simple LIKE '%,name,%'.
+# ─────────────────────────────────────────────────────────────────────────────────────
+
+def dataset_tag(*names: str) -> str | None:
+    """Encode source names as the canonical ',a,b,' membership string (sorted, de-duplicated).
+    Accepts bare names or already-encoded tags (which are split and merged). Returns None if empty."""
+    out: set[str] = set()
+    for n in names:
+        if not n:
+            continue
+        for part in str(n).strip(",").split(","):
+            if part:
+                out.add(part)
+    return ("," + ",".join(sorted(out)) + ",") if out else None
+
+
+def dataset_membership_clause(sources: list[str], column: str = "dataset") -> tuple[str, list[str]]:
+    """Build an SQL predicate matching rows whose `dataset` set contains ANY of *sources*,
+    plus the bound parameters. Example: ``("(dataset LIKE ? OR dataset LIKE ?)", ["%,a,%", "%,b,%"])``."""
+    clause = " OR ".join(f"{column} LIKE ?" for _ in sources)
+    params = [f"%,{s},%" for s in sources]
+    return f"({clause})", params
+
+
+def merge_provenance_by_content_hash(db: sqlite3.Connection) -> int:
+    """Set every row's `dataset` to the UNION of all `dataset` sets sharing its `content_hash`,
+    so provenance survives content deduplication (which keeps a single row per content_hash).
+
+    Run BEFORE content-election dedup: while every source's copy still exists, each content_hash
+    group's rows all get the merged tag, so whichever row the election keeps carries the full set.
+    Only groups spanning more than one source are rewritten. Returns the number of such groups.
+
+    Implementation note: writes are keyed on `rowid` (the intrinsic key) in a single pass, NOT
+    on `content_hash` — `UPDATE … WHERE content_hash=?` would full-scan the table per group (no
+    content_hash index exists at this stage), which is O(groups × rows) and pathologically slow.
+    """
+    from collections import defaultdict
+    groups: dict[str, set] = defaultdict(set)
+    row_hash: list[tuple[int, str]] = []
+    for rowid, content_hash, ds in db.execute(
+        "SELECT rowid, content_hash, dataset FROM pages "
+        "WHERE content_hash IS NOT NULL AND dataset IS NOT NULL"
+    ):
+        row_hash.append((rowid, content_hash))
+        for name in str(ds).strip(",").split(","):
+            if name:
+                groups[content_hash].add(name)
+
+    # Precompute the merged tag only for multi-source groups.
+    merged_tag = {
+        content_hash: dataset_tag(*names)
+        for content_hash, names in groups.items()
+        if len(names) > 1
+    }
+    updates = [(merged_tag[ch], rowid) for rowid, ch in row_hash if ch in merged_tag]
+    if updates:
+        db.executemany("UPDATE pages SET dataset = ? WHERE rowid = ?", updates)
+        db.commit()
+    return len(merged_tag)
+
+
+def rebuild_provenance_index(db: sqlite3.Connection) -> int:
+    """(Re)build the ``page_datasets`` normalized index: one ``(dataset, page_rowid)`` row per
+    source a page belongs to, expanded from the delimited ``pages.dataset`` sets.
+
+    Why it matters: membership via ``dataset LIKE '%,x,%'`` can't use an index (leading wildcard),
+    so each per-source pull in the derivation is a FULL TABLE SCAN. On a warm cache that scan is
+    ~0.1s, but on the multi-GB canonical read cold from disk it re-reads the whole table every
+    time — 50 sources × the full DB of I/O. This index turns each pull into
+    ``rowid IN (SELECT page_rowid FROM page_datasets WHERE dataset = ?)`` — an index lookup that
+    reads only the matching rows. Cost is one scan to build it, versus 50 scans without.
+
+    Rebuild after any write to ``pages``. ``page_rowid`` is the pages rowid, stable under the
+    incremental compaction used here; a full ``VACUUM``/repack renumbers rowids, so rebuild after
+    one. Returns the number of (dataset, page) memberships indexed.
+    """
+    db.execute("DROP TABLE IF EXISTS page_datasets")
+    db.execute("CREATE TABLE page_datasets (dataset TEXT, page_rowid INTEGER)")
+
+    def expand():
+        for rowid, ds in db.execute("SELECT rowid, dataset FROM pages WHERE dataset IS NOT NULL"):
+            for name in str(ds).strip(",").split(","):
+                if name:
+                    yield (name, rowid)
+
+    db.executemany("INSERT INTO page_datasets (dataset, page_rowid) VALUES (?, ?)", expand())
+    db.execute("CREATE INDEX idx_page_datasets_dataset ON page_datasets (dataset)")
+    db.execute("CREATE INDEX idx_page_datasets_rowid ON page_datasets (page_rowid)")
+    db.commit()
+    n = db.execute("SELECT COUNT(*) FROM page_datasets").fetchone()[0]
+    print(f"Provenance index rebuilt: {n} (dataset, page) memberships")
+    return n
+
+
+def dataset_rowids_clause(source: str, column: str = "rowid") -> tuple[str, tuple]:
+    """SQL predicate + params selecting pages whose provenance set contains *source* via the
+    indexed ``page_datasets`` table (build it first with :func:`rebuild_provenance_index`). Example:
+    ``("rowid IN (SELECT page_rowid FROM page_datasets WHERE dataset = ?)", ("pixls",))``."""
+    return f"{column} IN (SELECT page_rowid FROM page_datasets WHERE dataset = ?)", (source,)
 
 
 def cleanup_temp_db():
@@ -906,6 +1035,7 @@ def _import_via_bridge(
     params: tuple,
     preserve_derived: list[str] | None = None,
     skip_unchanged: bool = False,
+    existing_keys: set | None = None,
 ) -> int:
     dest_cols = _table_columns(dest, "pages")
     src_cols  = set(_table_columns(source, "pages"))
@@ -916,35 +1046,40 @@ def _import_via_bridge(
         for col in dest_cols
     )
 
-    rows = source.execute(
-        f"SELECT {select_list} FROM pages WHERE {where_clause}", params
-    ).fetchall()
-
-    if not rows:
-        return 0
-
-    # Skip source rows whose (url, content_hash) already exist in the destination, so the
-    # merge scales with the delta. Live (often in-memory) sources can't be ATTACHed/joined,
-    # so we load the destination's (url, content_hash) pairs once and filter in Python.
-    if skip_unchanged and "content_hash" in src_cols and "content_hash" in dest_cols:
-        url_i  = dest_cols.index("url")
-        hash_i = dest_cols.index("content_hash")
-        existing = set(dest.execute("SELECT url, content_hash FROM pages"))
-        rows = [r for r in rows if (r[url_i], r[hash_i]) not in existing]
-        if not rows:
-            return 0
-
     quoted       = ", ".join(dest_cols)
     placeholders = ", ".join("?" * len(dest_cols))
     on_conflict  = _on_conflict_sql(dest_cols, pk_cols, preserve_derived)  # ← dynamic
+    insert_sql = f"INSERT INTO pages ({quoted}) VALUES ({placeholders}) {on_conflict}"
 
-    dest.executemany(f"""
-        INSERT INTO pages ({quoted})
-        VALUES ({placeholders})
-        {on_conflict}
-    """, rows)
+    # Skip source rows whose (url, content_hash) already exist in the destination, so the merge
+    # scales with the delta. `existing_keys` lets a caller doing MANY imports into one dest (e.g.
+    # the search-index derivation, 50 per-source pulls) load that set ONCE instead of re-querying
+    # the growing dest every call.
+    do_skip = skip_unchanged and "content_hash" in src_cols and "content_hash" in dest_cols
+    if do_skip:
+        url_i  = dest_cols.index("url")
+        hash_i = dest_cols.index("content_hash")
+        existing = existing_keys if existing_keys is not None else set(
+            dest.execute("SELECT url, content_hash FROM pages"))
 
-    return len(rows)
+    # Stream in batches instead of fetchall(): a source's rows carry full `content`/`parsed`
+    # text (tens of KB each), so materializing an entire source at once can consume gigabytes
+    # and OOM. fetchmany caps resident memory to one batch regardless of source size.
+    cursor = source.execute(f"SELECT {select_list} FROM pages WHERE {where_clause}", params)
+    total = 0
+    BATCH = 2048
+    while True:
+        batch = cursor.fetchmany(BATCH)
+        if not batch:
+            break
+        if do_skip:
+            batch = [r for r in batch if (r[url_i], r[hash_i]) not in existing]
+        if batch:
+            dest.executemany(insert_sql, batch)
+            total += len(batch)
+
+    dest.commit()
+    return total
 
 
 @timeit()
@@ -955,6 +1090,7 @@ def import_pages(
     params: tuple = (),
     preserve_derived: list[str] | None = None,
     skip_unchanged: bool = False,
+    existing_keys: set | None = None,
 ) -> int:
     """
     Import rows from one SQLite database into another.
@@ -1040,7 +1176,7 @@ def import_pages(
     try:
         if src_is_conn:
             # Live connections cannot be addressed via ATTACH; bridge through Python.
-            rowcount = _import_via_bridge(source_db, dest, where_clause, params, preserve_derived, skip_unchanged)
+            rowcount = _import_via_bridge(source_db, dest, where_clause, params, preserve_derived, skip_unchanged, existing_keys)
         else:
             # File paths can be ATTACHed for a single-statement INSERT … SELECT.
             rowcount = _import_via_attach(
@@ -1058,6 +1194,84 @@ def import_pages(
     dst_label = "<memory>" if dst_is_conn else destination_db
     print(f"Imported {rowcount} rows from {src_label} to {dst_label}")
     return rowcount
+
+
+# ─────────────────────────────────────────────────────────────────────────────────────
+# Delta sync
+#
+# The crawler maintains the canonical DB on the (weak, always-on) crawl server. The (powerful,
+# per-task) machine keeps its own copy and only needs the pages that changed since it last
+# synced. Because every write stamps `crawled = now`, the delta is simply the rows with
+# `crawled` newer than the target's own MAX(crawled) — no separate sync-state to track.
+#
+# Deletions are intentionally NOT propagated: the canonical is an archive that preserves
+# material even after it goes offline (see chantal-96 archival), so the target only ever
+# gains rows. A page whose content changed re-arrives with a new `crawled` and replaces its
+# old row via delete-by-url in apply_delta.
+# ─────────────────────────────────────────────────────────────────────────────────────
+
+def latest_crawled(db_name: str) -> str | None:
+    """MAX(`crawled`) of a canonical DB — the watermark a puller passes as `since` to get only
+    newer rows. Returns None for an empty/absent DB."""
+    try:
+        db = open_db(db_name, mode="ro")
+    except Exception:
+        return None
+    try:
+        return db.execute("SELECT MAX(crawled) FROM pages").fetchone()[0]
+    finally:
+        db.close()
+
+
+def export_delta(source_db: str, out_name: str, since: str | None = None) -> tuple[int, str | None]:
+    """Write into a fresh, transfer-sized SQLite DB (`out_name`) every source row with
+    ``crawled > since`` (all rows when *since* is None), preserving each row's `dataset`
+    provenance. Run on the crawl server; ship `out_name` to the puller.
+
+    Returns ``(row_count, max_crawled_in_delta)``.
+    """
+    out = create_db(out_name, url_primary_key=False)  # same schema, no PK (multi-variant allowed)
+    if since is None:
+        n = import_pages(source_db, out)
+    else:
+        n = import_pages(source_db, out, where_clause="crawled > ?", params=(since,))
+    max_crawled = out.execute("SELECT MAX(crawled) FROM pages").fetchone()[0]
+    close_db(out)
+    print(f"Delta export: {n} rows crawled after {since!r} → {out_name}")
+    return n, max_crawled
+
+
+def apply_delta(delta_name: str, target_db: str) -> int:
+    """Merge a delta DB (from :func:`export_delta`) into the target canonical copy.
+
+    For every URL present in the delta, the target's existing rows for that URL are dropped and
+    the delta's authoritative (already source-deduplicated, provenance-merged) rows inserted —
+    so an updated page replaces its old version while brand-new pages are simply added. A light
+    in-place dedup then resolves any content collisions the delta introduces against pre-existing
+    target rows. Returns the number of rows applied.
+    """
+    tgt = create_db(target_db, url_primary_key=False)
+    ensure_incremental_autovacuum(tgt)
+
+    delta = open_db(delta_name, mode="ro")
+    urls = [u for (u,) in delta.execute("SELECT DISTINCT url FROM pages WHERE url IS NOT NULL")]
+    delta.close()
+
+    # Replace the target's rows for the changed/new URLs, then insert the delta's rows.
+    tgt.executemany("DELETE FROM pages WHERE url = ?", [(u,) for u in urls])
+    tgt.commit()
+    n = import_pages(delta_name, tgt)
+
+    # Resolve any content duplicates the delta created against pre-existing target rows.
+    # Deferred import: deduplicator imports database at module load, so a top-level import here
+    # would be circular.
+    from . import deduplicator
+    deduplicator.Deduplicator(threshold=1.0).run_incremental(tgt, changed_urls=urls)
+
+    compress_db(tgt)
+    close_db(tgt)
+    print(f"Delta apply: {n} rows merged into {target_db} ({len(urls)} URLs touched)")
+    return n
 
 
 class SQLitePageCorpus:
