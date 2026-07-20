@@ -12,6 +12,7 @@ import copy
 import hashlib
 
 from urllib.parse import urljoin
+from email.utils import formatdate
 from charset_normalizer import from_bytes
 from dateutil.relativedelta import relativedelta
 
@@ -25,7 +26,7 @@ import sqlite3
 from . import patterns, utils
 from .pdf import get_pdf_content
 from .types import web_page, sanitize_web_page, compute_content_hash
-from .network import try_url, get_url, DelayedClass
+from .network import try_url, get_url, DelayedClass, HEADER
 from .parser import ParsedHTML
 
 
@@ -258,7 +259,7 @@ def parse_page(page: ParsedHTML,
             parsed=parsed,
             content_hash=content_hash,
         ))
-        print(result)
+        print(f"Parsed: {result['url']} [{result['lang']}] hash={result['content_hash'][:12]}")
         return [result]
     else:
         return []
@@ -444,10 +445,33 @@ class Crawler(DelayedClass):
         self.known_urls: dict[str, datetime.datetime] = dict(known_urls) if known_urls else {}
         """Mapping of URL → last-crawled datetime for incremental updates.
         Populated at construction time or via [load_known_urls][core.crawler.Crawler.load_known_urls].
-        
+
         Note:
             We strip leading and trailing `/` for generality, in URL keys.
         """
+
+        self.db: sqlite3.Connection | None = None
+        """Live connection to the canonical DB for the DB-native crawl flow. When set (by
+        pre_process_crawling_canonical), the crawler answers "is this URL known / this content
+        already indexed?" with on-demand indexed lookups against the DB, instead of the
+        preloaded `known_urls` / `known_content_hashes` sets — no large static structures in RAM.
+        Falls back to the preloaded sets when None (the legacy tarball flow)."""
+
+        self._session_content: set[str] = set()
+        """Canonical content_hash values produced in THIS crawl session (not yet persisted to the
+        DB when reads and writes are separate). Combined with the DB lookup so content reached
+        twice within one crawl is still deduplicated."""
+
+        self.dataset_name: str | None = None
+        """Origin dataset tag applied to pages written in the DB-native flow (set by
+        pre_process_crawling_canonical)."""
+
+        self._write_buffer: list = []
+        """Small buffer of pages awaiting a batched INSERT into `self.db` (DB-native flow).
+        Bounds memory and fsync churn instead of holding every crawled page in one big list."""
+
+        self._written_urls: set[str] = set()
+        """URLs written directly to `self.db` this crawl — the delta post_process deduplicates."""
 
         self.since: datetime.datetime | None = since
         """Global freshness cut-off for recursive and API-based crawling.
@@ -486,6 +510,20 @@ class Crawler(DelayedClass):
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
+        # Safety net: flush any buffered writes and close the connection if post_process didn't
+        # (e.g. crawl error, or a scraper that forgot the post step). Normal flow closes it in
+        # post_process, which sets self.db = None, so this branch is a no-op then.
+        if self.db is not None:
+            try:
+                self._flush_writes()
+            except Exception:
+                pass
+            try:
+                self.db.close()
+            except Exception:
+                pass
+            self.db = None
+
         print("PROCESSED URLS:", len(set(self.crawled_URL)))
         print("404 ERRORS:", len(set(self.notfound)))
         for error in set(self.notfound):
@@ -577,6 +615,206 @@ class Crawler(DelayedClass):
         return count
 
 
+    # ── DB-native known-state lookups ──────────────────────────────────────────────────
+    # These answer "have we seen this URL / this content before?" without preloading the whole
+    # index into RAM: when `self.db` is set they query it on demand (url and content_hash are
+    # indexed, so each lookup is O(log n)); otherwise they use the legacy preloaded sets.
+
+    def _known_last_crawled(self, url: str) -> datetime.datetime | None:
+        """Most recent `crawled` datetime recorded for *url* (None if never crawled)."""
+        if self.db is not None:
+            row = self.db.execute(
+                "SELECT MAX(crawled) FROM pages WHERE url = ? OR wayback = ?",
+                (url, url),
+            ).fetchone()
+            val = row[0] if row else None
+            if not val:
+                return None
+            return _normalize_tz(datetime.datetime.fromisoformat(val) if isinstance(val, str) else val)
+        # Legacy: preloaded map (keyed on stripped url).
+        val = self.known_urls.get(url.strip("/"))
+        return _normalize_tz(val) if val else None
+
+    def _site_last_crawled(self, website: str) -> datetime.datetime | None:
+        """Most recent time we crawled ANY page of *website*'s domain (None if never / no DB).
+        Used as the `If-Modified-Since` reference for the site-level sitemap gate."""
+        addr = patterns.split_url(website)
+        if not addr or self.db is None:
+            return self.since
+        domain = addr[1]
+        row = self.db.execute(
+            "SELECT MAX(crawled) FROM pages WHERE url LIKE ? OR url LIKE ?",
+            (f"https://{domain}/%", f"http://{domain}/%"),
+        ).fetchone()
+        val = row[0] if row else None
+        if val:
+            return _normalize_tz(datetime.datetime.fromisoformat(val) if isinstance(val, str) else val)
+        return self.since
+
+    def _sitemap_unmodified(self, sitemap_url: str, since: datetime.datetime | None) -> bool:
+        """Site-level change gate for full-redeploy static sites (doxygen, most static-site
+        generators): every file — sitemap.xml included — receives one uniform deploy mtime, so a
+        single conditional request on the sitemap reveals whether ANYTHING was redeployed since we
+        last crawled. There is no reliable per-page date on such sites (no `<lastmod>`, and the HTTP
+        `Last-Modified`/`ETag` is the deploy timestamp, identical across all pages), so this whole-
+        site check is the finest-grained cheap signal available; per-page `content_hash` dedup then
+        filters which pages were *actually* changed once we do crawl.
+
+        Returns True (skip the whole site) only on an explicit `304 Not Modified`. Any error,
+        missing `Last-Modified`, or first-ever crawl (`since is None`) falls through to False so we
+        crawl normally — the gate can only ever *save* requests, never hide a change."""
+        if since is None:
+            return False
+        addr = patterns.split_url(sitemap_url)
+        domain = addr[1] if addr else ""
+        try:
+            self.sleep(domain, self.delay)  # respect the crawl rate for the probe
+            resp = requests.head(
+                sitemap_url,
+                headers={**HEADER, "If-Modified-Since": formatdate(since.timestamp(), usegmt=True)},
+                timeout=20, allow_redirects=True,
+            )
+            if resp.status_code == 304:
+                return True
+        except Exception as e:
+            print(f"[sitemap-gate] {sitemap_url}: conditional check failed ({e}); crawling normally")
+        return False
+
+    def _content_known(self, content_hash: str | None) -> bool:
+        """Whether *content_hash* was already produced this session or is persisted in the DB."""
+        if not content_hash:
+            return False
+        if content_hash in self._session_content:
+            return True
+        if self.db is not None:
+            return self.db.execute(
+                "SELECT 1 FROM pages WHERE content_hash = ? LIMIT 1", (content_hash,)
+            ).fetchone() is not None
+        return content_hash in self.known_content_hashes
+
+    def _mark_content_seen(self, content_hash: str | None) -> None:
+        """Record a content_hash produced this session so later pages dedup against it even before
+        it is persisted."""
+        if content_hash:
+            self._session_content.add(content_hash)
+
+
+    def _emit(self, pages: list) -> int:
+        """Central sink for freshly-produced pages, and the ONLY way pages leave the crawler. The
+        crawler is DB-native: it never returns a `list[web_page]`. Each produced page is deduped
+        against known content (this session or persisted) and, if new, written straight into
+        `self.db` (buffered) — so the caller keeps nothing in RAM.
+
+        Returns the number of pages actually written (survivors after content dedup), purely so
+        callers can log progress; the pages themselves are already in the DB."""
+        if self.db is None:
+            raise RuntimeError(
+                "Crawler is DB-native: set cr.db before crawling (scraping.pre_process_crawling / "
+                "pre_process_crawling_canonical). _emit has no in-RAM fallback.")
+        written = 0
+        for page in pages:
+            content_hash = page.get("content_hash")
+            if self._content_known(content_hash):
+                print(f"Skip (duplicate content): {page.get('url')}")
+                continue
+            self._mark_content_seen(content_hash)
+            if self.dataset_name:
+                page["dataset"] = f",{self.dataset_name},"
+            self._write_buffer.append(page)
+            if page.get("url"):
+                self._written_urls.add(page["url"])
+            if len(self._write_buffer) >= 100:
+                self._flush_writes()
+            written += 1
+        return written
+
+
+    def _flush_writes(self) -> None:
+        """Flush the buffered pages into `self.db` with a batched INSERT (no URL primary key on the
+        canonical, so old versions of a re-crawled URL coexist and post_process's URL-election keeps
+        the newest). Deferred import: `database` imports `crawler`, so importing it here avoids the
+        module-load cycle."""
+        if self._write_buffer and self.db is not None:
+            from . import database
+            database.populate_db(self.db, self._write_buffer)
+            self._write_buffer.clear()
+
+
+    # ── DB-native crawl lifecycle ──────────────────────────────────────────────────────
+    # A DB-native crawl is bracketed by begin_dataset() / commit_dataset(): the first attaches
+    # the corpus DB the crawler reads known state from and writes pages into, the second finalizes
+    # and closes it. Generic (no project-specific DB name); a caller supplies the DB.
+
+    def begin_dataset(self, db, dataset_name: str) -> None:
+        """Attach a corpus DB for a DB-native crawl of *dataset_name* and compute the incremental
+        crawl-since threshold from it.
+
+        *db* is either an open ``sqlite3.Connection`` or a DB name (created no-URL-PK if absent, so
+        the same URL may be captured several ways and dedup elects the best). The crawler then
+        answers known-URL / known-content lookups from this DB and writes each produced page
+        straight into it; :meth:`commit_dataset` finalizes and closes it.
+        """
+        from . import database
+        conn = database.create_db(db, url_primary_key=False) if isinstance(db, str) else db
+        database.ensure_incremental_autovacuum(conn)
+        self.db = conn
+        self.dataset_name = dataset_name
+        self.since = self.get_crawling_threshold(conn, dataset=dataset_name)
+        print(f"Crawling {dataset_name!r} since {self.since} (DB-native lookups)")
+
+    def commit_dataset(self, dataset_name: str) -> None:
+        """Finalize the DB-native crawl opened by :meth:`begin_dataset`: flush buffered writes, fill
+        `parsed`/`content_hash` for rows that arrived without them (PDFs / API items that skip
+        parse_page), merge multi-source provenance, deduplicate this crawl's delta in place (URL +
+        content election), compress, and close the DB.
+
+        Only the delta (`self._written_urls`) is deduplicated — a re-crawled page's fresh row
+        supersedes its old one via URL-election, so no delete-by-url is needed. No-op fast path when
+        nothing was written.
+        """
+        from . import database, deduplicator, batching
+        db = self.db
+        if db is None:
+            raise RuntimeError("commit_dataset requires a prior begin_dataset (cr.db unset)")
+        database.ensure_incremental_autovacuum(db)
+        self._flush_writes()
+
+        before = db.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+        before_src = db.execute("SELECT COUNT(*) FROM pages WHERE dataset LIKE ?",
+                                (f"%,{dataset_name},%",)).fetchone()[0]
+        urls = list(self._written_urls)
+        print(f"[{dataset_name}] {len(urls)} URLs touched (direct-written); "
+              f"DB before {before} rows ({before_src} tagged {dataset_name!r})")
+
+        if not urls:
+            print(f"[{dataset_name}] nothing new/changed — DB unchanged")
+            database.compress_db(db)
+            database.close_db(db)
+            self.db = None
+            return
+
+        n_unparsed = db.execute("SELECT COUNT(*) FROM pages WHERE parsed IS NULL").fetchone()[0]
+        if n_unparsed:
+            print(f"[{dataset_name}] parsing {n_unparsed} rows still missing `parsed`…")
+            batching.batch_parse_web_page(db, self.tokenizer, only_none=True)
+
+        # Merge provenance before dedup so a page whose content matches another source's copy keeps
+        # both dataset tags when content-election collapses them.
+        merged = database.merge_provenance_by_content_hash(db)
+        print(f"[{dataset_name}] provenance merged across {merged} multi-source content groups")
+
+        deduplicator.Deduplicator(threshold=1.0).run_incremental(db, changed_urls=urls)
+
+        database.compress_db(db)  # cheap incremental_vacuum
+        after = db.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+        after_src = db.execute("SELECT COUNT(*) FROM pages WHERE dataset LIKE ?",
+                               (f"%,{dataset_name},%",)).fetchone()[0]
+        print(f"[{dataset_name}] DB after: {after} rows total ({after - before:+d}), "
+              f"{after_src} tagged {dataset_name!r} ({after_src - before_src:+d})")
+        database.close_db(db)
+        self.db = None
+
+
     def get_most_recent_page(self, db:sqlite3.Connection, dataset: str | None = None) -> datetime.datetime | None:
         """Get the datetime of the most recent `web_page` indexed in the `db` database.
 
@@ -640,7 +878,7 @@ class Crawler(DelayedClass):
         return False
 
 
-    def get_immediate_links(self, links: list[str], domain, default_lang, langs, category, contains_str, internal_links: str = "any", mine_pdf = False) -> list[web_page]:
+    def get_immediate_links(self, links: list[str], domain, default_lang, langs, category, contains_str, internal_links: str = "any", mine_pdf = False) -> int:
         """Follow internal and external links contained in a webpage only to one recursivity level,
         including PDF files and HTML pages. This is useful to index references docs linked from a page.
 
@@ -652,11 +890,11 @@ class Crawler(DelayedClass):
                 - `ignore`: don't follow links found in page content.
 
         Returns:
-            list of links targets content
+            number of pages written to the DB from the followed links.
         """
-        output = []
+        written = 0
         if internal_links == "ignore":
-            return output
+            return written
 
         for nextURL in links:
             if hash_with_category(nextURL, category) in self.crawled_URL:
@@ -688,9 +926,9 @@ class Crawler(DelayedClass):
                     # because we have no idea what the external URL is.
                     category = "external"
 
-                output += self.get_website_from_crawling(current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, mine_pdf=mine_pdf, _recursion_level=0, _mainthread=False)
+                written += self.get_website_from_crawling(current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, mine_pdf=mine_pdf, _recursion_level=0, _mainthread=False)
 
-        return output
+        return written
 
 
     def update_link(self, old_link: str, new_link: str | None, category: str, status_code: int) -> str:
@@ -736,7 +974,7 @@ class Crawler(DelayedClass):
                                   restrict_section: bool = False,
                                   mine_pdf: bool = False,
                                   _recursion_level: int = 0,
-                                  _mainthread: bool = True) -> list[web_page]:
+                                  _mainthread: bool = True) -> int:
         """Recursively crawl all pages of a website from internal links found starting from the `child` page. This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from the current domain or from external domains but referenced on HTML pages of the current domain.
 
         Arguments:
@@ -791,22 +1029,22 @@ class Crawler(DelayedClass):
             >>> cr = crawler.Crawler()
             >>> pages = cr.get_website_from_crawling("https://aurelienpierre.com", default_lang="fr", markup=("div", { "class": "post-content" }))
         """
-        output = []
+        written = 0
         index_url = radical_url(website + child)
         #print("trying", index_url)
 
         if self.discard_link(index_url):
             #print("no follow")
-            return output
+            return written
 
         # Abort now if the page was already crawled or recursion level reached
         if hash_with_category(index_url, category) in self.crawled_URL:
             #print("already crawled")
-            return output
+            return written
 
         if max_recurse_level > -1 and _recursion_level >= max_recurse_level:
             #print("max recursivity level reached")
-            return output
+            return written
 
         # Incremental update: skip pages that are still fresh according to self.since,
         # except of course for the recursion entry point which acts as our index.
@@ -817,13 +1055,12 @@ class Crawler(DelayedClass):
         # is_apex means we are at the first stage of recursion from true recursive crawling
         is_apex = (_mainthread == True) and (_recursion_level == 0)
 
-        if not is_apex and self.since is not None and index_url in self.known_urls:
-            stripped_url = index_url.strip("/")
-            last_crawled = _normalize_tz(self.known_urls[stripped_url])
+        last_crawled = self._known_last_crawled(index_url) if (not is_apex and self.since is not None) else None
+        if last_crawled is not None:
             if last_crawled >= (_normalize_tz(self.since) - relativedelta(months=3)):
                 print(f"Skip (recent): {index_url}")
-                self.update_link(index_url, stripped_url, category, 200)
-                return output
+                self.update_link(index_url, index_url.strip("/"), category, 200)
+                return written
             else:
                 print(f"{index_url} has no crawling date or was crawled too long ago, will be recrawled")
         elif _recursion_level > 0:
@@ -833,7 +1070,7 @@ class Crawler(DelayedClass):
         address = patterns.split_url(website)
         if not address:
             print("%s can't be parsed as URL" % website)
-            return output
+            return written
 
         protocol, domain, page, params, anchor = address
         include = check_contains(contains_str, index_url)
@@ -849,13 +1086,13 @@ class Crawler(DelayedClass):
 
         if self.discard_link(index_url) or not status:
             #print("no follow")
-            return output
+            return written
 
         # FIXME: we nest 7 levels of if here. It's ugly but I don't see how else
         # to cover so many cases.
         if "pdf" in content_type:
             #print("got pdf")
-            output += self._parse_pdf_content(index_url, default_lang, category=category, delay=self)
+            written += self._parse_pdf_content(index_url, default_lang, category=category, delay=self)
             # No link to follow from PDF docmuents
             
         elif "text" in content_type \
@@ -874,31 +1111,21 @@ class Crawler(DelayedClass):
                 # Can't get any more clever with URLs, so we check content hash here.
                 content_hash = hash_with_category(index.body.text, category)
                 if content_hash in self.crawled_content:
-                    return output
+                    return written
                 else:
                     self.crawled_content.append(content_hash)
 
                 #print("MARKUP:", markup, "URL:", index_url, "CATEGORY:", category, "RESTRICT:", restrict_section, "DOMAIN:", domain, "RECURSE:", _recursion_level)
                     
-                # Parse current page content
+                # Parse current page content. _parse_original / _parse_translations funnel through
+                # _emit, which applies content dedup-at-crawl (drop pages whose canonical content is
+                # already indexed, under any URL, this crawl or a previous one) and either writes each
+                # survivor directly to the DB (returning []) or returns it for the legacy list. Link-
+                # following below is intentionally left untouched so the incremental crawl still
+                # discovers new URLs from unchanged index pages.
                 if include or _recursion_level == 0:
-                    produced = self._parse_original(index, index_url, default_lang, markup, None, category)
-                    produced += self._parse_translations(index, domain, index_url, markup, None, langs, category)
-
-                    # Content dedup: drop pages whose canonical content is already indexed
-                    # (under any URL, this crawl or a previous one — content_hash was seeded
-                    # from the index by load_known_content and is computed at crawl time in
-                    # parse_page). Link-following below is intentionally left untouched so the
-                    # incremental crawl still discovers new URLs from unchanged index pages.
-                    for candidate in produced:
-                        content_hash = candidate.get("content_hash")
-                        if content_hash and content_hash in self.known_content_hashes:
-                            print(f"Skip (duplicate content): {candidate['url']}")
-                            continue
-                        if content_hash:
-                            self.known_content_hashes.add(content_hash)
-                        output.append(candidate)
-                    #print("page object")
+                    written += self._parse_original(index, index_url, default_lang, markup, None, category)
+                    written += self._parse_translations(index, domain, index_url, markup, None, langs, category)
                     
                 # Follow internal links whether or not this page was mined, if we didn't reach the final recursion level
                 if _recursion_level + 1 != max_recurse_level:
@@ -919,7 +1146,7 @@ class Crawler(DelayedClass):
                             # Recurse only through local pages, aka :
                             # 1. domains match
                             #print("recursing", currentURL)
-                            output += self.get_website_from_crawling(
+                            written += self.get_website_from_crawling(
                                 website, default_lang, child=current_page + current_params, langs=langs, markup=markup, contains_str=contains_str, mine_pdf=mine_pdf,
                                 _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category,
                                 _mainthread=False)
@@ -928,7 +1155,7 @@ class Crawler(DelayedClass):
                             # 1. domains match
                             # 2. current page is in a subsection of current child
                             #print("recursing bis", currentURL, "domain:", domain, "-", current_domain, "child:", child, "-", current_page)
-                            output += self.get_website_from_crawling(
+                            written += self.get_website_from_crawling(
                                 website, default_lang, child=current_page + current_params, langs=langs, markup=markup, contains_str=contains_str, mine_pdf=mine_pdf,
                                 _recursion_level=_recursion_level + 1, max_recurse_level=max_recurse_level, restrict_section=restrict_section, category=category,
                                 _mainthread=False)
@@ -936,14 +1163,14 @@ class Crawler(DelayedClass):
                             # Follow internal links on only one recursivity level
                             # Aka HTML reference pages (Wikipedia) and attached PDF (docs, manuals, spec sheets)
                             #print("following local", currentURL, "domain:", domain, "-", current_domain, "child:", child, "-", current_page)
-                            output += self.get_website_from_crawling(
+                            written += self.get_website_from_crawling(
                                 current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, contains_str="", max_recurse_level=1,
                                 mine_pdf=mine_pdf, restrict_section=restrict_section, category=category, _recursion_level=0, _mainthread=False)
                         elif include and domain != current_domain:
                             # Follow external links on only one recursivity level.
                             # Aka HTML reference pages (Wikipedia) and attached PDF (docs, manuals, spec sheets)
                             #print("following distant", currentURL)
-                            output += self.get_website_from_crawling(
+                            written += self.get_website_from_crawling(
                                 current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, contains_str="", max_recurse_level=1,
                                 mine_pdf=mine_pdf, restrict_section=restrict_section, category="external", _recursion_level=0, _mainthread=False)
                         else:
@@ -951,7 +1178,7 @@ class Crawler(DelayedClass):
                             pass
 
                 if mine_pdf:
-                    output += self._parse_internal_pdfs(index, domain, index_url, default_lang, category)
+                    written += self._parse_internal_pdfs(index, domain, index_url, default_lang, category)
                     
             else:
                 # No index, aka no ParsedHTML HTML content.
@@ -959,19 +1186,18 @@ class Crawler(DelayedClass):
                 # advertising content-type=text/html but UTF8 codecs
                 # fail to decode because it's actually not HTML but PDF.
                 # If we end up here, it's most likely what we have.
-                output += self._parse_pdf_content(index_url, default_lang, category=category, delay=self)
+                written += self._parse_pdf_content(index_url, default_lang, category=category, delay=self)
                 #print("no page object")
         else:
             # Got an image, video, compressed file, binary, etc.
             #print("nothing done")
             pass
 
-         # Process internal links found in pages
+        # Process internal links found in pages
         if _mainthread:
-            print("OUTPUT", type(output))
-            print("FINAL NUMBER of POSTS:", len(output))
+            print("FINAL NUMBER of POSTS:", written)
 
-        return output
+        return written
 
 
     def get_website_from_sitemap(self,
@@ -984,7 +1210,7 @@ class Crawler(DelayedClass):
                                  contains_str: str | list[str] = "",
                                  internal_links: str = "any",
                                  mine_pdf: bool = False,
-                                 _recursion_level: int = 0) -> list[web_page]:
+                                 _recursion_level: int = 0) -> int:
         """Recursively crawl all pages of a website from links found in a sitemap. 
         This applies to all HTML pages hosted on the domain of `website` and to PDF documents either from 
         the current domain or from external domains but referenced on HTML pages of the current domain. 
@@ -1016,25 +1242,33 @@ class Crawler(DelayedClass):
             >>> cr = crawler.Crawler()
             >>> pages = cr.get_website_from_sitemap("https://aurelienpierre.com", default_lang="fr", markup=("div", { "class": "post-content" }))
         """
-        output = []
+        written = 0
 
         index_url = website + sitemap
+
+        # Site-level change gate: a full-redeploy static site stamps sitemap.xml with the same deploy
+        # mtime as its pages, so one conditional request tells us whether ANYTHING changed since our
+        # last crawl. On 304 we skip the entire site with a single request instead of probing every
+        # URL; on any other outcome we crawl normally and let per-page content-hash dedup filter.
+        if self._sitemap_unmodified(index_url, self._site_last_crawled(website)):
+            print(f"[sitemap-gate] {index_url} unmodified since last crawl — skipping {website} entirely")
+            return written
 
         content_type, status, new_url, custom_header, status_code = get_content_type(index_url, self, bypass_robots_txt=True)
         index_url = self.update_link(index_url, new_url, category, status_code)
 
         if not status:
-            return output
+            return written
 
         index_page, new_url, status_code = get_page_content(index_url, self, custom_header=custom_header)
         if index_page is None:
             self.update_link(index_url, new_url, category, status_code)
-            return output
+            return written
 
         address = patterns.split_url(website)
         if not address:
             print("%s can't be parsed as URL" % website)
-            return output
+            return written
 
         protocol, domain, page, params, anchor = address
         super().__init__(protocol, domain, self.delay, 30)
@@ -1050,13 +1284,30 @@ class Crawler(DelayedClass):
             url = link.find("loc").get_text()
             print(url)
             _sitemap = re.sub(r"(http)?s?(\:\/\/)?%s" % domain, "", url)
-            output += self.get_website_from_sitemap(website, default_lang, sitemap=_sitemap, langs=langs, markup=markup, category=category, internal_links=internal_links, _recursion_level=_recursion_level+1)
+            written += self.get_website_from_sitemap(website, default_lang, sitemap=_sitemap, langs=langs, markup=markup, category=category, internal_links=internal_links, _recursion_level=_recursion_level+1)
 
         # Process pages
         for link in index_page.find_all('url'):
-            output += self._sitemap_process(domain, website, sitemap, link, default_lang, langs, markup, category, internal_links, contains_str, mine_pdf, _recursion_level)
+            written += self._sitemap_process(domain, website, sitemap, link, default_lang, langs, markup, category, internal_links, contains_str, mine_pdf, _recursion_level)
 
-        return output
+        return written
+
+
+    def emit(self, pages: list) -> int:
+        """Public entry point for pages built OUTSIDE the crawl loop (e.g. from local files/exports):
+        applies content dedup-at-crawl and writes each survivor into the DB. Returns the count
+        written. Thin wrapper over the internal `_emit` sink."""
+        return self._emit(pages)
+
+
+    def get_pdf(self, url: str, default_lang: str = "en", category: str = "",
+                file_path: str | None = None, custom_header: dict = {}, **kwargs) -> int:
+        """Crawl a single PDF document (from the network, or from *file_path* if given) straight
+        into the DB. DB-native: the parsed page goes through `_emit` (content dedup-at-crawl +
+        buffered write); returns the number of pages written. Public entry point for PDF-only
+        scrapers that previously did `crawler.get_pdf_content(...)` + `save_data`."""
+        return self._emit(get_pdf_content(url, default_lang, delay=self, file_path=file_path,
+                                          category=category, custom_header=custom_header, **kwargs))
 
 
     def get_unique_internal_url(self, page: ParsedHTML, domain: str, currentURL:str) -> list[str]:
@@ -1070,15 +1321,15 @@ class Crawler(DelayedClass):
                      if not self.discard_link(url) and ".pdf" not in url.lower()})
 
 
-    def _sitemap_process(self, domain, website, sitemap, link, default_lang, langs, markup, category, internal_links, contains_str, mine_pdf, _recursion_level) -> list[web_page]:
-        output = []
+    def _sitemap_process(self, domain, website, sitemap, link, default_lang, langs, markup, category, internal_links, contains_str, mine_pdf, _recursion_level) -> int:
+        written = 0
         url = link.find("loc")
         date = link.find("lastmod")
 
         if not url:
             print("No URL found in ", link)
             # Nothing to process, ignore this item
-            return output
+            return written
 
         date = date.get_text() if date else None
 
@@ -1086,12 +1337,12 @@ class Crawler(DelayedClass):
         include = check_contains(contains_str, currentURL)
 
         if not include or self.discard_link(currentURL):
-            return output
+            return written
 
         # Incremental update: skip pages that haven't changed since last crawl.
         # Priority: sitemap's own <lastmod> field > self.since fallback.
         stripped_url = currentURL.strip("/")
-        last_crawled = self.known_urls.get(stripped_url)
+        last_crawled = self._known_last_crawled(currentURL)
         if last_crawled is not None:
             last_crawled = _normalize_tz(last_crawled)
             if date:
@@ -1100,16 +1351,15 @@ class Crawler(DelayedClass):
                     if last_crawled >= lastmod:
                         print(f"Skip (unchanged): {currentURL}")
                         self.update_link(currentURL, stripped_url, category, 200)
-                        return output
+                        return written
                 except (ValueError, TypeError):
                     print(f"{currentURL} has unparseable date, will be recrawled")
                     pass  # unparseable date — crawl anyway
-            elif self.since is not None:
-                # No <lastmod> in sitemap — use global since cut-off
-                if last_crawled >= _normalize_tz(self.since):
-                    print(f"Skip (recent): {currentURL}")
-                    self.update_link(currentURL, stripped_url, category, 200)
-                    return output
+            # No usable <lastmod> in this sitemap entry: there is no reliable per-page date to skip
+            # on (see _sitemap_unmodified). We deliberately do NOT skip by last-crawled here — the
+            # cheap whole-site skip is the sitemap gate in get_website_from_sitemap, and if we
+            # reached this page the site was (re)deployed since our last crawl, so we must re-fetch
+            # and let content-hash dedup (_emit) decide whether the content actually changed.
         else:
             print(f"{currentURL} is unknown")
 
@@ -1118,26 +1368,26 @@ class Crawler(DelayedClass):
         currentURL = self.update_link(currentURL, new_url, category, status_code)
 
         if not status:
-            return output
+            return written
 
         page, new_url, status_code = get_page_content(currentURL, self, custom_header=custom_header)
         currentURL = self.update_link(currentURL, new_url, category, status_code)
 
         if page is not None:
             # We got a proper web page, parse it
-            output += self._parse_original(page, currentURL, default_lang, markup, date, category)
-            output += self._parse_translations(page, domain, currentURL, markup, date, langs, category)
-            output += self._parse_internal_pdfs(page, domain, currentURL, default_lang, category)
+            written += self._parse_original(page, currentURL, default_lang, markup, date, category)
+            written += self._parse_translations(page, domain, currentURL, markup, date, langs, category)
+            written += self._parse_internal_pdfs(page, domain, currentURL, default_lang, category)
 
             # Follow internal and external links found in body
             # Since this is recursion from whithin page links, we have to flag the category as "external"
             # to distinguish from pages crawled from the sitemap in case we get both flavours.
             # The rationale is pages crawled from sitemap may target selective (clean) HTML tags, and produce better quality
-            # data/content than external recursively-crawled pages, that fetch the whole <body> 
+            # data/content than external recursively-crawled pages, that fetch the whole <body>
             # (including non-data/formatting, like sidebars, nav menus, etc.).
-            output += self.get_immediate_links(self.get_unique_internal_url(page, domain, currentURL), domain, default_lang, langs, "external", contains_str, internal_links=internal_links, mine_pdf=mine_pdf)
+            written += self.get_immediate_links(self.get_unique_internal_url(page, domain, currentURL), domain, default_lang, langs, "external", contains_str, internal_links=internal_links, mine_pdf=mine_pdf)
 
-        return output
+        return written
 
 
     def get_youtube_channels(self,
@@ -1145,7 +1395,7 @@ class Crawler(DelayedClass):
                               api_key: str,
                               default_lang: str = "en",
                               category: str = "video",
-                              since: datetime.datetime | None = None) -> list[web_page]:
+                              since: datetime.datetime | None = None) -> int:
         """Index YouTube channels via the Data API v3 (no OAuth required).
 
         Retrieves the full upload list for each channel by walking the channel's
@@ -1201,7 +1451,7 @@ class Crawler(DelayedClass):
             database.populate_db(db, pages)
             ```
         """
-        output: list[web_page] = []
+        written = 0
         effective_since = since or self.since
         cutoff = _normalize_tz(effective_since) if effective_since else None
 
@@ -1248,8 +1498,9 @@ class Crawler(DelayedClass):
                     published  = snippet.get("publishedAt", "")
 
                     # Incremental skip
-                    if cutoff is not None and video_url in self.known_urls:
-                        if _normalize_tz(self.known_urls[video_url]) >= cutoff:
+                    if cutoff is not None:
+                        vlast = self._known_last_crawled(video_url)
+                        if vlast is not None and vlast >= cutoff:
                             continue
 
                     if hash_with_category(video_url, category) in self.crawled_URL:
@@ -1293,16 +1544,16 @@ class Crawler(DelayedClass):
                         h2       = [],
                         crawled  = datetime.datetime.now(datetime.timezone.utc),
                     ))
-                    output.append(page)
-                    print(page)
+                    written += self._emit([page])
+                    print(f"[YouTube] {page['url']}: {page['title']}")
 
                 page_token = playlist_data.get("nextPageToken", "")
                 if not page_token:
                     break
 
-            print(f"[YouTube] Channel {channel_id}: {len(output)} videos indexed so far")
+            print(f"[YouTube] Channel {channel_id}: {written} videos indexed so far")
 
-        return output
+        return written
 
 
     def get_github_repositories(self,
@@ -1312,7 +1563,7 @@ class Crawler(DelayedClass):
                                  langs: tuple[str, ...] = ("en", "fr"),
                                  category: str = "Github",
                                  since: datetime.datetime | None = None,
-                                 mine_pdf: bool = True) -> list[web_page]:
+                                 mine_pdf: bool = True) -> int:
         """Index GitHub repository content via the REST API.
 
         Supported *features*: ``"issues"``, ``"pulls"``, ``"commits"``,
@@ -1379,7 +1630,7 @@ class Crawler(DelayedClass):
         if features is None:
             features = ["issues", "pulls", "commits", "discussions"]
 
-        output: list[web_page] = []
+        written = 0
         posts_per_page = 100  # GitHub API maximum
 
         effective_since = since or self.since
@@ -1431,10 +1682,10 @@ class Crawler(DelayedClass):
             return results
 
         def _item_to_pages(item_url: str, title: str, body: str,
-                            date: str | None) -> list[web_page]:
+                            date: str | None) -> int:
             """Parse a Markdown body into web_page objects and follow external links."""
             if hash_with_category(item_url, category) in self.crawled_URL:
-                return []
+                return 0
             self.crawled_URL.append(hash_with_category(item_url, category))
 
             html = (
@@ -1444,9 +1695,9 @@ class Crawler(DelayedClass):
             )
             entry, _, _ = get_page_content(None, self, content=html)
             if entry is None:
-                return []
+                return 0
 
-            pages = parse_page(entry, item_url, "en", "body", date, category, tokenizer=self.tokenizer)
+            pages = self._emit(parse_page(entry, item_url, "en", "body", date, category, tokenizer=self.tokenizer))
 
             # Extract bare URLs from raw Markdown (regex match covers URLs that are
             # not wrapped in Markdown link syntax and thus absent from the rendered HTML)
@@ -1528,11 +1779,11 @@ class Crawler(DelayedClass):
                                 body_parts.append(comment["body"])
 
                     full_body = "\n\n---\n\n".join(filter(None, body_parts))
-                    output += _item_to_pages(item_url, full_title, full_body, date)
+                    written += _item_to_pages(item_url, full_title, full_body, date)
 
-            print(f"[GitHub] {owner}/{repo}: {len(output)} total pages indexed so far")
+            print(f"[GitHub] {owner}/{repo}: {written} total pages indexed so far")
 
-        return output
+        return written
 
 
     def get_stackexchange_posts(self,
@@ -1543,7 +1794,7 @@ class Crawler(DelayedClass):
                                  since: datetime.datetime | None = None,
                                  window_days: int = 90,
                                  earliest_date: datetime.datetime | None = None,
-                                 se_filter: str = "!14e92L7CSAvro*ufn5-s.s23LqfumIAci09lv0z)*cLWPr") -> list[web_page]:
+                                 se_filter: str = "!14e92L7CSAvro*ufn5-s.s23LqfumIAci09lv0z)*cLWPr") -> int:
         """Index a Stack Exchange community via the public API v2.3.
 
         Retrieves all posts (questions, answers) together with their embedded
@@ -1639,31 +1890,32 @@ class Crawler(DelayedClass):
 
         effective_since = since or self.since
         _earliest = earliest_date or datetime.datetime(2010, 1, 1, tzinfo=datetime.timezone.utc)
-        output: list[web_page] = []
+        written = 0
 
         # ── internal helpers ──────────────────────────────────────────────────
 
-        def _item_to_pages(post: dict) -> list[web_page]:
+        def _item_to_pages(post: dict) -> int:
             """Convert a single SE API post dict to web_page objects."""
             post_url = post.get("link", "")
             if not post_url:
-                return []
+                return 0
 
             # Incremental: skip posts unchanged since last crawl
             last_edit_ts = post.get("last_edit_date") or post.get("creation_date")
-            if last_edit_ts and post_url in self.known_urls:
+            post_last_crawled = self._known_last_crawled(post_url) if last_edit_ts else None
+            if post_last_crawled is not None:
                 try:
                     post_dt = _normalize_tz(
                         datetime.datetime.fromtimestamp(last_edit_ts,
                                                         tz=datetime.timezone.utc)
                     )
-                    if _normalize_tz(self.known_urls[post_url]) >= post_dt:
-                        return []
+                    if post_last_crawled >= post_dt:
+                        return 0
                 except (ValueError, OSError):
                     pass
 
             if hash_with_category(post_url, category) in self.crawled_URL:
-                return []
+                return 0
             self.crawled_URL.append(hash_with_category(post_url, category))
 
             # Mark comment URLs as already visited so recursive crawling skips them
@@ -1697,9 +1949,9 @@ class Crawler(DelayedClass):
             )
             entry, _, _ = get_page_content(None, self, content=html)
             if entry is None:
-                return []
+                return 0
 
-            pages = parse_page(entry, post_url, "en", "body", date, category, tokenizer=self.tokenizer)
+            pages = self._emit(parse_page(entry, post_url, "en", "body", date, category, tokenizer=self.tokenizer))
 
             # Add bare URLs from Markdown text; exclude internal SE links
             # (those are covered by API pagination, not link-following)
@@ -1725,6 +1977,7 @@ class Crawler(DelayedClass):
             Returns:
                 (quota_exhausted, should_continue_outer_loop)
             """
+            nonlocal written  # accumulate into the enclosing get_stackexchange_posts counter
             page = 1
             key_param = f"&key={api_key}" if api_key else ""
             from_ts = int(fromdate.timestamp())
@@ -1755,7 +2008,7 @@ class Crawler(DelayedClass):
                 data = json.loads(resp.content)
 
                 for post in data.get("items", []):
-                    output.extend(_item_to_pages(post))
+                    written += _item_to_pages(post)
 
                 quota_remaining = data.get("quota_remaining", 1)
                 print(f"[SE:{site}] page {page}, quota remaining: {quota_remaining}")
@@ -1802,25 +2055,25 @@ class Crawler(DelayedClass):
                 todate   = fromdate
                 fromdate = todate - datetime.timedelta(days=window_days)
 
-        print(f"[SE:{site}] Total pages indexed: {len(output)}")
-        return output
+        print(f"[SE:{site}] Total pages indexed: {written}")
+        return written
 
 
-    def _parse_pdf_content(self, link, default_lang, delay: DelayedClass, category="", custom_header={}, ):
-        return get_pdf_content(link, default_lang, category=category, custom_header=custom_header, delay=delay)
+    def _parse_pdf_content(self, link, default_lang, delay: DelayedClass, category="", custom_header={}, ) -> int:
+        return self._emit(get_pdf_content(link, default_lang, category=category, custom_header=custom_header, delay=delay))
 
 
-    def _parse_original(self, page, url, default_lang, markup, date, category):
-        return parse_page(page, url, default_lang, markup=markup, date=date, category=category,
-                          tokenizer=self.tokenizer) if page else []
+    def _parse_original(self, page, url, default_lang, markup, date, category) -> int:
+        return self._emit(parse_page(page, url, default_lang, markup=markup, date=date, category=category,
+                                     tokenizer=self.tokenizer)) if page else 0
 
 
-    def _parse_translations(self, page, domain, current_url, markup, date, langs, category):
+    def _parse_translations(self, page, domain, current_url, markup, date, langs, category) -> int:
         """Follow `<link rel="alternate" hreflang="lang" href="url">` tags declaring links to alternative language variants for the current HTML page and crawl the target pages. This works only for pages properly defining alternatives in HTML header."""
-        output = []
+        written = 0
 
         if not page:
-            return output
+            return written
 
         for lang in langs:
             link_tag = page.find('link', {'rel': 'alternate', 'hreflang': lang})
@@ -1837,14 +2090,14 @@ class Crawler(DelayedClass):
                     translatedURL = self.update_link(translatedURL, new_url, category, status_code)
 
                     if translated_page is not None:
-                        output += self._parse_original(translated_page, translatedURL, lang, markup, date, category)
+                        written += self._parse_original(translated_page, translatedURL, lang, markup, date, category)
 
 
-        return output
+        return written
 
 
-    def _parse_internal_pdfs(self, page, domain, current_url, default_lang, category):
-        output = []
+    def _parse_internal_pdfs(self, page, domain, current_url, default_lang, category) -> int:
+        written = 0
         pdfs = [relative_to_absolute(url, domain, current_url) for url in page.links]
         pdfs = [url for url in set(pdfs)
                 if ".pdf" in url.lower() and not self.discard_link(url)]
@@ -1854,6 +2107,6 @@ class Crawler(DelayedClass):
             currentURL = self.update_link(currentURL, new_url, category, status_code)
 
             if status and "pdf" in content_type:
-                output += self._parse_pdf_content(currentURL, default_lang, category=category, custom_header=custom_header, delay=self)
+                written += self._parse_pdf_content(currentURL, default_lang, category=category, custom_header=custom_header, delay=self)
 
-        return output
+        return written

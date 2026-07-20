@@ -137,6 +137,31 @@ def create_db(name: str, url_primary_key: bool = True) -> sqlite3.Connection:
     return connector
 
 
+def ensure_web_page_columns(db: sqlite3.Connection) -> list[str]:
+    """Add any `web_page` columns missing from an existing `pages` table, on a LIVE connection.
+
+    Fixes schema drift: a source tarball written before a column was introduced (e.g. `dataset`,
+    added mid-2026) yields a `pages` table lacking it, so a later `populate_db` INSERT of the full
+    `web_page` tuple fails with "table pages has no column named …". Seeding a working DB from such
+    a tarball via `Connection.backup()` copies the OLD schema, so callers must run this afterwards.
+    Idempotent; returns the list of columns added. Mirrors create_db's add-missing-columns pass but
+    targets an open connection instead of a named DB.
+    """
+    existing = {row[1] for row in db.execute("PRAGMA table_info(pages)")}
+    added: list[str] = []
+    for key, value in web_page.__annotations__.items():
+        if key in existing:
+            continue
+        sql_type = type_map.get(value)
+        if sql_type is None:
+            continue
+        db.execute(f"ALTER TABLE pages ADD COLUMN {key} {sql_type}")
+        added.append(key)
+    if added:
+        db.commit()
+    return added
+
+
 # ─────────────────────────────────────────────────────────────────────────────────────
 # Dataset provenance (multi-source membership)
 #
