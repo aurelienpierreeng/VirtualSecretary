@@ -2110,3 +2110,152 @@ class Crawler(DelayedClass):
                 written += self._parse_pdf_content(currentURL, default_lang, category=category, custom_header=custom_header, delay=self)
 
         return written
+
+
+    # ── External-source adapters ───────────────────────────────────────────────────────
+    # Legitimate, bot-friendly routes to content whose live origin blocks automated access or has
+    # gone offline: a scholarly-metadata API (OpenAlex) and the Internet Archive (Wayback). Neither
+    # touches the protected origin; both are public services intended for exactly this use.
+
+    @staticmethod
+    def _reconstruct_abstract(inv: dict | None) -> str:
+        """Rebuild plain text from OpenAlex's `abstract_inverted_index` {word: [positions]}."""
+        if not inv:
+            return ""
+        n = 1 + max((p for ps in inv.values() for p in ps), default=-1)
+        words = [""] * n
+        for w, positions in inv.items():
+            for p in positions:
+                if 0 <= p < n:
+                    words[p] = w
+        return " ".join(w for w in words if w)
+
+    def get_openalex_works(self, source_ids: list[str], category: str = "reference",
+                           mailto: str = "", per_page: int = 200, max_works: int | None = None,
+                           default_lang: str = "en") -> int:
+        """Crawl works (title + reconstructed abstract) from the given OpenAlex source (journal) IDs
+        straight into the DB. OpenAlex (api.openalex.org) is a free, unauthenticated index of
+        scholarly metadata — a legitimate route to open-access academic content whose publisher
+        origin blocks automated access (e.g. MDPI behind Akamai). Pass *mailto* for OpenAlex's
+        faster "polite pool". *max_works* caps per source (None = all)."""
+        written = 0
+        # Preload the DOIs already indexed for this dataset ONCE, so the per-work resumable skip is
+        # an in-memory O(1) test. (Calling _known_last_crawled per work would `WHERE url=? OR
+        # wayback=?` full-scan the whole canonical every time — catastrophic across 80k works.)
+        existing = set()
+        if self.db is not None and self.dataset_name:
+            existing = set(u for (u,) in self.db.execute(
+                "SELECT url FROM pages WHERE dataset LIKE ?", (f"%,{self.dataset_name},%",)))
+            print(f"[OpenAlex] {len(existing)} works already indexed for {self.dataset_name!r} — skipping those")
+
+        for source_id in source_ids:
+            cursor, indexed = "*", 0
+            print(f"[OpenAlex] crawling source {source_id}")
+            while cursor:
+                flt = f"primary_location.source.id:{source_id},has_abstract:true,type:article"
+                url = (f"https://api.openalex.org/works?filter={flt}"
+                       f"&per-page={per_page}&cursor={cursor}"
+                       + (f"&mailto={mailto}" if mailto else ""))
+                # Fetch this page with retry/backoff on transient errors (429/5xx, network) so one
+                # gateway hiccup mid-journal doesn't truncate an 80k-work source.
+                data = None
+                for attempt in range(6):
+                    self.sleep("api.openalex.org", 1.0)
+                    try:
+                        resp = requests.get(url, timeout=60, headers=HEADER)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            break
+                        if resp.status_code in (429, 500, 502, 503, 504):
+                            wait = min(90, 5 * 2 ** attempt)
+                            print(f"[OpenAlex] HTTP {resp.status_code} for {source_id}, retry in {wait}s ({attempt+1}/6)")
+                            time.sleep(wait)
+                            continue
+                        print(f"[OpenAlex] HTTP {resp.status_code} for {source_id}, stopping")
+                        break
+                    except Exception as e:
+                        wait = min(90, 5 * 2 ** attempt)
+                        print(f"[OpenAlex] request error ({e}), retry in {wait}s ({attempt+1}/6)")
+                        time.sleep(wait)
+                if data is None:
+                    print(f"[OpenAlex] giving up on {source_id} after retries")
+                    break
+                for w in data.get("results", []):
+                    link = w.get("doi") or w.get("id")
+                    # Resumable: skip works already indexed (in-memory O(1)); a re-run picks up where
+                    # a truncated crawl stopped without re-parsing anything.
+                    if not link or link in existing:
+                        continue
+                    existing.add(link)  # also dedups a DOI shared across journals within this run
+                    title = (w.get("display_name") or "").strip()
+                    abstract = self._reconstruct_abstract(w.get("abstract_inverted_index"))
+                    if not title or not abstract:
+                        continue
+                    date = w.get("publication_date")
+                    lang = w.get("language") or default_lang
+                    safe = abstract.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    html = f"<title>{title}</title><body>\n\n{safe}\n\n</body>"
+                    entry, _, _ = get_page_content(None, self, content=html)
+                    if entry is None:
+                        continue
+                    written += self._emit(parse_page(entry, link, lang, "body", date, category,
+                                                     tokenizer=self.tokenizer))
+                    indexed += 1
+                    if max_works and indexed >= max_works:
+                        break
+                print(f"[OpenAlex] {source_id}: {indexed} works indexed so far")
+                if max_works and indexed >= max_works:
+                    break
+                cursor = data.get("meta", {}).get("next_cursor")
+        return written
+
+    def get_wayback_pages(self, url_prefix: str, default_lang: str = "en",
+                          markup: str | tuple | list = "body", category: str = "reference",
+                          limit: int | None = None, clean_url=None) -> int:
+        """Crawl pages archived in the Internet Archive (Wayback Machine) whose ORIGINAL URL matches
+        *url_prefix* (a CDX prefix, e.g. ``site.org/path*``). A legitimate route to content whose
+        live origin is offline or bot-protected: it enumerates the archived HTML-200 captures via the
+        public CDX API and fetches each RAW snapshot (``…/web/<ts>id_/<url>`` — no Wayback toolbar),
+        storing it under its original URL. Already-indexed URLs are skipped (archived pages are
+        stable). *clean_url(original)->str* optionally canonicalizes/dedupes noisy archived URLs."""
+        written = 0
+        cdx = ("http://web.archive.org/cdx/search/cdx?url=" + url_prefix +
+               "&filter=statuscode:200&filter=mimetype:text/html&collapse=urlkey&fl=original,timestamp")
+        self.sleep("web.archive.org", 3.0)
+        try:
+            resp = requests.get(cdx, timeout=180, headers=HEADER)
+            lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+        except Exception as e:
+            print(f"[wayback] CDX query failed: {e}")
+            return written
+        print(f"[wayback] {len(lines)} archived captures matching {url_prefix!r}")
+
+        seen = set()
+        for ln in lines:
+            if limit is not None and written >= limit:
+                break
+            parts = ln.split()
+            if len(parts) < 2:
+                continue
+            original, ts = parts[0], parts[1]
+            stored = (clean_url(original) if clean_url else original)
+            if not stored or stored in seen:
+                continue
+            seen.add(stored)
+            # Archived pages are immutable: skip anything already indexed so re-runs are cheap.
+            if self._known_last_crawled(stored) is not None:
+                continue
+            snap = f"https://web.archive.org/web/{ts}id_/{original}"
+            # archive.org aggressively throttles bursts to the raw-snapshot endpoint (connection
+            # refused). Retry each fetch with exponential backoff; under CrawlManager that wait is
+            # spent crawling another source rather than idling.
+            page = None
+            for attempt in range(4):
+                page, new_url, status_code = get_page_content(snap, self)
+                if page is not None:
+                    break
+                time.sleep(min(90, 10 * 2 ** attempt))
+            if page is not None:
+                written += self._parse_original(page, stored, default_lang, markup, None, category)
+        return written
+
