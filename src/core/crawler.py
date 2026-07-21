@@ -10,6 +10,8 @@ import random
 import json
 import copy
 import hashlib
+import threading
+from contextlib import nullcontext
 
 from urllib.parse import urljoin
 from email.utils import formatdate
@@ -462,6 +464,12 @@ class Crawler(DelayedClass):
         DB when reads and writes are separate). Combined with the DB lookup so content reached
         twice within one crawl is still deduplicated."""
 
+        self.write_lock: threading.Lock | None = None
+        """Optional shared lock serializing DB writes across concurrently-running crawlers (set by
+        CrawlManager). When several sources crawl at once to hide per-site latency, fetching runs in
+        parallel but every write (`_flush_writes`, `commit_dataset`) holds this lock, so only ONE
+        thread writes the shared canonical at a time. None = single-crawler mode (no locking)."""
+
         self.dataset_name: str | None = None
         """Origin dataset tag applied to pages written in the DB-native flow (set by
         pre_process_crawling_canonical)."""
@@ -736,7 +744,8 @@ class Crawler(DelayedClass):
         module-load cycle."""
         if self._write_buffer and self.db is not None:
             from . import database
-            database.populate_db(self.db, self._write_buffer)
+            with (self.write_lock or nullcontext()):  # serialize writes across concurrent crawlers
+                database.populate_db(self.db, self._write_buffer)
             self._write_buffer.clear()
 
 
@@ -763,16 +772,12 @@ class Crawler(DelayedClass):
         print(f"Crawling {dataset_name!r} since {self.since} (DB-native lookups)")
 
     def commit_dataset(self, dataset_name: str) -> None:
-        """Finalize the DB-native crawl opened by :meth:`begin_dataset`: flush buffered writes, fill
-        `parsed`/`content_hash` for rows that arrived without them (PDFs / API items that skip
-        parse_page), merge multi-source provenance, deduplicate this crawl's delta in place (URL +
-        content election), compress, and close the DB.
-
-        Only the delta (`self._written_urls`) is deduplicated — a re-crawled page's fresh row
-        supersedes its old one via URL-election, so no delete-by-url is needed. No-op fast path when
-        nothing was written.
+        """Finalize the DB-native crawl opened by :meth:`begin_dataset`: flush buffered writes, then
+        parse/merge-provenance/dedup THIS crawl's delta in place, compress, and close the DB. Use
+        this for a single-source run; under CrawlManager's dedup-once mode use :meth:`flush_dataset`
+        instead so the whole run is deduplicated once at the end.
         """
-        from . import database, deduplicator, batching
+        from . import database
         db = self.db
         if db is None:
             raise RuntimeError("commit_dataset requires a prior begin_dataset (cr.db unset)")
@@ -780,39 +785,32 @@ class Crawler(DelayedClass):
         self._flush_writes()
 
         before = db.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
-        before_src = db.execute("SELECT COUNT(*) FROM pages WHERE dataset LIKE ?",
-                                (f"%,{dataset_name},%",)).fetchone()[0]
-        urls = list(self._written_urls)
-        print(f"[{dataset_name}] {len(urls)} URLs touched (direct-written); "
-              f"DB before {before} rows ({before_src} tagged {dataset_name!r})")
+        urls = self._written_urls
+        print(f"[{dataset_name}] {len(urls)} URLs touched (direct-written); DB before {before} rows")
 
-        if not urls:
-            print(f"[{dataset_name}] nothing new/changed — DB unchanged")
-            database.compress_db(db)
-            database.close_db(db)
-            self.db = None
-            return
-
-        n_unparsed = db.execute("SELECT COUNT(*) FROM pages WHERE parsed IS NULL").fetchone()[0]
-        if n_unparsed:
-            print(f"[{dataset_name}] parsing {n_unparsed} rows still missing `parsed`…")
-            batching.batch_parse_web_page(db, self.tokenizer, only_none=True)
-
-        # Merge provenance before dedup so a page whose content matches another source's copy keeps
-        # both dataset tags when content-election collapses them.
-        merged = database.merge_provenance_by_content_hash(db)
-        print(f"[{dataset_name}] provenance merged across {merged} multi-source content groups")
-
-        deduplicator.Deduplicator(threshold=1.0).run_incremental(db, changed_urls=urls)
-
-        database.compress_db(db)  # cheap incremental_vacuum
+        # Serialize the write-heavy finalization (concurrent crawlers must not parse/merge/dedup the
+        # shared canonical at once). _flush_writes took/released the lock itself, so this isn't
+        # re-entrant. finalize_canonical no-ops the dedup when there's nothing new.
+        with (self.write_lock or nullcontext()):
+            finalize_canonical(db, self.tokenizer, urls, label=dataset_name)
         after = db.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
-        after_src = db.execute("SELECT COUNT(*) FROM pages WHERE dataset LIKE ?",
-                               (f"%,{dataset_name},%",)).fetchone()[0]
-        print(f"[{dataset_name}] DB after: {after} rows total ({after - before:+d}), "
-              f"{after_src} tagged {dataset_name!r} ({after_src - before_src:+d})")
+        print(f"[{dataset_name}] DB after: {after} rows total ({after - before:+d})")
         database.close_db(db)
         self.db = None
+
+    def flush_dataset(self, dataset_name: str) -> set:
+        """Flush buffered writes and close the DB WITHOUT deduplicating — for CrawlManager's
+        dedup-once mode, where a single finalize pass dedups the whole run's delta at the end.
+        Returns the set of URLs this crawl touched (so the manager can dedup their union)."""
+        if self.db is None:
+            raise RuntimeError("flush_dataset requires a prior begin_dataset (cr.db unset)")
+        self._flush_writes()  # takes/releases the write lock itself — don't re-wrap (non-reentrant)
+        urls = set(self._written_urls)
+        print(f"[{dataset_name}] {len(urls)} URLs touched (flushed; dedup deferred to run end)")
+        from . import database
+        database.close_db(self.db)
+        self.db = None
+        return urls
 
 
     def get_most_recent_page(self, db:sqlite3.Connection, dataset: str | None = None) -> datetime.datetime | None:
@@ -2259,3 +2257,115 @@ class Crawler(DelayedClass):
                 written += self._parse_original(page, stored, default_lang, markup, None, category)
         return written
 
+
+def finalize_canonical(db, tokenizer, changed_urls, label: str = "") -> None:
+    """Shared write-heavy finalization of a crawl delta: fill missing `parsed`, merge multi-source
+    provenance, deduplicate *changed_urls* in place (URL + content election), and compress. No-ops
+    the dedup when nothing changed. Used by Crawler.commit_dataset (per-source) and by CrawlManager's
+    run-level dedup-once pass (the whole run's touched URLs at once). The CALLER holds any write lock;
+    this does not lock itself."""
+    from . import database, deduplicator, batching
+    urls = list(changed_urls)
+    if not urls:
+        print(f"[{label}] nothing new/changed — DB unchanged")
+        database.compress_db(db)
+        return
+    n_unparsed = db.execute("SELECT COUNT(*) FROM pages WHERE parsed IS NULL").fetchone()[0]
+    if n_unparsed:
+        print(f"[{label}] parsing {n_unparsed} rows still missing `parsed`…")
+        batching.batch_parse_web_page(db, tokenizer, only_none=True)
+    merged = database.merge_provenance_by_content_hash(db)
+    print(f"[{label}] provenance merged across {merged} multi-source content groups")
+    deduplicator.Deduplicator(threshold=1.0).run_incremental(db, changed_urls=urls)
+    database.compress_db(db)
+
+
+class CrawlManager:
+    """Run several source crawls concurrently to hide per-site latency (network waits, timeouts,
+    rate-limit backoffs), while serializing all DB writes so only ONE thread writes the shared
+    canonical at a time.
+
+    Each source gets its own Crawler — its own connection and its own per-domain rate limiting — so
+    a slow or throttled site (e.g. archive.org backing off) doesn't stall the others: the time
+    waiting on one is spent fetching another. A shared `write_lock` makes every crawler's
+    `_flush_writes` / `commit_dataset` mutually exclusive, preserving the single-writer invariant
+    the SQLite canonical requires. Fetching (the slow, I/O-bound part) is what runs in parallel.
+
+    Usage:
+        mgr = CrawlManager("chantal-canonical.db")
+        mgr.add("electropedia", lambda cr: cr.get_wayback_pages("electropedia.org/iev/iev.nsf/display*", clean_url=fn))
+        mgr.add("mdpi",         lambda cr: cr.get_openalex_works([...], mailto="..."))
+        mgr.run()
+    """
+
+    def __init__(self, canonical_db: str, delay: float = 1.0, max_workers: int | None = None,
+                 dedup_once: bool = True):
+        self.canonical_db = canonical_db
+        self.delay = delay
+        self.max_workers = max_workers
+        self.dedup_once = dedup_once     # True: fetch all, dedup the whole run ONCE at the end
+        self.write_lock = threading.Lock()
+        self._jobs: list = []
+        self._all_urls: set = set()
+        self._urls_lock = threading.Lock()
+
+    def add(self, dataset_name: str, crawl_fn, **crawler_kwargs) -> "CrawlManager":
+        """Register a source. *crawl_fn(cr)* does the fetching (calls cr.get_website_from_* /
+        get_openalex_works / get_wayback_pages …); the crawl lifecycle is handled here."""
+        self._jobs.append((dataset_name, crawl_fn, crawler_kwargs))
+        return self
+
+    def _run_one(self, dataset_name: str, crawl_fn, crawler_kwargs) -> None:
+        cr = Crawler(delay=crawler_kwargs.pop("delay", self.delay), **crawler_kwargs)
+        cr.write_lock = self.write_lock  # share the single-writer lock
+        finished = False
+        try:
+            cr.begin_dataset(self.canonical_db, dataset_name)
+            crawl_fn(cr)
+            finished = True
+        except Exception as e:
+            print(f"[manager] {dataset_name!r} FETCH FAILED: {type(e).__name__}: {e}")
+        finally:
+            # Always finalize what was fetched (even on error): dedup-once mode just flushes+closes
+            # and hands the touched URLs to the run-level dedup; else per-source commit_dataset.
+            if cr.db is not None:
+                try:
+                    if self.dedup_once:
+                        urls = cr.flush_dataset(dataset_name)
+                        with self._urls_lock:
+                            self._all_urls |= urls
+                    else:
+                        cr.commit_dataset(dataset_name)
+                except Exception as e:
+                    print(f"[manager] {dataset_name!r} finalize error: {e}")
+        return finished
+
+    def run(self) -> None:
+        """Run all registered jobs concurrently (≤ max_workers fetching at once); then, in dedup-once
+        mode, deduplicate the whole run's delta a SINGLE time over all sources' touched URLs."""
+        if not self._jobs:
+            return
+        limit = self.max_workers or len(self._jobs)
+        sem = threading.Semaphore(limit)
+
+        def worker(name, fn, kw):
+            with sem:
+                self._run_one(name, fn, kw)
+
+        threads = [threading.Thread(target=worker, args=(n, fn, kw), name=f"crawl-{n}")
+                   for n, fn, kw in self._jobs]
+        print(f"[manager] {len(threads)} sources → {self.canonical_db} "
+              f"(≤{limit} fetching at once, single writer, dedup_once={self.dedup_once})")
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        if self.dedup_once and self._all_urls:
+            from . import database
+            print(f"[manager] run-level finalize: dedup over {len(self._all_urls)} URLs across all sources")
+            db = database.create_db(self.canonical_db, url_primary_key=False)
+            database.ensure_incremental_autovacuum(db)
+            finalize_canonical(db, Crawler().tokenizer, self._all_urls, label="run")
+            database.close_db(db)
+        print("[manager] all crawls finished")
