@@ -165,6 +165,22 @@ class search_methods(IntEnum):
     MIXED = 3
     """Combination of `AI` and `FUZZY` aggregated by Reciprocal Rank Fusion."""
 
+def _subset_clause(db: sqlite3.Connection) -> str:
+    """SQL boolean selecting the *searchable* rows of the ``pages`` table.
+
+    Returns ``"in_index = 1"`` when the table carries the ``in_index`` flag — the
+    monolithic canonical, where only a curated subset is meant for search and the
+    rest is LM-only / archived material — else ``"1"`` (a DB that is already a pure
+    search subset: the legacy ``chantal.db`` or the slimmed deploy copy). Composes
+    into any query as ``WHERE {clause}`` or ``... AND {clause}``.
+
+    Kept as a one-line ``PRAGMA`` lookup (cheap) so every corpus read can restrict
+    itself consistently without threading a flag through the whole class.
+    """
+    cols = {row[1] for row in db.execute("PRAGMA table_info(pages)")}
+    return "in_index = 1" if "in_index" in cols else "1"
+
+
 class Indexer():
     @timeit()
     def __init__(self,
@@ -230,20 +246,29 @@ class Indexer():
         # even when the pages table allows duplicate URLs. ORDER BY url is only a total order
         # when url is unique (PRIMARY KEY); relying on it would silently misalign the numpy
         # arrays with search_rowid once the URL primary key is dropped.
-        cursor = db.execute("SELECT stemmed FROM pages ORDER BY rowid")
-        rows = cursor.fetchall()
+        #
+        # {subset}: on the monolithic canonical only `in_index = 1` rows are searchable;
+        # this WHERE keeps the BM25 corpus, self.vectors and search_rowid (all read the
+        # same `WHERE {subset} ORDER BY rowid`) covering exactly that subset, in lockstep.
+        subset = _subset_clause(db)
 
         # To spare some memory, build a symbolic corpus representation using
         # word indices in the Word2Vec vocabulary, then construct a local
         # BM25Plus reimplementation that precomputes freqs/lengths/inverted index.
+        #
+        # STREAM the cursor (don't .fetchall() first): materializing all N stemmed
+        # token-lists AND the derived index-list at once doubles peak RAM and OOMs on
+        # a large corpus. Iterating consumes rows in small batches, so only the compact
+        # int-index corpus is held. key_to_index is hoisted out of the inner loop.
+        key_to_index = self.word2vec.wv.key_to_index
         corpus_token_indices = [
             [
-                self.word2vec.wv.key_to_index[word]
-                for sentence in doc[0]
+                key_to_index[word]
+                for sentence in stemmed
                 for word in sentence
-                if word in self.word2vec.wv.key_to_index
+                if word in key_to_index
             ]
-            for doc in rows
+            for (stemmed,) in db.execute(f"SELECT stemmed FROM pages WHERE {subset} ORDER BY rowid")
         ]
 
         self.ranker: BM25PlusCSR = BM25PlusCSR(corpus_token_indices, self.word2vec, k1=1.8, b=0.4, delta=0.8)
@@ -262,10 +287,18 @@ class Indexer():
         # discrimination between relevant and irrelevant documents. You can see them as the "common glue"
         # between all documents in the corpus, which is the opposite of what we are looking for to retrieve information.
 
-        # ORDER BY rowid to stay aligned with the BM25 corpus and search_rowid (see above).
-        cursor = db.execute("SELECT vectorized FROM pages ORDER BY rowid")
-
-        self.vectors = np.array([item[0] for item in cursor.fetchall()], dtype=np.float32)
+        # ORDER BY rowid + the same {subset} to stay aligned with the BM25 corpus and search_rowid.
+        # Preallocate and fill row-by-row from a streamed cursor: the old
+        # np.array([... for ... in cursor.fetchall()]) held a Python list of N (300,) arrays
+        # AND the final matrix at the same time — a needless multi-GB transient on a big corpus.
+        n_docs = len(corpus_token_indices)
+        cursor = db.execute(f"SELECT vectorized FROM pages WHERE {subset} ORDER BY rowid")
+        first = cursor.fetchone()
+        dim = first[0].shape[0]
+        self.vectors = np.empty((n_docs, dim), dtype=np.float32)
+        self.vectors[0] = first[0]
+        for i, (v,) in enumerate(cursor, start=1):
+            self.vectors[i] = v
         """Store the list of document-wise vector embeddings, where the vector represents
         the normalized centroid of tokens vectors contained the document.
         Documents are on the first axis.
@@ -473,52 +506,64 @@ class Indexer():
         """
         cursor = db.cursor()
 
-        pages = cursor.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
-        domains = cursor.execute("""
+        # All dashboard stats describe the SEARCHABLE corpus, so every aggregate is
+        # scoped to the same subset the index is built from (in_index on the canonical).
+        sub = _subset_clause(db)
+
+        pages = cursor.execute(f"SELECT COUNT(*) FROM pages WHERE {sub}").fetchone()[0]
+        domains = cursor.execute(f"""
             SELECT COUNT(DISTINCT COALESCE(NULLIF(domain, ''), url))
             FROM pages
+            WHERE {sub}
         """).fetchone()[0]
-        categories = cursor.execute("""
+        categories = cursor.execute(f"""
             SELECT COUNT(DISTINCT category)
             FROM pages
-            WHERE category IS NOT NULL
+            WHERE {sub}
+              AND category IS NOT NULL
               AND category != ''
         """).fetchone()[0]
-        most_recent_datetime = cursor.execute("""
+        most_recent_datetime = cursor.execute(f"""
             SELECT MAX(datetime)
             FROM pages
-            WHERE datetime IS NOT NULL
+            WHERE {sub}
+              AND datetime IS NOT NULL
         """).fetchone()[0]
-        oldest_datetime = cursor.execute("""
+        oldest_datetime = cursor.execute(f"""
             SELECT MIN(datetime)
             FROM pages
-            WHERE datetime IS NOT NULL
+            WHERE {sub}
+              AND datetime IS NOT NULL
         """).fetchone()[0]
-        length_stats = cursor.execute("""
+        length_stats = cursor.execute(f"""
             SELECT COALESCE(SUM(length), 0),
                    COALESCE(AVG(length), 0),
                    COALESCE(MAX(length), 0)
             FROM pages
-            WHERE length IS NOT NULL
+            WHERE {sub}
+              AND length IS NOT NULL
         """).fetchone()
-        domain_counts = cursor.execute("""
+        domain_counts = cursor.execute(f"""
             SELECT COALESCE(NULLIF(domain, ''), url) AS domain,
                    COUNT(*) AS pages
             FROM pages
+            WHERE {sub}
             GROUP BY COALESCE(NULLIF(domain, ''), url)
             ORDER BY pages DESC, domain ASC
         """).fetchall()
-        category_counts = cursor.execute("""
+        category_counts = cursor.execute(f"""
             SELECT COALESCE(NULLIF(category, ''), '(none)') AS category,
                    COUNT(*) AS pages
             FROM pages
+            WHERE {sub}
             GROUP BY COALESCE(NULLIF(category, ''), '(none)')
             ORDER BY pages DESC, category ASC
         """).fetchall()
-        language_counts = cursor.execute("""
+        language_counts = cursor.execute(f"""
             SELECT COALESCE(NULLIF(lang, ''), '(unknown)') AS lang,
                    COUNT(*) AS pages
             FROM pages
+            WHERE {sub}
             GROUP BY COALESCE(NULLIF(lang, ''), '(unknown)')
             ORDER BY pages DESC, lang ASC
         """).fetchall()
@@ -579,19 +624,35 @@ class Indexer():
         in ``self.index_fingerprint`` so ``verify_db_integrity()`` can detect
         invalidating changes in O(1) at load time.
         """
-        rowids = [row[0] for row in db.execute("SELECT rowid FROM pages ORDER BY rowid")]
-
-        db.executemany(
-            "UPDATE pages SET search_rowid = ? WHERE rowid = ?",
-            ((i, rid) for i, rid in enumerate(rowids)),
+        # Only the searchable subset gets a search_rowid; everything else is cleared to NULL
+        # so it can never surface as a candidate (rank/filter_contents key off search_rowid).
+        # Guard on `search_rowid IS NOT NULL` so a fresh build (column all-NULL after the ALTER)
+        # touches nothing — an unguarded full-table UPDATE writes a rollback journal the size of
+        # the whole DB and can exhaust the disk on a large monolithic canonical.
+        subset = _subset_clause(db)
+        db.execute(
+            f"UPDATE pages SET search_rowid = NULL WHERE search_rowid IS NOT NULL AND NOT ({subset})"
         )
         db.commit()
+        rowids = [row[0] for row in db.execute(f"SELECT rowid FROM pages WHERE {subset} ORDER BY rowid")]
+
+        # Assign in committed chunks: each commit truncates the (TRUNCATE-mode) rollback journal,
+        # so a 400k-row assignment on a multi-GB DB never accumulates a journal larger than one
+        # chunk's touched pages — the difference between completing and filling the disk.
+        CHUNK = 50000
+        for start in range(0, len(rowids), CHUNK):
+            db.executemany(
+                "UPDATE pages SET search_rowid = ? WHERE rowid = ?",
+                ((start + j, rid) for j, rid in enumerate(rowids[start:start + CHUNK])),
+            )
+            db.commit()
 
         # Cheap two-point fingerprint: count + hash of the boundary URLs, read the same way
-        # verify_db_integrity() reads them (ORDER BY search_rowid, which now == rowid order).
+        # verify_db_integrity() reads them. Restrict to rows that actually have a search_rowid
+        # (the non-subset rows are now NULL and would otherwise sort first under ORDER BY).
         import hashlib
-        first = db.execute("SELECT url FROM pages ORDER BY search_rowid ASC  LIMIT 1").fetchone()
-        last  = db.execute("SELECT url FROM pages ORDER BY search_rowid DESC LIMIT 1").fetchone()
+        first = db.execute("SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid ASC  LIMIT 1").fetchone()
+        last  = db.execute("SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid DESC LIMIT 1").fetchone()
         boundary = "".join([
             (first[0] if first and first[0] else ""),
             (last[0]  if last  and last[0]  else ""),
@@ -615,8 +676,11 @@ class Indexer():
         import hashlib
         stored_count, stored_hash = self.index_fingerprint
 
-        # Always check count first — cheapest possible signal.
-        current_count = db.execute("SELECT COUNT(*) FROM pages").fetchone()[0]
+        # Always check count first — cheapest possible signal. Count only the searchable
+        # subset: stored_count was the number of rows given a search_rowid at build time.
+        current_count = db.execute(
+            "SELECT COUNT(*) FROM pages WHERE search_rowid IS NOT NULL"
+        ).fetchone()[0]
         if current_count != stored_count:
             raise RuntimeError(
                 f"Page count changed since Indexer was built "
@@ -624,18 +688,21 @@ class Indexer():
             )
 
         if full:
-            # Hash every URL in order — catches any mid-corpus change.
+            # Hash every URL in order — catches any mid-corpus change. Only the searchable
+            # subset carries a search_rowid; NULL rows are excluded to match the build.
             h = hashlib.sha256()
-            for (url,) in db.execute("SELECT url FROM pages ORDER BY search_rowid"):
+            for (url,) in db.execute(
+                "SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid"
+            ):
                 h.update(url.encode())
             current_hash = h.hexdigest()
         else:
-            # Hash only the boundary URLs — three index-only lookups.
+            # Hash only the boundary URLs — two index-only lookups over the subset.
             first = db.execute(
-                "SELECT url FROM pages ORDER BY search_rowid ASC  LIMIT 1"
+                "SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid ASC  LIMIT 1"
             ).fetchone()
             last  = db.execute(
-                "SELECT url FROM pages ORDER BY search_rowid DESC LIMIT 1"
+                "SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid DESC LIMIT 1"
             ).fetchone()
             boundary = (
                 (first[0] if first else "") + (last[0] if last else "")
