@@ -71,7 +71,11 @@ class ParsedHTML:
         # That will also make subsequent parsing slightly faster.
         # Remove blockquotes too because they can duplicate internal content of forum pages.
         # Basically, the goal is to get only the content body of the article/page.
-        for element in soup.select('style, script, svg, img, picture, audio, video, iframe, embed, aside, nav, input, header, button, form, fieldset, footer, summary, dialog, textarea, select, option'):
+        # NB: `form`/`fieldset` are NOT decomposed — some sites (Lotus-Domino, ASP.NET WebForms) wrap
+        # their entire page content in a single <form>, so removing it would delete everything. The
+        # form CONTROLS (input/button/select/textarea/option) are still stripped below, so only the
+        # form's natural-language text survives.
+        for element in soup.select('style, script, svg, img, picture, audio, video, iframe, embed, aside, nav, input, header, button, footer, summary, dialog, textarea, select, option'):
             element.decompose()
 
         # Remove inline style and useless attributes too
