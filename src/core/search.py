@@ -132,6 +132,84 @@ class BM25PlusCSR:
 
         return ranker
 
+    def add_documents(self, new_corpus: list[list[int]]):
+        """Append documents to the CSR index IN PLACE, reusing the existing postings — the old
+        corpus is never re-read. New document ids continue from ``corpus_size``. Powers the
+        incremental (diff-only) index update: the existing token→posting arrays are merged with the
+        new documents' postings token-by-token (both already grouped by token), so the cost scales
+        with the delta, not the whole corpus. IDF and the length-normalisation constants are then
+        recomputed from the updated per-token document frequencies (cheap, fully vectorised)."""
+        M = len(new_corpus)
+        if M == 0:
+            return
+
+        vocab_size = len(self.indptr) - 1
+        base = self.corpus_size
+
+        new_doc_lens = np.fromiter((len(d) for d in new_corpus), dtype=np.int32, count=M)
+
+        # Raw postings for the new documents: (doc_id, token_id, tf), grouped per doc.
+        nd, nt, nf = [], [], []
+        for j, doc in enumerate(new_corpus):
+            if not doc:
+                continue
+            uniq, cnt = np.unique(np.asarray(doc, dtype=np.int32), return_counts=True)
+            nd.append(np.full(uniq.shape, base + j, dtype=np.int32))
+            nt.append(uniq.astype(np.int32))
+            nf.append(cnt.astype(np.uint16))
+        if nt:
+            new_doc_ids = np.concatenate(nd)
+            new_token_ids = np.concatenate(nt)
+            new_tfs = np.concatenate(nf)
+        else:
+            new_doc_ids = np.empty(0, np.int32)
+            new_token_ids = np.empty(0, np.int32)
+            new_tfs = np.empty(0, np.uint16)
+
+        old_df = np.diff(self.indptr).astype(np.int64)
+        new_df = np.bincount(new_token_ids, minlength=vocab_size).astype(np.int64)
+        comb_df = old_df + new_df
+
+        new_indptr = np.zeros(vocab_size + 1, dtype=np.int32)
+        new_indptr[1:] = np.cumsum(comb_df)
+        total = int(new_indptr[-1])
+
+        merged_doc_ids = np.empty(total, dtype=np.int32)
+        merged_tfs = np.empty(total, dtype=np.uint16)
+
+        # Scatter the OLD postings to their new home: for token t, its block moves from
+        # indptr[t] to new_indptr[t] (same intra-token order preserved).
+        if self.doc_ids.size:
+            old_tokens = np.repeat(np.arange(vocab_size, dtype=np.int64), old_df)
+            old_local = np.arange(self.doc_ids.size, dtype=np.int64) - self.indptr[:-1].astype(np.int64)[old_tokens]
+            dest_old = new_indptr[old_tokens] + old_local
+            merged_doc_ids[dest_old] = self.doc_ids
+            merged_tfs[dest_old] = self.tfs
+
+        # Scatter the NEW postings right after each token's old block.
+        if new_token_ids.size:
+            order = np.argsort(new_token_ids, kind="mergesort")
+            s_tok = new_token_ids[order].astype(np.int64)
+            s_doc = new_doc_ids[order]
+            s_tf = new_tfs[order]
+            new_ptr = np.zeros(vocab_size + 1, dtype=np.int64)
+            new_ptr[1:] = np.cumsum(new_df)
+            new_local = np.arange(s_tok.size, dtype=np.int64) - new_ptr[s_tok]
+            dest_new = new_indptr[s_tok] + old_df[s_tok] + new_local
+            merged_doc_ids[dest_new] = s_doc
+            merged_tfs[dest_new] = s_tf
+
+        self.corpus_size = base + M
+        self.doc_lens = np.concatenate([self.doc_lens, new_doc_lens])
+        self.avgdl = np.float32(self.doc_lens.mean() if self.corpus_size else 1.0)
+        self.denom_const = (
+            self.k1 * (1.0 - self.b + self.b * (self.doc_lens / self.avgdl))
+        ).astype(np.float32)
+        self.indptr = new_indptr
+        self.doc_ids = merged_doc_ids
+        self.tfs = merged_tfs
+        self.idf = np.log((self.corpus_size - comb_df + 0.5) / (comb_df + 0.5)).astype(np.float32)
+
     def get_scores(self, tokens: list[int]) -> np.ndarray:
         scores = np.zeros(self.corpus_size, dtype=np.float32)
 
@@ -647,17 +725,23 @@ class Indexer():
             )
             db.commit()
 
-        # Cheap two-point fingerprint: count + hash of the boundary URLs, read the same way
-        # verify_db_integrity() reads them. Restrict to rows that actually have a search_rowid
-        # (the non-subset rows are now NULL and would otherwise sort first under ORDER BY).
+        # Cheap two-point fingerprint: count + hash of the boundary URLs (see _compute_fingerprint).
+        self.index_fingerprint = self._compute_fingerprint(db)
+
+
+    def _compute_fingerprint(self, db: sqlite3.Connection) -> tuple:
+        """(searchable-row count, sha256 of first+last boundary URLs in search_rowid order).
+        The two-point signature ``verify_db_integrity`` checks at load time; recomputed here after
+        BOTH a full build and an incremental append so the artifact stays loadable against its DB."""
         import hashlib
+        count = db.execute("SELECT COUNT(*) FROM pages WHERE search_rowid IS NOT NULL").fetchone()[0]
         first = db.execute("SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid ASC  LIMIT 1").fetchone()
         last  = db.execute("SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid DESC LIMIT 1").fetchone()
         boundary = "".join([
             (first[0] if first and first[0] else ""),
             (last[0]  if last  and last[0]  else ""),
         ]).encode()
-        self.index_fingerprint = (len(rowids), hashlib.sha256(boundary).hexdigest())
+        return (count, hashlib.sha256(boundary).hexdigest())
 
 
     def verify_db_integrity(self, db: sqlite3.Connection, full: bool = False):
@@ -672,47 +756,30 @@ class Indexer():
                 mid-corpus mutation.
 
         Called automatically by :meth:`load`.
-        """
-        import hashlib
-        stored_count, stored_hash = self.index_fingerprint
 
-        # Always check count first — cheapest possible signal. Count only the searchable
-        # subset: stored_count was the number of rows given a search_rowid at build time.
-        current_count = db.execute(
+        Bounds model (append-only + holes): the pickled arrays hold ``len(self.vectors)`` rows at
+        positions 0…n-1, assigned once at build/append time and never renumbered (except a full
+        rebuild). So the only hard invariant is that every ``search_rowid`` in the DB indexes a real
+        array position — i.e. ``MAX(search_rowid) < len(self.vectors)`` and the number of assigned
+        rowids does not exceed the array length. Rows deleted/demoted since the build are holes
+        (fewer assigned rowids than vectors) and are fine — ``rank()`` skips them. A count that
+        *exceeds* the array, or an out-of-range ``search_rowid``, means the wrong artifact for this
+        DB (or a missed rebuild) and would index out of bounds, so it is rejected.
+        """
+        n = int(self.vectors.shape[0])
+        max_sr = db.execute("SELECT MAX(search_rowid) FROM pages").fetchone()[0]
+        if max_sr is not None and max_sr >= n:
+            raise RuntimeError(
+                f"DB/index mismatch: found search_rowid {max_sr} but the index has only {n} "
+                f"vectors. Wrong engine for this DB, or the index needs rebuilding."
+            )
+        assigned = db.execute(
             "SELECT COUNT(*) FROM pages WHERE search_rowid IS NOT NULL"
         ).fetchone()[0]
-        if current_count != stored_count:
+        if assigned > n:
             raise RuntimeError(
-                f"Page count changed since Indexer was built "
-                f"({stored_count} → {current_count}). Rebuild with Indexer(db, ...)."
-            )
-
-        if full:
-            # Hash every URL in order — catches any mid-corpus change. Only the searchable
-            # subset carries a search_rowid; NULL rows are excluded to match the build.
-            h = hashlib.sha256()
-            for (url,) in db.execute(
-                "SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid"
-            ):
-                h.update(url.encode())
-            current_hash = h.hexdigest()
-        else:
-            # Hash only the boundary URLs — two index-only lookups over the subset.
-            first = db.execute(
-                "SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid ASC  LIMIT 1"
-            ).fetchone()
-            last  = db.execute(
-                "SELECT url FROM pages WHERE search_rowid IS NOT NULL ORDER BY search_rowid DESC LIMIT 1"
-            ).fetchone()
-            boundary = (
-                (first[0] if first else "") + (last[0] if last else "")
-            ).encode()
-            current_hash = hashlib.sha256(boundary).hexdigest()
-
-        if current_hash != stored_hash:
-            raise RuntimeError(
-                "DB page ordering has changed since this Indexer was built. "
-                "Rebuild with Indexer(db, ...)."
+                f"DB/index mismatch: {assigned} assigned search_rowids exceed {n} indexed vectors. "
+                f"Rebuild the index (chantal-05 without --incremental)."
             )
 
 
@@ -1294,18 +1361,24 @@ class Indexer():
         # Fetch URLs for the top-k results in one SQL round-trip.
         # O(k · log N) with idx_pages_search_rowid — far cheaper than
         # keeping all N URLs in RAM.  Chunked to respect the variable limit.
+        # Restrict to the live searchable subset: after an INCREMENTAL update, positions whose row
+        # was deleted or demoted out of the index (in_index 1→0) since the last full build linger in
+        # the arrays as "holes". They resolve to no searchable URL here and are simply skipped, so a
+        # stale vector can never surface a result. (A periodic full rebuild reclaims the holes.)
+        subset = _subset_clause(db)
         best_indices_list = best_indices.tolist()
         rowid_to_url: dict[int, str] = {}
         for start in range(0, len(best_indices_list), 900):
             chunk = best_indices_list[start : start + 900]
             ph = ",".join("?" * len(chunk))
             rowid_to_url.update(db.execute(
-                f"SELECT search_rowid, url FROM pages WHERE search_rowid IN ({ph})",
+                f"SELECT search_rowid, url FROM pages WHERE search_rowid IN ({ph}) AND {subset}",
                 chunk,
             ).fetchall())
 
+        best_indices_list = [i for i in best_indices_list if i in rowid_to_url]
         best_elems  = [rowid_to_url[i] for i in best_indices_list]
-        best_scores = aggregates[best_indices]
+        best_scores = aggregates[best_indices_list] if best_indices_list else aggregates[:0]
 
         if self.collocations and len(tokens) > 2 and fine_search:
             indexed_query = self.word2vec.tokens_to_indices(tokens)
@@ -1408,7 +1481,97 @@ class Indexer():
         # is most similar to the cluster centroid direction.
         #for i, c in enumerate(self.cluster_centroids):
         #    print(f"cluster {i}/{n_clusters} :", [word for word, _ in self.word2vec.wv.similar_by_vector(c, topn=5)])
-            
+
+
+    @timeit()
+    def update_incremental(self, db: sqlite3.Connection, name: str) -> int:
+        """Append newly-added documents to an EXISTING index without recomputing everything —
+        the daily/server-side counterpart to the full ``Indexer(db, …)`` build.
+
+        The "diff" is exactly the searchable rows that do not yet have a ``search_rowid`` (freshly
+        crawled/merged pages; a full build assigns 0…N-1, so anything NULL is new). For those rows
+        only, this:
+          * appends their postings to the BM25 CSR (``ranker.add_documents`` — no full re-read);
+          * projects their vectors with the STORED principal component(s) (``self.pc`` reused, PCA
+            NOT refit) and appends them to ``self.vectors``;
+          * assigns ``search_rowid = N, N+1, …`` (append, never renumbers the existing rows, so the
+            pickled arrays stay aligned);
+          * assigns each new doc to the NEAREST EXISTING K-means centroid (``self.cluster_centroids``
+            reused, K-means NOT refit) and extends ``cluster_doc_indices``;
+          * refreshes the dashboard stats + the integrity fingerprint, and re-saves the artifact.
+
+        Cost scales with the delta, not the corpus. Documents that LEFT the subset (in_index 1→0),
+        were deleted, or were replaced by a re-crawl (a new row is appended; the old one is dropped by
+        dedup) leave "holes": stale positions that stay in the arrays until the next full rebuild.
+        They are harmless — ``rank()`` restricts its URL fetch to the live searchable subset, so a
+        hole resolves to nothing and is skipped — they only bloat the index until a periodic full
+        rebuild reclaims them. Returns the number of documents appended.
+        """
+        subset = _subset_clause(db)
+
+        # The pickled vectors occupy positions 0..base-1, so new rows must append at `base`. Rows
+        # deleted or demoted since the last build leave holes (positions still in the arrays, no
+        # live row) — those are tolerated: rank() skips them. The one thing that must hold is that
+        # NO existing search_rowid is >= base, otherwise appending at `base` would collide.
+        base = int(self.vectors.shape[0])
+        max_sr = db.execute("SELECT MAX(search_rowid) FROM pages").fetchone()[0]
+        if max_sr is not None and max_sr >= base:
+            raise RuntimeError(
+                f"Index/DB misaligned: found search_rowid {max_sr} >= {base} pickled vectors. "
+                f"Run a FULL rebuild (chantal-05 without --incremental)."
+            )
+
+        rows = db.execute(
+            f"SELECT rowid, stemmed, vectorized FROM pages "
+            f"WHERE {subset} AND search_rowid IS NULL ORDER BY rowid"
+        ).fetchall()
+        if not rows:
+            print("Incremental index: no new documents — nothing to do.")
+            return 0
+
+        key_to_index = self.word2vec.wv.key_to_index
+        new_corpus = [
+            [key_to_index[w] for sentence in stemmed for w in sentence if w in key_to_index]
+            for (_, stemmed, _) in rows
+        ]
+        new_vecs = np.array([v for (_, _, v) in rows], dtype=np.float32)
+
+        # 1. BM25 append (reuses existing postings; IDF/avgdl recomputed from updated frequencies).
+        self.ranker.add_documents(new_corpus)
+
+        # 2. Vectors: project with the EXISTING principal component(s), append (PCA not refit).
+        self.vectors = np.vstack([self.vectors, self.normalize_pc(new_vecs)])
+
+        # 3. Assign search_rowid = base, base+1, … (append; existing rows keep their ids).
+        db.executemany(
+            "UPDATE pages SET search_rowid = ? WHERE rowid = ?",
+            [(base + j, rows[j][0]) for j in range(len(rows))],
+        )
+        db.commit()
+
+        # 4. Assign each new doc to the nearest EXISTING cluster centroid (K-means not refit).
+        centroids = getattr(self, "cluster_centroids", None)
+        if centroids is not None and len(centroids):
+            keys = list(self.cluster_doc_indices.keys())
+            nearest = (self.vectors[base:] @ centroids.T).argmax(axis=1)
+            for j, pos in enumerate(nearest):
+                k = keys[int(pos)]
+                self.cluster_doc_indices[k] = np.append(
+                    self.cluster_doc_indices[k], np.int32(base + j)
+                )
+
+        # 5. Refresh stats + integrity fingerprint, then re-save the artifact.
+        self.stats = self.build_stats(db)
+        self.pages = self.stats["pages"]
+        self.words = self.stats["words"]
+        self.save_search_stats(db, self.stats)
+        self.save_categories_index(db, self.stats["category_counts"])
+        self.index_fingerprint = self._compute_fingerprint(db)
+        self.save(name)
+
+        print(f"Incremental index: appended {len(rows)} documents ({base} → {self.vectors.shape[0]}).")
+        return len(rows)
+
 
     def compute_ctfidf_labels(self, labels: np.ndarray, top_n: int = 10) -> dict[int, list[str]]:
         """
