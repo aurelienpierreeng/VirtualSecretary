@@ -440,6 +440,12 @@ def get_db_filename(db: sqlite3.Connection) -> str:
 
 
 def close_db(db: sqlite3.Connection):
+   # A read-only connection (open_db(mode="ro") sets query_only = ON, or the file
+   # is immutable) can neither vacuum nor commit — just close it.
+   if db.execute("PRAGMA query_only").fetchone()[0]:
+       db.close()
+       return
+
    # incremental_vacuum does its work as its result rows are stepped, so it must
    # be drained to run fully (a bare execute frees at most one page).
    db.execute("PRAGMA incremental_vacuum").fetchall()
