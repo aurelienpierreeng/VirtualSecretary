@@ -15,6 +15,7 @@ import pickle
 import tarfile
 import time
 import signal
+import threading
 import numba
 import psutil
 import unicodedata
@@ -846,6 +847,14 @@ def exit_after(s: int):
     """
     def outer(fn):
         def inner(*args, **kwargs):
+            # signal.alarm / signal.signal only work in the MAIN thread. In a worker thread
+            # (e.g. CrawlManager runs each source's crawl in its own thread) they raise
+            # "signal only works in main thread of the main interpreter", which the crawler's
+            # parse path swallows as "Page content error" — silently dropping EVERY page.
+            # Off the main thread, run without the alarm watchdog (no timeout, but correct).
+            if threading.current_thread() is not threading.main_thread():
+                return fn(*args, **kwargs)
+
             def out_of_time(signum, frame):
                 raise TimeoutError
 

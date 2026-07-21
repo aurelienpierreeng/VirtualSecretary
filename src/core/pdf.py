@@ -168,11 +168,18 @@ def _extract_text_from_page(page: fitz.Page, min_chars: int = 20) -> str:
 
     # Try words order
     words = page.get_text("words")
+    text3 = ""
     if words:
         words_sorted = sorted(words, key=lambda w: (round(w[1], 1), w[0]))
         text3 = " ".join(w[4] for w in words_sorted).strip()
         if len(text3) >= min_chars:
             return text3
+
+    # None of the three methods reached min_chars (a sparse page: blank, section divider,
+    # image-only). Return the best partial as a STRING — never None — so callers that
+    # "\n".join(page text) over a whole document don't blow up on one sparse page and lose
+    # the entire PDF (this dropped every text-rich multi-page book: fairchild/hunt/kirk).
+    return max((text, text2, text3), key=len)
 
 
 
@@ -289,7 +296,7 @@ def get_pdf_content(url: str,
     # Check if the PDF contains text. Use a robust per-page extractor that
     # falls back to blocks/words then per-page OCR when necessary.
     try:
-        content = clean_whitespaces("\n".join([_extract_text_from_page(page) for page in doc]).strip("\n "))
+        content = clean_whitespaces("\n".join([_extract_text_from_page(page) or "" for page in doc]).strip("\n "))
     except:
         try:
             doc.close()
@@ -340,7 +347,7 @@ def get_pdf_content(url: str,
                 n_end = min(chapters_bounds[i + 1], doc.page_count)
                 parts = []
                 for p in range(n_start, n_end):
-                    parts.append(_extract_text_from_page(doc.load_page(p)))
+                    parts.append(_extract_text_from_page(doc.load_page(p)) or "")
                 chapter_content = clean_whitespaces("\n".join(parts).strip("\n "))
                 chapter_content = HYPHENIZED.sub("", chapter_content, concurrent=True)
 
@@ -362,9 +369,21 @@ def get_pdf_content(url: str,
                     ))
                     results.append(result)
 
-            print("found", i, "PDF chapters")
+            print("found", len(results), "PDF chapters")
             doc.close()
-            return results
+            if results:
+                return results
+            # The outline produced no usable chapters (e.g. a single-entry TOC → the pairwise
+            # range was empty, or degenerate bounds). Don't drop a document that HAS text —
+            # fall through to saving it whole as one page.
+            content = clean_whitespaces(HYPHENIZED.sub("", content))
+            if content:
+                return [sanitize_web_page(web_page(
+                    title=title, url=url, date=date, content=content, excerpt=excerpt,
+                    h1={}, h2={}, lang=lang, category=category,
+                    crawled=datetime.datetime.now(datetime.timezone.utc),
+                ))]
+            return []
 
         else:
             # Whether or not text comes from OCR, if we save it in one chunk, do it now and exit.
@@ -401,7 +420,7 @@ def get_pdf_content(url: str,
                 h2={},
                 lang=lang,
                 category=category,
-                crawled=datetime.now()
+                crawled=datetime.datetime.now(datetime.timezone.utc)
             ))
             print("found 1 PDF")
             doc.close()

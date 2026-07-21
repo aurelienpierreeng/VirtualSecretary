@@ -575,7 +575,29 @@ class Tokenizer():
         return self.normalize_text(f"{title}\n\n{content}")
 
 
-    def normalize_token(self, 
+    def tokenize_parsed(self, parsed: str, lang: str | None) -> tuple[str | None, list[list[str]]]:
+        """Crawl-time tokenization: turn already-normalized ``parsed`` text into the non-destructive
+        ``tokenized`` sentences, IDENTICALLY to [core.batching.batch_tokenize][]'s worker
+        (``n_grams=False, normalize=False, meta_tokens=True, stem=False, remove_stopwords=False``)
+        and resolving the language the same way (ISO-639-1, detected from the text when absent).
+
+        Returns ``(resolved_lang, tokenized)`` so the crawler can store both — the resolved lang
+        matches what the batch pass would write. Because the output is identical to the batch
+        worker's, a later ``batch_tokenize(only_none=True)`` is a true no-op on crawl-tokenized rows.
+        A bare :class:`Tokenizer` suffices (no trained n-grams needed); stemming/vectorising, which
+        need the trained model, stay in the later batch stages.
+        """
+        lang = parse_lang_to_iso639_1(lang)
+        if lang is None:
+            lang = detect_language(parsed)
+        tokenized = self.tokenize_document_per_sentence(
+            parsed, lang, n_grams=False, normalize=False,
+            meta_tokens=True, stem=False, remove_stopwords=False,
+        )
+        return lang, tokenized
+
+
+    def normalize_token(self,
                         word: str, 
                         language: str | None, 
                         normalize: bool = True,

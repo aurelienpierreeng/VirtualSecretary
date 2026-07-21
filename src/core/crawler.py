@@ -243,9 +243,18 @@ def parse_page(page: ParsedHTML,
         # from a previous crawl — can be detected and skipped early.
         parsed = None
         content_hash = None
+        tokenized = None
+        page_lang = page.lang or lang
         if tokenizer is not None:
             parsed = tokenizer.compute_parsed(page.title, page.content)
             content_hash = compute_content_hash(parsed)
+            # Crawl-time tokenization: fill the `tokenized` column now, while the crawl is mostly
+            # blocked on network I/O and rate-limit sleeps, so this CPU work overlaps other sources'
+            # idle time (in CrawlManager) instead of waiting for the batch stage. Uses the SAME
+            # Tokenizer instance as the batch pass, so `batch_tokenize(only_none=True)` later is a
+            # no-op on these rows. `page_lang` is upgraded to the resolved ISO-639-1 code, matching
+            # what batch_tokenize would have written.
+            page_lang, tokenized = tokenizer.tokenize_parsed(parsed, page_lang)
 
         result = sanitize_web_page(web_page(
             title=page.title,
@@ -255,10 +264,11 @@ def parse_page(page: ParsedHTML,
             excerpt=page.excerpt,
             h1=page.h1,
             h2=page.h2,
-            lang=page.lang or lang,
+            lang=page_lang,
             category=category,
             crawled=datetime.datetime.now(datetime.timezone.utc),
             parsed=parsed,
+            tokenized=tokenized,
             content_hash=content_hash,
         ))
         print(f"Parsed: {result['url']} [{result['lang']}] hash={result['content_hash'][:12]}")
@@ -2219,12 +2229,25 @@ class Crawler(DelayedClass):
         written = 0
         cdx = ("http://web.archive.org/cdx/search/cdx?url=" + url_prefix +
                "&filter=statuscode:200&filter=mimetype:text/html&collapse=urlkey&fl=original,timestamp")
-        self.sleep("web.archive.org", 3.0)
-        try:
-            resp = requests.get(cdx, timeout=180, headers=HEADER)
-            lines = [ln for ln in resp.text.splitlines() if ln.strip()]
-        except Exception as e:
-            print(f"[wayback] CDX query failed: {e}")
+        # archive.org rate-limits the CDX API; under throttling it returns a non-200 or a truncated
+        # body (a "successful" partial result that silently under-counts). Retry with backoff on any
+        # error/non-200/empty. Truncation isn't perfectly detectable here, but this job skips
+        # already-indexed URLs, so a later re-run picks up whatever a throttled response missed.
+        lines = []
+        for attempt in range(4):
+            self.sleep("web.archive.org", 3.0)
+            try:
+                resp = requests.get(cdx, timeout=180, headers=HEADER)
+                if resp.status_code == 200 and resp.text.strip():
+                    lines = [ln for ln in resp.text.splitlines() if ln.strip()]
+                    break
+                print(f"[wayback] CDX attempt {attempt + 1}/4: HTTP {resp.status_code}, "
+                      f"{len(resp.text)} bytes — retrying")
+            except Exception as e:
+                print(f"[wayback] CDX attempt {attempt + 1}/4 failed: {e}")
+            time.sleep(5 * (attempt + 1))
+        if not lines:
+            print("[wayback] CDX query failed after retries")
             return written
         print(f"[wayback] {len(lines)} archived captures matching {url_prefix!r}")
 
