@@ -2193,22 +2193,30 @@ class StemTokenIndex:
 
         self.tokenizer = tokenizer
 
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS stem_tokens (
-                stem        TEXT NOT NULL,
-                token       TEXT NOT NULL,
-                occurrences INTEGER NOT NULL DEFAULT 0,
+        # The deployed serve DB is opened read-only (open_db mode="ro" -> query_only=ON) and
+        # already carries the stem_tokens table + its index (built at index time, projected into
+        # the slim by chantal-09). Issuing any CREATE here on that connection raises "attempt to
+        # write a readonly database" and takes down EVERY query (get_most_probable_tokens builds a
+        # StemTokenIndex per request). So only run the schema DDL when the DB is actually writable
+        # (build/index time); at serve time the schema is a precondition, not something to create.
+        read_only = db.execute("PRAGMA query_only").fetchone()[0]
+        if not read_only:
+            db.execute("""
+                CREATE TABLE IF NOT EXISTS stem_tokens (
+                    stem        TEXT NOT NULL,
+                    token       TEXT NOT NULL,
+                    occurrences INTEGER NOT NULL DEFAULT 0,
 
-                PRIMARY KEY (stem, token)
-            ) WITHOUT ROWID
-        """)
+                    PRIMARY KEY (stem, token)
+                ) WITHOUT ROWID
+            """)
 
-        db.execute("""
-            CREATE INDEX IF NOT EXISTS idx_stem_tokens_stem_freq
-            ON stem_tokens(stem, occurrences DESC)
-        """)
+            db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_stem_tokens_stem_freq
+                ON stem_tokens(stem, occurrences DESC)
+            """)
 
-        db.commit()
+            db.commit()
 
     @timeit()
     def build(self, db: sqlite3.Connection, chunksize: int = 512):

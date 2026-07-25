@@ -17,6 +17,7 @@ from .database import *
 from .deduplicator import *
 
 from concurrent import futures
+from collections import Counter
 import unicodedata as ud
 import multiprocessing
 import sqlite3
@@ -322,12 +323,44 @@ def _batch_stem_worker(inputs: tuple[int, list[list[str]], str | None]) -> tuple
     return lang, stemmed, rowid # keep order in sync with updating SQL query
 
 
+def _batch_stem_pairs_worker(inputs: tuple[int, list[list[str]], str | None]):
+    """Like `_batch_stem_worker`, but ALSO returns the (stem, token) occurrence pairs for the row,
+    so `batch_stem(build_stem_tokens=True)` can populate the `stem_tokens` reverse-lookup table in
+    the SAME pass — no separate re-stemming step. The pairs are built per-token (as
+    `core.nlp.StemTokenIndex` does) because the `stemmed` sentences don't preserve the token→stem
+    correspondence the reverse lookup needs."""
+    rowid, tokenized, lang = inputs
+    lang = parse_lang_to_iso639_1(lang)
+
+    if TOKENIZER.supports_ngrams:
+        stemmed = [TOKENIZER.post_filter_tokens(TOKENIZER.replace_ngrams(sentence), lang,
+                                                normalize=True, meta_tokens=True,
+                                                stem=True, remove_stopwords=True)
+                   for sentence in tokenized]
+    else:
+        stemmed = [TOKENIZER.post_filter_tokens(sentence, lang,
+                                                normalize=True, meta_tokens=True,
+                                                stem=True, remove_stopwords=True)
+                   for sentence in tokenized]
+
+    counter = Counter()
+    for sentence in tokenized:
+        for token in sentence:
+            stem = TOKENIZER.normalize_token(token, lang, meta_tokens=True, stem=True,
+                                             normalize=True, remove_stopwords=True)
+            if stem and token:
+                counter[(stem, token)] += 1
+
+    return lang, stemmed, rowid, list(counter.items())
+
+
 @timeit()
-def batch_stem(db: sqlite3.Connection, 
-               tokenizer: Tokenizer, 
-               chunksize: int = 512, 
+def batch_stem(db: sqlite3.Connection,
+               tokenizer: Tokenizer,
+               chunksize: int = 512,
                urls: list[str] | None = None,
-               only_none: bool = True):
+               only_none: bool = True,
+               build_stem_tokens: bool = False):
     """Tokenize and stem a list of `web_pages` in parallel, in a RAM-friendly way, directly in database.
 
     Populate the `stemmed` database column from the `tokenized` column. This needs to run after
@@ -363,20 +396,49 @@ def batch_stem(db: sqlite3.Connection,
 
     processed_batches = 0
     num_batches = int(np.ceil(row_count / batch_size))
-    print(f"Batch stemming: {row_count} to update, {num_batches} batches")
+    print(f"Batch stemming: {row_count} to update, {num_batches} batches"
+          + (" (+ stem_tokens)" if build_stem_tokens else ""))
+
+    # Optional side-output: build the `stem_tokens` reverse-lookup table (stem → token → frequency)
+    # in the SAME pass, so it never needs a separate re-stemming step. Only meaningful over the full
+    # corpus (not a `urls=`/`only_none` subset), so it is rebuilt fresh here.
+    if build_stem_tokens:
+        db.execute("""CREATE TABLE IF NOT EXISTS stem_tokens (
+                          stem TEXT NOT NULL, token TEXT NOT NULL,
+                          occurrences INTEGER NOT NULL DEFAULT 0,
+                          PRIMARY KEY (stem, token)) WITHOUT ROWID""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_stem_tokens_stem_freq ON stem_tokens(stem, occurrences DESC)")
+        db.execute("DELETE FROM stem_tokens")
+        db.commit()
+    worker = _batch_stem_pairs_worker if build_stem_tokens else _batch_stem_worker
 
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=num_cpu,
         initializer=_init_tokenizer_worker,
         initargs=(tokenizer,),
-    ) as executor:       
+    ) as executor:
         while True:
             batch = cursor.fetchmany(batch_size)
             if not batch:
                 break
 
-            results = executor.map(_batch_stem_worker, batch, chunksize=chunksize)
-            db.executemany('UPDATE pages SET lang=?, stemmed=? WHERE rowid=?', results)
+            results = list(executor.map(worker, batch, chunksize=chunksize))
+
+            if build_stem_tokens:
+                # results are (lang, stemmed, rowid, pairs); split the UPDATE tuple from the pairs.
+                db.executemany('UPDATE pages SET lang=?, stemmed=? WHERE rowid=?',
+                               ((lang, stemmed, rowid) for lang, stemmed, rowid, _ in results))
+                merged = Counter()
+                for _, _, _, pairs in results:
+                    for key, c in pairs:
+                        merged[key] += c
+                if merged:
+                    db.executemany(
+                        "INSERT INTO stem_tokens(stem, token, occurrences) VALUES (?, ?, ?) "
+                        "ON CONFLICT(stem, token) DO UPDATE SET occurrences = occurrences + excluded.occurrences",
+                        ((stem, token, c) for (stem, token), c in merged.items()))
+            else:
+                db.executemany('UPDATE pages SET lang=?, stemmed=? WHERE rowid=?', results)
             db.commit()
 
             processed_batches += 1
