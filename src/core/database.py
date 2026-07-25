@@ -112,6 +112,10 @@ def create_db(name: str, url_primary_key: bool = True) -> sqlite3.Connection:
     if not url_primary_key:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_url ON pages(url)")
 
+    # `crawled` drives delta export (WHERE crawled > since) and the merger's MAX(crawled) watermark.
+    # Without this index both are full-table scans on the 20 GB canonical (≈90 s each).
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_crawled ON pages(crawled)")
+
     # Fetch existing columns
     existing_columns = {
         row[1]
