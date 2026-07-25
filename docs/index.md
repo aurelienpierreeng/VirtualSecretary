@@ -349,12 +349,11 @@ The model will be stored in a file named `classifier.joblib` that can be saved a
 
 ```python
 
-from core import crawler, utils, deduplicator, nlp, batching, database, types, language, search
+from core import crawler, nlp, batching, database, language, search
 
-dataset_name = "ansel"
-
-# Open a temp database to save the pages
-tmp_db = database.create_temp_db()
+# ONE database — the canonical corpus. No URL primary key: the crawler writes into it
+# directly and resolves duplicates by content as it goes (no temp/permanent split).
+db = database.create_db("engine.db", url_primary_key=False)
 
 # Instanciate a tokenizer that will split sentences into single words
 # and remove English stopwords
@@ -366,31 +365,16 @@ tokenizer = nlp.Tokenizer(replacements=language.REPLACEMENTS,
 # 1. Acquire data from the web
 #######################################################################
 
-# Crawl the website content
-with crawler.Crawler(delay=1.) as cr:
-  output = cr.get_website_from_sitemap("https://ansel.photos",
-                                        "en",
-                                        sitemap="/en/sitemap.xml",
-                                        markup=("div", {"id": "content-body"}),
-                                        category="reference",
-                                        internal_links="external",
-                                        mine_pdf=True)
-# Dump the pages into the database
-database.populate_db(tmp_db, output)
-
-# Cleanup and prepare crawled data: extract dates and guess language
-batching.batch_parse_web_page(tmp_db, tokenizer)
-
-# Deduplicate pages
-dedup = deduplicator.Deduplicator()
-dedup(tmp_db)
-
-# Tokenize the whole corpus
-batching.batch_tokenize(tmd_db, tokenizer, only_none=False)
-
-# Compress and save the database for later reuse
-database.compress_db(tmp_db)
-utils.save_data(tmp_db, dataset_name)
+# The DB-native crawler writes straight into the canonical and normalises,
+# tokenises and dedups as it goes — no list to manage, no tarball to save.
+with crawler.Crawler(delay=1., tokenizer=tokenizer) as cr:
+    cr.begin_dataset(db, "ansel")               # attach the DB + compute the crawl watermark
+    cr.get_website_from_sitemap("https://ansel.photos", "en",
+                                markup=("div", {"id": "content-body"}),
+                                category="reference",
+                                internal_links="external",
+                                mine_pdf=True)
+    cr.commit_dataset("ansel")                  # flush + parse (parsed/content_hash) + dedup
 
 #######################################################################
 # 2. Train the language model
@@ -414,7 +398,7 @@ tokenizer.save("my-tokenizer")
 # load it from disk in the future with `nlp.Tokenizer.load("my-tokenizer")`
 
 # Stem words for generality, with n-grams detection
-batching.batch_stem(tmp_db, tokenizer)
+batching.batch_stem(db, tokenizer)
 
 # Train Word2Vec model only on English documents for proper semantics
 corpus = database.SQLitePageCorpus(db,
@@ -429,20 +413,18 @@ w2v = nlp.Word2Vec(corpus,
 # load it from disk in the future with `nlp.Word2Vec.load_model("word2vec-public")`
 
 #######################################################################
-# 3. Build the search engine
+# 3. Vectorise and build the search engine
 #######################################################################
 
-# Build the permament database, indexed by URL as primary key
-db = database.create_db("engine.db")
-database.import_pages(source_db=tmp_db, destination_db=db)
-database.compress_db(db)
-database.delete_tmp_db(tmp_db) # we will not need the temp DB anymore
+# Embed each page as a centroid vector (needs the trained model)
+batching.batch_vectorize(db, w2v)
 
 # Instanciate the search engine object, with expensive variable pre-computing
 engine = search.Indexer(db, "engine", w2v, principal_components=2)
 # this will be automatically saved to disk
 # load it from disk in the future with `search.Indexer.load("engine", db)`
 
+database.compress_db(db)
 database.close_db(db)
 ```
 

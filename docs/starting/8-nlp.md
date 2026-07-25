@@ -4,7 +4,7 @@
 
 The [Word2Vec][core.nlp.Word2Vec] model is trained from pre-tokenized documents. Each document is a list of sentences, and each sentence is a list of tokens. The [Tokenizer][core.nlp.Tokenizer] object is therefore part of the training pipeline and is saved inside the model so production code can tokenize new text the same way.
 
-Assuming you already saved a dataset of `web_page` objects with [core.utils.save_data][], create a user script:
+The corpus is streamed straight out of the canonical database the [crawler](6-crawling-pages.md) fills — the `tokenized` column is written at crawl time, so there is nothing to pre-process and nothing to hold in RAM. [`database.SQLitePageCorpus`][core.database.SQLitePageCorpus] is a lazy iterable that drives the SQL cursor one row at a time, and gensim consumes it as a streaming corpus (one pass to build the vocabulary, then one per epoch). Create a user script:
 
 ```python
 # Boilerplate stuff to access src/core from src/user_scripts
@@ -15,16 +15,19 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
 
 # Here starts the real code
-from core import nlp, utils
+from core import nlp, database
 
 tokenizer = nlp.Tokenizer()
-pages = utils.open_data("ansel", scheme="pickle")
+db = database.open_db("corpus.db", mode="ro")
 
-documents = [
-    tokenizer.tokenize_document_per_sentence(page["content"])
-    for page in pages
-    if page["content"]
-]
+# Stream the pre-tokenized sentences of every FR/EN page (max_depth=0 keeps the
+# per-sentence nesting Word2Vec expects). The language filter is applied inside
+# the SQL query, i.e. during streaming — no whole-corpus copy in memory.
+documents = database.SQLitePageCorpus(
+    db,
+    "SELECT tokenized FROM pages WHERE lang IN ('fr', 'en')",
+    max_depth=0,
+)
 
 w2v = nlp.Word2Vec(
     documents,
@@ -38,6 +41,7 @@ w2v = nlp.Word2Vec(
 )
 
 print(w2v.wv.most_similar(w2v.tokenizer.normalize_token("free", "en")))
+db.close()
 ```
 
 This saves a `word2vec-ansel` model into `VirtualSecretary/models`. To retrieve it later:

@@ -1,84 +1,87 @@
 # Crawling Pages
 
-Whether you want to build a language model for an email classifier or a search engine for information retrieval, you will need to aggregate a corpus of text documents. Virtual Secretary has built-in methods to crawl HTML and PDF documents from websites, assemble them into a SQLite database, and remove duplicate documents to maintain a clean index.
+Whether you want to build a language model for an email classifier or a search engine for information retrieval, you will need to aggregate a corpus of text documents. Virtual Secretary provides methods to crawl HTML and PDF documents from websites, assemble them into a single SQLite database, and remove duplicate documents as it goes to keep a clean index.
 
-## Getting Page Content
+## The DB-native crawl model
 
-### Websites with Sitemaps
-
-The easiest case is websites that publish a [sitemap](https://en.wikipedia.org/wiki/Sitemaps) — an XML file listing all pages the webmaster wants search engines to index. Most [CMS](https://en.wikipedia.org/wiki/Content_management_system) platforms include sitemap support out of the box. The usual location is `https://your-domain.com/sitemap.xml`. Sitemaps can be nested (a sitemap-of-sitemaps); both flat and nested structures are handled transparently by `Crawler.get_website_from_sitemap()`.
-
-Crawl output should always go into a temporary database first (no primary-key constraint on `url`), be cleaned up and deduplicated, then promoted to the permanent store. See [Deduplication](#deduplication) for the full pattern.
-
-In your `VirtualSecretary/src/user-scripts/` directory, create a new script called for example `scrape-ansel.py`, in which you can put:
+The crawler is **DB-native**: instead of returning a list of pages that you then save, it writes each page straight into **one corpus database** and deduplicates as it writes. A crawl has three moves — attach a database, fetch, finalise — expressed with [`begin_dataset`][core.crawler.Crawler.begin_dataset] / `get_*` / [`commit_dataset`][core.crawler.Crawler.commit_dataset]:
 
 ```python
-# Boilerplate stuff to call core package from user scripts
+# Boilerplate so a user script can import the core package
 import os
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.dirname(SCRIPT_DIR))
 
-from core import crawler, database, deduplicator, nlp, batching
+from core import crawler, database
 
-tmp_db = database.create_temp_db()
+# One corpus database. `url_primary_key=False`: the crawler writes into it directly,
+# the same URL may be captured several ways, and duplication is resolved by content
+# rather than enforced by the schema.
+db = database.create_db("corpus.db", url_primary_key=False)
 
 with crawler.Crawler(delay=1.0) as cr:
-    pages = cr.get_website_from_sitemap(
+    cr.begin_dataset(db, "ansel")          # attach the DB + compute the crawl-since watermark
+    cr.get_website_from_sitemap(
         website      = "https://ansel.photos",
         default_lang = "en",
         markup       = "article",
         category     = "reference",
     )
-
-database.populate_db(tmp_db, pages)
+    cr.commit_dataset("ansel")             # flush writes, normalise, deduplicate the delta
 ```
 
-The `default_lang` argument is used as a fallback when the HTML page does not declare a language. Language is later confirmed or overridden by machine-learning detection during text normalisation (`batch_parse_web_page`).
+- The `"ansel"` string is a **dataset tag** written on every page this call produces (its provenance). A page shared by several sources keeps all their tags.
+- `begin_dataset` reads the existing rows for that tag to figure out what to skip — crawls are **incremental by default** (see below).
+- `commit_dataset` flushes the buffered writes, runs the crawl-time NLP prep, and deduplicates just the rows this run touched.
 
-### The `markup` Parameter
+The `default_lang` argument is a fallback used when a page does not declare a language; the real language is confirmed by machine-learning detection during normalisation.
 
-Both crawling methods accept a `markup` argument that restricts content extraction to specific HTML elements, letting you capture article bodies while discarding sidebars, headers, and navigation menus:
+!!! tip "Live demo"
+    The photography-domain search engine at **[chantal.aurelienpierre.com](https://chantal.aurelienpierre.com)** is built on these APIs. Its own crawl jobs, orchestration scripts, and app code are a private reference implementation; this guide reproduces the same patterns with the public library.
+
+---
+
+## Getting page content
+
+### Websites with sitemaps
+
+The easiest case is a website that publishes a [sitemap](https://en.wikipedia.org/wiki/Sitemaps). The usual location is `https://your-domain.com/sitemap.xml`; nested sitemaps (a sitemap-of-sitemaps) are handled transparently.
+
+### The `markup` parameter
+
+Both crawling methods accept a `markup` argument that restricts content extraction to specific HTML elements, so you capture the article body and discard sidebars, headers, and navigation:
 
 ```python
-# Plain tag name
-markup = "article"
-
-# Tag + CSS attribute dict (BeautifulSoup find_all syntax)
-markup = ("div", {"class": "post-content"})
-
-# Tag + id
-markup = ("div", {"id": "main-content"})
-
-# Multiple selectors — content from all matches is concatenated in order
-markup = [("div", {"id": "content"}), ("article", {"class": "entry"})]
-
-# "body" / None — grab the whole body (suitable for documentation and reference pages)
-markup = "body"
+markup = "article"                                   # plain tag name
+markup = ("div", {"class": "post-content"})          # tag + CSS attribute dict
+markup = ("div", {"id": "main-content"})             # tag + id
+markup = [("div", {"id": "content"}),                # several selectors,
+          ("article", {"class": "entry"})]           #   concatenated in order
+markup = "body"                                      # whole <body> (docs / reference pages)
 ```
 
 ### Filtering with `contains_str`
 
-The `contains_str` argument restricts which URLs get *added to the index*. Pages not matching the filter are still visited to discover new links, but their content is discarded:
+`contains_str` restricts which URLs are *indexed*. Non-matching pages are still visited to discover new links, but their content is discarded:
 
 ```python
-# Only index thread pages, skip user profiles and category archives
-pages = cr.get_website_from_sitemap(
+cr.get_website_from_sitemap(
     website      = "https://discuss.pixls.us",
     default_lang = "en",
     markup       = ("div", {"class": "topic-body"}),
-    contains_str = "/t/",        # also accepts a list: ["/t/", "/articles/"]
+    contains_str = "/t/",          # also accepts a list: ["/t/", "/articles/"]
     category     = "forum",
 )
 ```
 
-### Extending Coverage with `internal_links`
+### Extending coverage with `internal_links`
 
-By default the sitemap crawler only indexes pages listed in `sitemap.xml`. Set `internal_links="external"` to also follow and index every `<a>` link found in those pages content — useful when to also index referenced pages and PDFs outside of the current website:
+By default the sitemap crawler only indexes pages listed in `sitemap.xml`. Set `internal_links="external"` to also follow and index every `<a>` link found in the pages' content — useful to pull in referenced pages and PDFs outside the current site:
 
 ```python
-pages = cr.get_website_from_sitemap(
+cr.get_website_from_sitemap(
     website        = "https://aurelienpierre.com",
     default_lang   = "fr",
     markup         = ("div", {"class": "post-content"}),
@@ -88,606 +91,307 @@ pages = cr.get_website_from_sitemap(
 )
 ```
 
-### Websites without Sitemaps
+### Websites without a sitemap
 
-Many forum platforms and institutional websites do not publish a sitemap. Use `get_website_from_crawling()` to recursively follow links from an entry point instead:
+Use [`get_website_from_crawling`][core.crawler.Crawler.get_website_from_crawling] to recursively follow links from an entry point:
 
 ```python
-with crawler.Crawler(delay=1.5) as cr:
-    pages = cr.get_website_from_crawling(
-        website      = "https://community.ansel.photos",
-        default_lang = "en",
-        child        = "/discussions-home/",   # entry page within the domain
-        markup       = [("div", {"class": "bx-content-description"}),
-                        ("div", {"class": "cmt-body"})],
-        contains_str = "/view-discussion/",
-        category     = "forum",
-    )
+cr.get_website_from_crawling(
+    website      = "https://community.ansel.photos",
+    default_lang = "en",
+    child        = "/discussions-home/",     # entry page within the domain (default "/")
+    markup       = [("div", {"class": "bx-content-description"}),
+                    ("div", {"class": "cmt-body"})],
+    contains_str = "/view-discussion/",
+    category     = "forum",
+)
 ```
 
-The `child` argument defines the starting page within the domain (defaults to `/`). Pages not matching `contains_str` are still visited to find new links, but their content is not indexed.
-
-To prevent accidentally crawling beyond a specific section — essential on large sites — use `restrict_section=True` combined with `child`. Link-following will then stay within `website + child/*`:
+To keep a recursive crawl inside one section of a large site, combine `child` with `restrict_section=True` — link-following then stays within `website + child/*`:
 
 ```python
-pages = cr.get_website_from_crawling(
+cr.get_website_from_crawling(
     website           = "https://discuss.pixls.us",
     default_lang      = "en",
     child             = "/c/software/darktable",
     contains_str      = "/t/",
     markup            = ("div", {"class": "topic-body"}),
-    max_recurse_level = -1,       # -1 = exhaustive, no depth limit
-    restrict_section  = True,     # stay within /c/software/darktable/*
+    max_recurse_level = -1,      # -1 = exhaustive, no depth limit
+    restrict_section  = True,    # stay within /c/software/darktable/*
     category          = "forum",
 )
 ```
 
-### Combining Crawling Methods
+### Combining methods in one crawl
 
-A single `Crawler` instance tracks already-visited URLs across calls, so mixing sitemap and recursive crawling within one `with` block will never fetch the same URL twice, which makes it much more efficient for domains that use different CMS (for example, forum/community + blog) that often link against each other:
+A single `Crawler` tracks already-visited URLs across calls, so mixing sitemap and recursive crawling between one `begin_dataset` and `commit_dataset` never fetches the same URL twice — handy for a domain that runs a forum and a blog on different CMS that link to each other:
 
 ```python
-tmp_db = database.create_temp_db()
-
 with crawler.Crawler(delay=1.0) as cr:
-    pages  = cr.get_website_from_sitemap("https://docs.darktable.org", "en",
-                                          markup="body", category="docs")
-    pages += cr.get_website_from_crawling("https://darktable.fr", "fr",
-                                           child="/blog/", markup="article",
-                                           category="blog")
-
-database.populate_db(tmp_db, pages)
+    cr.begin_dataset(db, "darktable")
+    cr.get_website_from_sitemap("https://docs.darktable.org", "en",
+                                markup="body", category="docs")
+    cr.get_website_from_crawling("https://darktable.fr", "fr",
+                                 child="/blog/", markup="article", category="blog")
+    cr.commit_dataset("darktable")
 ```
+
+---
 
 ## Incremental crawling
 
-All crawling methods — HTML, PDF, YouTube, and GitHub — share the same two-attribute incremental-update mechanism:
+Incremental updates are **automatic**. Every write stamps the page with `crawled = now` and its `dataset` tag, so `begin_dataset` computes a per-dataset watermark — `min(latest item date, latest crawl time)` for that tag's own rows — and only re-fetches what changed since.
 
-| Attribute | How to set | Effect |
-|---|---|---|
-| `cr.known_urls` | `cr.load_known_urls(db)` | Maps URL → last crawled `datetime` from an existing database |
-| `cr.since` | `cr.since = datetime(…)` | Global cut-off: any URL in `known_urls` crawled on or after this datetime is skipped |
+The crawler exposes two attributes it fills for you, which you can also set by hand for a one-off:
 
-For sitemap crawling the page's own `<lastmod>` field takes precedence over `since`, so a page that was modified after the last crawl is re-fetched even if it was crawled recently. `since` is used as a fallback for sitemap entries that carry no `<lastmod>`.
-
-```python
-import datetime
-from core import crawler, database
-
-# Append new URLs to a temporary DB that supports
-# duplicated URLs. Deduplication will be handled after (see below)
-tmp_db = database.create_temp_db()
-
-with crawler.Crawler(delay=1.0) as cr:
-    # Populate the map once — applies to all crawling calls below:
-    # Get all known URLs from a permament DB storage
-    # where URLs are primary keys and therefore unique
-    # or ensure to deduplicate a temporary database.
-    db = database.open_db("my-engine.db")
-    cr.load_known_urls(db)
-    db.close()
-
-    cr.since = datetime.datetime(2025, 6, 1, tzinfo=datetime.timezone.utc)
-
-    # Skips sitemap entries whose <lastmod> <= stored crawl date
-    pages  = cr.get_website_from_sitemap("https://ansel.photos", "en", markup="article")
-
-    # Skips any URL crawled after cr.since
-    pages += cr.get_website_from_crawling("https://community.ansel.photos", "en",
-                                           child="/discussions-home/", contains_str="/view-discussion/")
-
-    # Skips videos crawled after cr.since (no API-side filter needed)
-    pages += cr.get_youtube_channels(
-        channel_ids  = ["UCmsSn3fujI81EKEr4NLxrcg"],
-        api_key      = "AIza…",
-        since        = cr.since,
-    )
-
-    # Passes since to the GitHub API's ?since= param for issues/pulls/commits
-    pages += cr.get_github_repositories(
-        repositories = [("aurelienpierreeng", "ansel")],
-        api_key      = "ghp_…",
-        since        = cr.since,
-    )
-
-    # Passes since as fromdate to the SE API; also does per-post last_edit_date check
-    pages += cr.get_stackexchange_posts(
-        site    = "photo",
-        api_key = "YOUR_SE_APP_KEY",
-        since   = cr.since,
-    )
-
-database.populate_db(tmp_db, pages)
-tmp_db.close()
-```
-
-Recursively crawling websites that don't have a sitemap is expensive and can take ages. So you may want to re-crawl them only once every `n` months, which can be achieved automatically in your script with:
-
-```python
-import utils
-
-# Recrawl everything older than 3 months
-cr.since = utils.get_past_n_months(3)
-```
-
-Then you don't need to worry about updating dates manually.
-
-## Mining PDF Documents
-
-### Embedded in a Crawl
-
-Pass `mine_pdf=True` to either crawling method and every `.pdf` link found on the pages will be automatically downloaded and extracted — no separate handling needed:
-
-```python
-pages = cr.get_website_from_sitemap(
-    website      = "https://www.cie.co.at/publications",
-    default_lang = "en",
-    markup       = "body",
-    mine_pdf     = True,
-)
-```
-
-### Direct `get_pdf_content()` Call
-
-For PDFs that are not reachable through a crawl — large reference books, local files, or document archives — use `pdf.get_pdf_content()` directly. It handles both remote URLs and local file paths, extracts the table of contents to split long documents by chapter, and falls back to Tesseract OCR for scanned images:
-
-```python
-from core.pdf import get_pdf_content
-from core.network import DelayedClass
-
-class SimpleDelay(DelayedClass):
-    """Minimal rate-limiter required by the get_pdf_content API."""
-    def __init__(self):
-        self.delay = 0.5
-        self.last_requests = {}
-        self.domain_thresholds = {}
-        self.main_domain = None
-        self.robots_txt = None
-
-delay = SimpleDelay()
-
-# Remote PDF — split by table of contents into individual chapters
-sections = get_pdf_content(
-    url             = "https://colour-science.org/papers/luo_2001.pdf",
-    lang            = "en",
-    delay           = delay,
-    process_outline = True,   # each ToC entry becomes its own web_page
-    category        = "paper",
-    ocr             = 1,      # use OCR only when no embedded text is found (default)
-)
-
-# Local scanned PDF — force full OCR
-sections += get_pdf_content(
-    url       = "https://onlinelibrary.wiley.com/doi/book/10.1002/9781118653128",
-    lang      = "en",
-    delay     = delay,
-    file_path = "/home/user/fairchild_color_appearance_models.pdf",
-    ocr       = 2,       # force OCR even when embedded text is present
-    max_size  = 50,      # skip files larger than 50 MiB
-    max_pages = 800,
-    repair    = 2,       # image pre-processing strength (0–3)
-    upscale   = 3,       # upscaling factor before OCR
-    contrast  = 1.4,
-)
-
-database.populate_db(tmp_db, sections)
-```
-
-The URL passed as the first argument is used as the canonical address stored in the index. When `process_outline=True`, each section's URL receives a `#page=n` fragment so deep-linking from search results works directly in Chrome and Acrobat Reader.
-
-The `ocr` parameter controls when OCR is attempted:
-
-| Value | Behaviour |
+| Attribute | Effect |
 |---|---|
-| `0` | Never — text extraction only |
-| `1` | Only when no embedded text is found (default) |
-| `2` | Always, even when embedded text is present |
+| `cr.since` | Global cut-off: URLs already crawled at/after this datetime are skipped |
+| `cr.known_urls` | Map URL → last-crawled datetime, preloaded for this dataset |
 
-### Custom PDF Handling
+For sitemap crawling the page's own `<lastmod>` takes precedence over `since`, so a page modified after the last crawl is re-fetched even if it was crawled recently; `since` is the fallback for entries with no `<lastmod>`. The REST-API sources use `since` too — GitHub passes it to the API's `?since=`, Stack Exchange to `fromdate`, YouTube filters uploads client-side.
 
-If you need different extraction logic — tables, multi-column layouts, layered content — subclass `Crawler` and override `_parse_pdf_content()`:
+To force a re-crawl window by hand (e.g. re-visit an expensive recursive site only every few months):
 
 ```python
-from core import crawler, database
-from core.types import web_page, sanitize_web_page
-from io import BytesIO
-import pytesseract, pdf2image, requests
-from pypdf import PdfReader
+from core import utils
 
-def my_pdf_handler(url: str, lang: str, category: str = "") -> list[web_page]:
-    try:
-        if url.startswith("http"):
-            resp = requests.get(url, timeout=30, allow_redirects=True)
-            if resp.status_code != 200:
-                return []
-            document = BytesIO(resp.content)
-        else:
-            document = open(url, "rb")
-
-        blob = document.read()
-        reader = PdfReader(BytesIO(blob))
-
-        # Page-by-page text extraction — replace with your own logic
-        content = "\n".join(p.extract_text() or "" for p in reader.pages).strip()
-
-        if not content:
-            # No embedded text: fall back to OCR
-            for image in pdf2image.convert_from_bytes(blob):
-                content += pytesseract.image_to_string(image)
-
-        if content:
-            return [sanitize_web_page(web_page(
-                title    = url.split("/")[-1],
-                url      = url,
-                content  = content,
-                excerpt  = content[:300],
-                lang     = lang,
-                category = category,
-                h1=[], h2=[], date="",
-            ))]
-    except Exception as e:
-        print(e)
-    return []
-
-
-class MyCrawler(crawler.Crawler):
-    def _parse_pdf_content(self, link, default_lang, category="") -> list[web_page]:
-        return my_pdf_handler(link, default_lang, category=category)
-
-
-with MyCrawler(delay=1.0) as cr:
-    pages = cr.get_website_from_crawling("https://example.com", "en")
-
-database.populate_db(tmp_db, pages)
+cr.since = utils.get_past_n_months(3)     # re-crawl anything older than 3 months
 ```
 
-## Crawling from REST API
+---
 
-Some sites serve content through client-side rendering or behind APIs that are not reachable by a normal HTML crawler. Virtual Secretary exposes two dedicated `Crawler` methods for the most common cases. Both integrate with the incremental-update system and behave consistently with the HTML crawling methods.
+## Mining PDF documents
+
+### Embedded in a crawl
+
+Pass `mine_pdf=True` and every `.pdf` link found on the crawled pages is downloaded and its text extracted — no separate handling:
+
+```python
+cr.get_website_from_sitemap("https://www.cie.co.at/publications", "en",
+                            markup="body", mine_pdf=True)
+```
+
+### A single PDF (remote or local)
+
+For a PDF that is not reachable through a crawl — a large reference book, a local file — call [`get_pdf`][core.crawler.Crawler.get_pdf]. It handles both remote URLs and local file paths, splits long documents by their table of contents (one page per chapter, with a `#page=n` anchor so deep links open at the right page), and falls back to Tesseract OCR when a page has no embedded text:
+
+```python
+with crawler.Crawler(delay=1.0) as cr:
+    cr.begin_dataset(db, "fairchild")
+    cr.get_pdf(
+        "https://onlinelibrary.wiley.com/doi/book/10.1002/9781118653128",  # canonical URL stored
+        "en",
+        file_path = "/home/user/Fairchild_Color_Appearance_Models.pdf",     # read from disk
+        category  = "reference",
+    )
+    cr.commit_dataset("fairchild")
+```
+
+The first argument is always the canonical address stored in the index, even when the bytes come from `file_path`. The `ocr` parameter controls OCR: `0` never, `1` only when no embedded text is found (default), `2` always.
+
+---
+
+## Crawling from a REST API
+
+Some sites serve content through client-side rendering or behind APIs a plain HTML crawler cannot reach. Three dedicated methods build pages from those APIs; all integrate with the incremental machinery.
 
 ### YouTube channels
 
-Walks the uploads playlist of each channel via the YouTube Data API v3 and builds one `web_page` per video. The video description becomes the indexable content; title, publication date, and language are stored as metadata. No OAuth is needed for public channels — a standard API key is sufficient.
+Walks each channel's uploads playlist via the YouTube Data API v3, one page per video (description = indexable content).
 
 ```python
-pages = cr.get_youtube_channels(
-    channel_ids = [
-        "UCmsSn3fujI81EKEr4NLxrcg",   # AP Photo
-        "UCkqe4BYsllmcxo2dsF-rFQw",   # Bruce Williams
-        "UCxHYygok15XQ6bqu9FK-oCw",   # A dabble in photo
-        "UCMbDlOwmmQnkRmcb2_5WERg",   # Boris Hajdukovic
-        "UCsDxB-CSMQ0Vu_hTag7-2UQ",   # Marco Bucci
-    ],
+cr.get_youtube_channels(
+    channel_ids  = ["UCmsSn3fujI81EKEr4NLxrcg"],
     api_key      = "YOUR_GOOGLE_CLOUD_API_KEY",
     default_lang = "en",
     category     = "video",
-    since        = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc),
+    since        = cr.since,
 )
 ```
 
-Get a free API key at [console.cloud.google.com](https://console.cloud.google.com) — enable the *YouTube Data API v3*, create an API key credential, and optionally restrict it to that API and your server's IP.
+### GitHub repositories
 
-The method uses the uploads **playlist** endpoint (`playlistItems`) rather than the search endpoint, which gives complete pagination and exact upload order regardless of query ranking. After listing each video from the playlist, it makes one additional `videos?part=snippet` call per video to retrieve the full description and declared language.
-
-Rate limiting uses `self.delay` against the `www.googleapis.com` domain bucket, consistent with all other crawling calls.
-
-### Github repositories
-
-Indexes issues, pull requests, commits, and discussions from one or more repositories. Comments on issues and PRs are fetched and concatenated with the parent body. External URLs found in Markdown bodies are followed at one recursion level — the same behaviour as `get_website_from_crawling(max_recurse_level=1)` — and linked PDFs are mined when `mine_pdf=True`.
+Indexes issues, pull requests, commits, and discussions. Comments are concatenated with the parent body; external links in Markdown are followed one level; linked PDFs are mined when `mine_pdf=True`.
 
 ```python
-pages = cr.get_github_repositories(
-    repositories = [
-        ("aurelienpierreeng", "ansel"),
-        ("darktable-org",     "rawspeed"),
-        ("lensfun",           "lensfun"),
-        ("Exiv2",             "exiv2"),
-        ("darktable-org",     "darktable"),
-    ],
+cr.get_github_repositories(
+    repositories = [("aurelienpierreeng", "ansel"), ("darktable-org", "rawspeed")],
     api_key  = "ghp_YOUR_PERSONAL_ACCESS_TOKEN",
     features = ["issues", "pulls", "commits", "discussions"],
     category = "Github",
-    since    = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc),
+    since    = cr.since,
     mine_pdf = True,
 )
 ```
 
-A read-only fine-grained token scoped to the target repositories is sufficient. Generate one at [github.com/settings/tokens](https://github.com/settings/tokens). The GitHub API allows 5 000 requests/hour for authenticated users; the method sleeps for `self.delay` seconds between requests and handles 403/429 rate-limit responses by reading the `Retry-After` header and waiting.
-
-**Incremental update** is first-class: for `issues`, `pulls`, and `commits` the `?since=` query parameter is passed directly to the GitHub API, so the server returns only items updated after that date — minimising both quota usage and processing time. For `discussions` (which the REST API does not support filtering), the method fetches all pages and filters client-side by `created_at`.
-
-| Feature | Server-side `since` filter | Comment fetching |
-|---|---|---|
-| `issues` | ✅ `?since=` on `updated_at` | ✅ |
-| `pulls` | ✅ `?since=` on `updated_at` | ✅ |
-| `commits` | ✅ `?since=` on author date | — (too voluminous) |
-| `discussions` | ❌ client-side by `created_at` | — (REST API limitation) |
-
-!!! tip "Keeping GitHub and web content in the same database"
-    Because both `get_github_repositories` and the HTML crawling methods return the same `list[web_page]` type, they can all be passed to `database.populate_db` without any conversion. Pages from GitHub will carry `category="Github"` while forum crawl results carry `category="forum"`, which lets you filter them independently at query time.
-
+For `issues`/`pulls`/`commits` the `since` value is sent as the API's `?since=` filter, so the server returns only items updated after it — the fast incremental path. A read-only fine-grained token is enough.
 
 ### Stack Exchange forums
 
-Indexes all posts (questions + answers) and their embedded comments from any Stack Exchange community via the public API v2.3. Each post body and its comments are concatenated into one `web_page`. External links found in Markdown bodies are followed at one recursion level, exactly as `get_github_repositories()` does.
+Indexes questions + answers + comments from any Stack Exchange community via the public API v2.3, with a sliding date-window pattern to work around the 25-page cap and a two-layer incremental filter (`fromdate=since` server-side, plus a per-post `last_edit_date` check).
 
 ```python
-pages = cr.get_stackexchange_posts(
-    site     = "photo",             # site name as used in the SE API
-    api_key  = "YOUR_SE_APP_KEY",   # optional but strongly recommended
+cr.get_stackexchange_posts(
+    site     = "photo",             # site name as used by the SE API
+    api_key  = "YOUR_SE_APP_KEY",   # optional but raises the quota to 10 000/day
     category = "forum",
-    since    = datetime.datetime(2025, 1, 1, tzinfo=datetime.timezone.utc),
+    since    = cr.since,
 )
 ```
-
-Other community examples:
-
-```python
-# Multiple communities in one session (shared crawled_URL dedup list)
-for se_site in ["photo", "unix", "electronics", "ux"]:
-    pages += cr.get_stackexchange_posts(site=se_site, api_key="…", category="forum")
-
-# stackoverflow.com has its own domain — resolved automatically
-pages += cr.get_stackexchange_posts(site="stackoverflow", api_key="…")
-```
-
-Register a free API key at [stackapps.com/apps/oauth/register](https://stackapps.com/apps/oauth/register). Without one the daily quota is 300 requests; with a key it is 10 000. The API also sends a `backoff` field in responses that **must** be respected — the method sleeps for that duration automatically.
-
-**Pagination.** The SE API caps results at 25 pages per request without a key. The method handles this with a sliding date-window pattern: it fetches *window_days* days' worth of posts per window, then steps backward in time until `earliest_date` (default: 2010-01-01) is reached.
-
-**Incremental update.** Two layers of filtering combine:
-
-| Layer | Mechanism |
-|---|---|
-| API-level | `fromdate=since` is passed to the server — only posts created or edited after `since` are returned |
-| Post-level | Each post's `last_edit_date` is compared with `self.known_urls[url]`; unchanged posts are skipped without parsing |
-
-When `since` is provided the date-window loop collapses to a single forward pass from `since` to now — the fast incremental path.
-
-!!! tip "Choosing `window_days`"
-    Smaller windows mean more API requests but fewer results per window, reducing the risk of hitting the 25-page cap on large communities. 90 days works well for mid-size communities; use 30 days for very active ones like Stack Overflow.
-
-## Crawling Details
-
-### robots.txt
-
-The crawler respects [robots.txt](https://en.wikipedia.org/wiki/Robots.txt) automatically. For every new domain it visits it fetches `/robots.txt`, honours `Disallow` directives for its user-agent string, and reads `Crawl-delay` / `Request-rate` entries to set its per-domain inter-request throttle. If a `robots.txt` file cannot be fetched (domain unreachable, 404), crawling proceeds without restrictions.
-
-Pages listed in `sitemap.xml` are assumed pre-authorised and skip the per-URL `robots.txt` check, reducing request overhead on large sitemaps.
-
-Some servers implement Cloudflare-style bot blocking that goes beyond `robots.txt`. The crawler handles this by trying multiple user-agent / header combinations and falling back to [web.archive.org](https://web.archive.org) in last resort for pages that return persistent 403 or 404 errors.
-
-### Cleaning Up Non-Language Content
-
-Websites come with navigation menus, breadcrumbs, sidebars, and metadata sections that are not natural-language content and are not unique to any particular page. The HTML parser removes the following elements **before** text extraction:
-
-`<style>`, `<script>`, `<svg>`, `<img>`, `<picture>`, `<audio>`, `<video>`, `<iframe>`, `<embed>`, `<aside>`, `<nav>`, `<input>`, `<header>`, `<button>`, `<form>`, `<fieldset>`, `<footer>`, `<summary>`, `<dialog>`, `<textarea>`, `<select>`, `<option>`
-
-Inline `style` and `data` attributes are also stripped from all remaining elements.
-
-If this is still not enough, use the `markup` argument to whitelist specific content containers — that is usually more reliable and faster than trying to remove noise after the fact.
-
-!!! note "`<blockquote>` and `<code>` are intentionally kept"
-    Unlike some older documentation may suggest, `<blockquote>`, `<code>`, and `<pre>` blocks are **not** stripped. Quoted replies in forum pages are a known source of near-duplicate content, but that is handled by the deduplicator rather than at parse time.
-
-### The `no_follow` List
-
-Both crawling methods share a default blocklist of URLs that are never fetched — social-media share links, login and signup pages, cart pages, and user-profile paths. You can extend it at instantiation time or by appending to the attribute:
-
-```python
-# Via the constructor (preferred — applies before any crawling starts)
-with crawler.Crawler(
-    delay     = 1.0,
-    no_follow = [
-        "google.com",
-        "amazon.com",
-        "/tag/",           # tag archive pages anywhere
-        "?replytocom=",    # WordPress comment reply links
-        ".pdf",            # skip PDFs during an HTML-only crawl
-    ],
-) as cr:
-    ...
-
-    # Appending after instantiation (same effect)
-    cr.no_follow += ["/view-album/", "persons-profile-"]
-```
-
-`no_follow` entries are substring-matched against the full URL. Any match causes the URL to be **silently discarded — it generates no network request at all**. This is more aggressive than `contains_str`, which still visits non-matching URLs to discover new links.
-
-### Caveats
-
-The crawler tries to ignore JSON, CSS, and JavaScript files based on MIME type and file extension. This does not work 100%, particularly on GitHub where declared MIME types can be inaccurate and code is sometimes embedded in HTML in unusual ways. Use the SQL filtering step in [Deduplication](#content-filtering) to clean up any machine-parseable content that slips through.
 
 ---
 
-## Deduplication
+## When the live site is unreachable — archives & scholarly APIs
 
-### The Two-Database Pattern
+Some sources go behind bot-protection, turn into JavaScript single-page apps with no crawlable HTML, or simply die. Rather than bypass protections, two adapters fetch the same content from **legitimate archives / open APIs**.
 
-Virtual Secretary uses two complementary database types throughout the pipeline:
+### Internet Archive (Wayback Machine)
 
-| Function | Primary key on `url`? | Use case | Target folder |
-|---|---|---|---|
-| `database.create_temp_db()` | No | Raw crawl buffer; tolerates duplicate URLs; lives in a temp directory | `~/.virtual-secretary` |
-| `database.create_db(name)` | **Yes** | Permanent store; each URL is unique; used for all NLP and serving | `VirtualSecretary/models` |
-
-Crawl output **always** goes into a temp database first. After content normalisation, filtering, and deduplication, the cleaned data is promoted to the permanent store with `database.import_pages()`. Writing directly from a multi-source crawl into `create_db` produces undefined behaviour when two sources contain the same URL, because the `ON CONFLICT` handler cannot determine which copy's content fields should win.
-
-[`database.create_db`][core.database.create_db] is meant to prepare reusable models, for example to feed to [`nlp.Word2Vec` training][core.nlp.Word2Vec] or [`search.Indexer` web index][core.search.Indexer]. [`database.create_temp_db`][core.database.create_temp_db] is meant to be saved to less storage-hungry datasets using [`utils.save_data`][core.utils.save_data].
-
-### Content Filtering
-
-Before deduplication runs, remove pages that should never appear in the index. This is most efficiently done at the SQL level directly on the temp database, after `batch_parse_web_page` has run (which populates `lang`):
+[`get_wayback_pages`][core.crawler.Crawler.get_wayback_pages] enumerates a site's archived HTML captures via the public CDX API and fetches each *raw* snapshot (no Wayback toolbar), storing it under its original URL. It skips captures already indexed, so it is resumable, and takes an optional `clean_url(original) -> str | None` to canonicalise / de-duplicate noisy archived URLs (return `None` to skip one).
 
 ```python
-from core import batching, nlp
+import regex as re
 
-# Detect languages and write the `parsed` column — required before any filtering on `lang`
-batching.batch_parse_web_page(tmp_db, nlp.Tokenizer())
+def clean_url(original):
+    m = re.search(r"munsell\.com(?::80)?(/color-blog/[^?#\s]*)", original, re.I)
+    return "https://munsell.com" + m.group(1).rstrip("/") + "/" if m else None
 
-cur = tmp_db.cursor()
-
-# Remove pages in languages your NLP pipeline doesn't support
-cur.execute("DELETE FROM pages WHERE lang NOT IN ('fr', 'en') OR lang IS NULL")
-
-# Remove GitHub blob viewer pages (raw code, no natural-language content)
-cur.execute("DELETE FROM pages WHERE url LIKE ?", ("%/blob/%",))
-
-# Remove Discourse boilerplate session-alert pages
-cur.execute("DELETE FROM pages WHERE content LIKE ?",
-            ("%you signed in with another tab or window%",))
-
-# Remove a domain superseded without redirects
-cur.execute("DELETE FROM pages WHERE url LIKE ?", ("%old-domain.example.com%",))
-
-tmp_db.commit()
+cr.get_wayback_pages("munsell.com/color-blog*",
+                     default_lang="en",
+                     markup=["article", ("div", {"class": "entry-content"})],
+                     category="reference",
+                     clean_url=clean_url)
 ```
 
-Alternatively, filter at import time using `import_pages(where_clause=...)` to avoid even inserting unwanted rows:
+### OpenAlex (open scholarly metadata)
+
+[`get_openalex_works`][core.crawler.Crawler.get_openalex_works] pulls titles and reconstructed abstracts for a journal or source from the free [OpenAlex](https://openalex.org) API — a legitimate route to open-access scholarly content whose publisher site blocks crawlers. Pass your email for the polite pool:
 
 ```python
-database.import_pages(
-    source_db      = pixls_db,
-    destination_db = tmp_db,
-    where_clause   = "title NOT LIKE ? AND content NOT LIKE ?",
-    params         = ("%playraw%", "%sigmoid%"),
-)
+cr.get_openalex_works(source_ids=["S2736465063"], category="reference", mailto="you@example.com")
 ```
 
-### Running Deduplication
+---
 
-`Deduplicator` compares the `parsed` (normalised) column of every pair of pages and retains the best copy — shortest URL, most recent date, or longest content when dates are equal. `batch_parse_web_page` must have run first, since that is what writes the `parsed` column.
+## Crawling many sources concurrently
+
+[`CrawlManager`][core.crawler.CrawlManager] runs several sources at once: each gets its **own** `Crawler` (own connection, own per-domain rate limiting) so the time one site spends waiting on a rate-limit or timeout is spent fetching another, while **writes are serialised** — only one thread writes the single-writer SQLite database at a time. `begin_dataset` / `commit_dataset` are handled internally, and deduplication runs **once for the whole run** at the end.
 
 ```python
-from core import deduplicator
+from core import crawler
 
-dedup = deduplicator.Deduplicator(
-    threshold      = 1.0,    # 1.0 = exact duplicates only
-                             # < 1.0 enables Levenshtein near-duplicate detection
-    distance       = 50,     # minimum tokens needed to compare two pages
-    discard_params = False,  # keep URL query parameters in the canonical URL
-    fix_urls       = False,
-)
+def crawl_ansel(cr):
+    cr.get_website_from_sitemap("https://ansel.photos", "en", markup="article", category="reference")
 
-# Domains always discarded
-dedup.urls_to_ignore += [
-    "translate.goog",    # machine translations — keep canonical instead
-    "flickr.com",
-    "facebook.com",
-]
+def crawl_github(cr):
+    cr.get_github_repositories([("aurelienpierreeng", "ansel")], api_key="ghp_…", category="Github")
 
-dedup(tmp_db)
+mgr = crawler.CrawlManager("corpus.db", max_workers=6, dedup_once=True)
+mgr.add("ansel",  crawl_ansel,  delay=1.0)
+mgr.add("github", crawl_github, delay=1.0)
+mgr.run()
 ```
 
-Near-duplicate detection (`threshold < 1.0`) is more expensive. For a corpus of hundreds of thousands of pages, start with `threshold=1.0` and tighten it only if exact matching leaves obvious near-duplicates in the index.
+### Organising sources as jobs (a pattern)
 
-## Saving the dataset for later reuse
-
-Datasets are saved into the `VirtualSecretary/data` folder.
+Once you have more than a handful of sources, it helps to put each in its own small module that declares *what* it fetches and *how often*, and drive them all from a thin runner. A convenient convention is a module exposing a dataset name, a cadence, and a `crawl(cr)` function:
 
 ```python
-from core import utils, database
+# sources/ansel.py
+DATASET  = "ansel"
+SCHEDULE = "daily"                       # your own cadence label
+CRAWLER_KWARGS = {"delay": 1.0}          # forwarded to the Crawler constructor
 
-tmp_db = database.create_temp_db()
-
-...
-
-# Run SQLite VACCUUM
-database.compress_db(tmp_db)
-
-# Save as gzipped SQLite dump
-utils.save_data(tmp_db, "my-dataset")
-
-# Clean-up the temporary databases
-# WARNING: this removes all existing databases,
-# ensure another thread is not running that needs
-# one of those.
-database.close_db(tmp_db)
-database.cleanup_temp_db()
+def crawl(cr):
+    cr.no_follow += ["/tag/", "?replytocom="]
+    cr.get_website_from_sitemap("https://ansel.photos", "en",
+                                markup="article", category="reference")
 ```
-
-To re-open the database as it was saved, use `tmp_db = utils.open_data("my-dataset")` and you will get the SQLite database opened in memory. To copy it into another opened database, you may use:
 
 ```python
-from core import utils, database
+# run.py — discover the modules for a cadence and hand them to CrawlManager
+import importlib, pkgutil, sys
+from core import crawler
+import sources
 
-# Open saved dataset
-tmp_db = utils.open_data("my-dataset")
-
-# Create a new permanent database
-final_db = database.create_db("my-engine.db")
-
-# Dump the memory-hosted dataset DB
-tmp_db.backup(final_db)
-
-# Close memory DB
-tmp_db.close()
-
-# Optimize the permament DB and close it
-database.close_db(final_db)
+cadence = sys.argv[1]                    # e.g. "daily"
+mgr = crawler.CrawlManager("corpus.db", dedup_once=True)
+for m in pkgutil.iter_modules(sources.__path__, "sources."):
+    mod = importlib.import_module(m.name)
+    if getattr(mod, "SCHEDULE", None) == cadence:
+        mgr.add(mod.DATASET, mod.crawl, **getattr(mod, "CRAWLER_KWARGS", {}))
+mgr.run()
 ```
 
-### Full Pipeline Example
+You can then crawl fast-moving sources daily and slow references monthly with a cron per cadence. The Chantal reference implementation uses exactly this shape (plus a cross-process lock so two runs never write the database at once); adapt it to your needs.
 
-Putting all steps together for a multi-source crawl:
+---
+
+## Crawl-time NLP prep
+
+To make good use of the time the crawler spends blocked on the network, each HTML page is **normalised and tokenised at crawl time**, using the same [`Tokenizer`][core.nlp.Tokenizer] the batch stages use. When a page is written the crawler already computes and stores `parsed` (normalised text), `content_hash` (`SHA-1(parsed)`, used to skip identical content seen under another URL or in a previous crawl), and `tokenized` (the non-destructive token lists). Pass your own configured tokenizer if you have one:
 
 ```python
-from core import crawler, database, deduplicator, nlp, batching, utils
-
-filename = "photo-websites"
-
-tmp_db = database.create_temp_db()
-
-sources = [
-    ("https://ansel.photos",     "en", "article",  "docs"),
-    ("https://darktable.fr",     "fr", "article",  "blog"),
-    ("https://discuss.pixls.us", "en", ("div", {"class": "topic-body"}), "forum"),
-]
-
-# 1. Crawl all sources into the temp database
-for site, lang, markup, category in sources:
-    with crawler.Crawler(delay=1.0) as cr:
-        pages = cr.get_website_from_sitemap(site, lang, markup=markup, category=category)
-    database.populate_db(tmp_db, pages)
-
-# 2. Normalise text and detect language
-batching.batch_parse_web_page(tmp_db, nlp.Tokenizer())
-
-# 3. Drop unsupported languages and known noise
-tmp_db.execute("DELETE FROM pages WHERE lang NOT IN ('fr', 'en') OR lang IS NULL")
-tmp_db.execute("DELETE FROM pages WHERE url LIKE ?", ("%/blob/%",))
-tmp_db.commit()
-
-# 4. Deduplicate while the temp DB has no primary-key constraint on url
-dedup = deduplicator.Deduplicator(threshold=1.0, discard_params=False, fix_urls=False)
-dedup.urls_to_ignore += ["translate.goog", "facebook.com", "flickr.com"]
-dedup(tmp_db)
-
-# 5. Compress and save. 2 options:
-save_as = "data"
-
-if save_as == "data":
-
-    # Save to the data folder, 
-    # as VirtualSecretary/data/photo-websites.sql.tar.gz
-    # This takes less storage space but loads slower
-    # on utils.open_data()
-    database.compress_db(tmp_db)
-    utils.save_data(tmp_db, filename)
-
-elif save_as == "model":
-
-    # Save to the models folder,
-    # as VirtualSecretary/models/my-engine.db
-    # This takes (a lot) more storage space,
-    # but is a directly-usable SQLite database (loads very fast)
-    final_db = database.create_db("my-engine.db")
-    database.import_pages(source_db=tmp_db, destination_db=final_db)
-    database.close_db(final_db) 
-    # this optimizes final_db before calling final_db.close()
-    # calling final_db.close() directly is ok too.
-
-tmp_db.close()
-database.cleanup_temp_db()
-
+from core import nlp
+cr = crawler.Crawler(delay=1.0, tokenizer=nlp.Tokenizer(...))
 ```
+
+Because these values are identical to what the batch stages would compute, the later `batch_parse` / `batch_tokenize` passes are near-no-ops on freshly crawled rows. Stemming and vectorising — which need the *trained* language model — stay in the later batch stages (see [Build your own search engine](7-build-your-own-search-engine.md)).
+
+---
+
+## Crawling details
+
+### robots.txt
+
+The crawler respects [robots.txt](https://en.wikipedia.org/wiki/Robots.txt) automatically: for every new domain it fetches `/robots.txt`, honours `Disallow` for its user-agent, and reads `Crawl-delay` / `Request-rate` to set the per-domain throttle. A site whose `robots.txt` is `Disallow: /` (e.g. reddit) is therefore not crawled at all — that is intentional and correct; use the site's official API instead. Pages listed in `sitemap.xml` are treated as pre-authorised and skip the per-URL check.
+
+### Cleaning up non-language content
+
+Navigation menus, sidebars, and metadata are stripped **before** text extraction: the parser removes `<style>`, `<script>`, `<svg>`, `<img>`, `<picture>`, `<audio>`, `<video>`, `<iframe>`, `<embed>`, `<aside>`, `<nav>`, `<input>`, `<header>`, `<button>`, `<footer>`, `<summary>`, `<dialog>`, `<textarea>`, `<select>`, `<option>`, and form controls, and strips inline `style`/`data` attributes. When that is not enough, whitelist the real content container with `markup`. `<blockquote>`, `<code>` and `<pre>` are kept — quoted forum replies are handled by deduplication rather than at parse time.
+
+### The `no_follow` list
+
+Both crawling methods share a default blocklist of URLs that are never fetched (share links, login/signup, cart, profile paths). Extend it at construction or inside a crawl:
+
+```python
+cr = crawler.Crawler(delay=1.0, no_follow=["google.com", "/tag/", "?replytocom=", ".pdf"])
+cr.no_follow += ["/view-album/", "persons-profile-"]
+```
+
+`no_follow` entries are substring-matched against the full URL; a match discards it with **no network request at all** — more aggressive than `contains_str`, which still visits non-matching URLs to find links.
+
+---
+
+## Deduplication and the corpus database
+
+There is **one** database — the corpus — which has **no URL primary key**: the same URL may legitimately be captured several ways (via a content tag, as an external whole-body capture, under several parameter URLs), and duplication is resolved by content, not enforced by the schema.
+
+Deduplication happens **as part of the crawl**, not as a separate script:
+
+- at write time, `content_hash` lets the crawler skip a page whose exact content was already seen;
+- on finalisation, one **incremental** pass ([`Deduplicator.run_incremental`][core.deduplicator.Deduplicator.run_incremental]) runs over just the URLs touched — targeted `DELETE`s that elect the best copy per URL (newest `crawled`, then longest content), never a full-table rewrite.
+
+`commit_dataset` does this for a single-source crawl; `CrawlManager` defers it to one run-level pass over the union of touched URLs.
+
+---
+
+## Deferring the crawl to another machine
+
+Because the corpus is the single source of truth, the crawl can run on cheap always-on hardware while heavier processing runs elsewhere. The two machines reconcile their copies with a timestamp delta using [`database.export_delta`][core.database.export_delta] / [`database.apply_delta`][core.database.apply_delta] / [`database.latest_crawled`][core.database.latest_crawled]:
+
+```python
+from core import database
+
+# on the target: its watermark
+watermark = database.latest_crawled("corpus.db")
+
+# on the source: export everything newer into a small file, transfer it (FTP/rsync/…)
+database.export_delta("corpus.db", "delta.db", since=watermark)
+
+# on the target: apply it
+database.apply_delta("delta.db", "corpus.db")
+```
+
+Only rows crawled after the target's watermark are transferred, so a routine sync moves kilobytes, not gigabytes.
