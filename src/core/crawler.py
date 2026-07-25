@@ -436,7 +436,7 @@ class Crawler(DelayedClass):
             ```
 
         """
-        self.crawled_URL: list[str] = []
+        self.crawled_URL: set[str] = set()
         """List of { URL + category } hashes already visited.
         Websites crawled from sitemap and also following internal links recursively will tag
         recursively-crawled pages with an `external` category, which will later be considered
@@ -542,7 +542,7 @@ class Crawler(DelayedClass):
                 pass
             self.db = None
 
-        print("PROCESSED URLS:", len(set(self.crawled_URL)))
+        print("PROCESSED URLS:", len(self.crawled_URL))
         print("404 ERRORS:", len(set(self.notfound)))
         for error in set(self.notfound):
             print(error)
@@ -956,10 +956,10 @@ class Crawler(DelayedClass):
                 HTML returned status code
         """
 
-        self.crawled_URL.append(hash_with_category(old_link, category))
+        self.crawled_URL.add(hash_with_category(old_link, category))
 
         if new_link and new_link != old_link:
-            self.crawled_URL.append(hash_with_category(new_link, category))
+            self.crawled_URL.add(hash_with_category(new_link, category))
 
         if status_code == 404:
             self.notfound += list({new_link, old_link})
@@ -1371,7 +1371,7 @@ class Crawler(DelayedClass):
         else:
             print(f"{currentURL} is unknown")
 
-        self.crawled_URL.append(hash_with_category(currentURL, category))
+        self.crawled_URL.add(hash_with_category(currentURL, category))
         content_type, status, new_url, custom_header, status_code = get_content_type(currentURL, self, bypass_robots_txt=True)
         currentURL = self.update_link(currentURL, new_url, category, status_code)
 
@@ -1513,7 +1513,7 @@ class Crawler(DelayedClass):
 
                     if hash_with_category(video_url, category) in self.crawled_URL:
                         continue
-                    self.crawled_URL.append(hash_with_category(video_url, category))
+                    self.crawled_URL.add(hash_with_category(video_url, category))
 
                     # Fetch the full video snippet (richer than the playlist item snippet)
                     self.sleep("www.googleapis.com")
@@ -1694,7 +1694,7 @@ class Crawler(DelayedClass):
             """Parse a Markdown body into web_page objects and follow external links."""
             if hash_with_category(item_url, category) in self.crawled_URL:
                 return 0
-            self.crawled_URL.append(hash_with_category(item_url, category))
+            self.crawled_URL.add(hash_with_category(item_url, category))
 
             html = (
                 f"<title>{title}</title><body>\n\n"
@@ -1781,7 +1781,7 @@ class Crawler(DelayedClass):
                         comments_url = f"https://api.github.com/repos/{owner}/{repo}/{feature}/{item.get("number", "")}/comments"
 
                     if comments_url:
-                        self.crawled_URL.append(hash_with_category(comments_url, category))
+                        self.crawled_URL.add(hash_with_category(comments_url, category))
                         for comment in _fetch_page(comments_url):
                             if comment.get("body"):
                                 body_parts.append(comment["body"])
@@ -1924,12 +1924,12 @@ class Crawler(DelayedClass):
 
             if hash_with_category(post_url, category) in self.crawled_URL:
                 return 0
-            self.crawled_URL.append(hash_with_category(post_url, category))
+            self.crawled_URL.add(hash_with_category(post_url, category))
 
             # Mark comment URLs as already visited so recursive crawling skips them
             for comment in post.get("comments", []):
                 if "link" in comment:
-                    self.crawled_URL.append(
+                    self.crawled_URL.add(
                         hash_with_category(comment["link"], category)
                     )
 
@@ -2088,7 +2088,7 @@ class Crawler(DelayedClass):
 
             if link_tag and "href" in link_tag and link_tag["href"]:
                 translatedURL = relative_to_absolute(link_tag["href"], domain, current_url)
-                self.crawled_URL.append(hash_with_category(translatedURL, category))
+                self.crawled_URL.add(hash_with_category(translatedURL, category))
 
                 content_type, status, new_url, custom_header, status_code = get_content_type(translatedURL, self, bypass_robots_txt=True)
                 translatedURL = self.update_link(translatedURL, new_url, category, status_code)
