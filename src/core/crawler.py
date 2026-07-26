@@ -123,7 +123,7 @@ def radical_url(URL: str) -> str:
 
 @utils.exit_after(120)
 def get_content(url, custom_header, delay: DelayedClass) -> tuple[str, str, int]:
-    content, url, status, encoding, apparent_encoding = get_url(url, delay, timeout=60, custom_header=custom_header)
+    content, url, status, encoding, apparent_encoding = get_url(url, delay, timeout=getattr(delay, "link_timeout", 60), custom_header=custom_header)
     if content is None:
         raise(Exception("No page found"))
 
@@ -437,6 +437,9 @@ class Crawler(DelayedClass):
 
         """
         self.crawled_URL: set[str] = set()
+        # Per-URL fetch timeout (seconds). Lowered for batches of diverse external links (many dead
+        # or slow hosts) so one unresponsive site can't stall the whole crawl — see get_immediate_links.
+        self.link_timeout: int = 60
         """List of { URL + category } hashes already visited.
         Websites crawled from sitemap and also following internal links recursively will tag
         recursively-crawled pages with an `external` category, which will later be considered
@@ -886,7 +889,7 @@ class Crawler(DelayedClass):
         return False
 
 
-    def get_immediate_links(self, links: list[str], domain, default_lang, langs, category, contains_str, internal_links: str = "any", mine_pdf = False) -> int:
+    def get_immediate_links(self, links: list[str], domain, default_lang, langs, category, contains_str, internal_links: str = "any", mine_pdf = False, timeout: int | None = None) -> int:
         """Follow internal and external links contained in a webpage only to one recursivity level,
         including PDF files and HTML pages. This is useful to index references docs linked from a page.
 
@@ -903,6 +906,12 @@ class Crawler(DelayedClass):
         written = 0
         if internal_links == "ignore":
             return written
+
+        # Optionally lower the per-URL fetch timeout for this batch (diverse external hosts, many
+        # dead/slow) so one unresponsive site can't stall the crawl. Restored after the loop.
+        _prev_timeout = self.link_timeout
+        if timeout is not None:
+            self.link_timeout = timeout
 
         for nextURL in links:
             if hash_with_category(nextURL, category) in self.crawled_URL:
@@ -936,6 +945,7 @@ class Crawler(DelayedClass):
 
                 written += self.get_website_from_crawling(current_protocol + "://" + current_domain + current_page + current_params, default_lang, "", langs, max_recurse_level=1, category=category, contains_str=contains_str, mine_pdf=mine_pdf, _recursion_level=0, _mainthread=False)
 
+        self.link_timeout = _prev_timeout
         return written
 
 
