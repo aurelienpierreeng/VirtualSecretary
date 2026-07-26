@@ -328,10 +328,8 @@ def create_temp_db(min_free: float = 2.0, filename: str | None = None) -> sqlite
     db.execute("PRAGMA auto_vacuum = INCREMENTAL;")
     db.execute("PRAGMA journal_mode = WAL")
     db.execute("PRAGMA synchronous = NORMAL")
-    db.execute("PRAGMA temp_store = MEMORY")
-    db.execute("PRAGMA cache_size = -200000")
-    db.execute("PRAGMA mmap_size = 8000000000")
     db.execute("PRAGMA busy_timeout = 30000")
+    _apply_memory_pragmas(db, writable=True, tmpdir=os.path.dirname(str(path)))
 
     cursor = db.cursor()
     keys = list(web_page.__annotations__.items())
@@ -358,6 +356,28 @@ def delete_temp_db(db: sqlite3.Connection):
     filename = get_db_filename(db)
     db.close()
     os.unlink(filename)
+
+
+def _apply_memory_pragmas(db: sqlite3.Connection, *, writable: bool, tmpdir: str | None = None) -> None:
+    """Apply memory-FRUGAL, env-tunable PRAGMAs. Defaults are sized for a small (~16 GB) box; raise
+    them on a bigger host with the env vars ``VS_CACHE_MB`` / ``VS_MMAP_MB``.
+
+    The critical one: **writable connections use ``temp_store = FILE``** so that VACUUM / temp-table
+    data — which can equal the entire large DB — spills to DISK (``SQLITE_TMPDIR``), never into RAM.
+    ``temp_store = MEMORY`` on a big writable DB is what OOM-kills a full VACUUM. Read-only connections
+    keep MEMORY (their temp is tiny query sorts) for speed.
+
+    ``mmap`` is file-backed (reclaimable page cache, not RSS), but a huge window on a small box is
+    pointless pressure — kept modest. ``cache_size`` is real RSS, so it stays small by default.
+    """
+    cache_mb = int(os.environ.get("VS_CACHE_MB", "128"))
+    mmap_mb = int(os.environ.get("VS_MMAP_MB", "2048"))
+    if writable and tmpdir:
+        # temp files (VACUUM/dedup) land on the DB's own volume, which has room — not a capped /tmp.
+        os.environ.setdefault("SQLITE_TMPDIR", tmpdir)
+    db.execute(f"PRAGMA temp_store = {'FILE' if writable else 'MEMORY'}")
+    db.execute(f"PRAGMA cache_size = -{cache_mb * 1024}")
+    db.execute(f"PRAGMA mmap_size = {mmap_mb * 1024 * 1024}")
 
 
 def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
@@ -391,13 +411,7 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
 
         db.execute("PRAGMA query_only = ON")
         db.execute("PRAGMA synchronous = OFF")
-        db.execute("PRAGMA temp_store = MEMORY")
-
-        # 256 MB page cache per process
-        db.execute("PRAGMA cache_size = -262144")
-
-        # 30 GB max mmap window
-        db.execute("PRAGMA mmap_size = 30000000000")
+        _apply_memory_pragmas(db, writable=False)
 
     elif mode == "bulk":
         db = sqlite3.connect(path, **common_kwargs)
@@ -412,20 +426,14 @@ def open_db(name: str, mode: str = "rw") -> sqlite3.Connection:
         db.execute("PRAGMA journal_mode = WAL")
         db.execute("PRAGMA busy_timeout = 5000")
         db.execute("PRAGMA synchronous = NORMAL")
-        db.execute("PRAGMA temp_store = MEMORY")
-
-        # ~200 MB page cache
-        db.execute("PRAGMA cache_size = -200000")
-
-        # Larger mmap can help indexing workloads too
-        db.execute("PRAGMA mmap_size = 8000000000")
+        _apply_memory_pragmas(db, writable=True, tmpdir=os.path.dirname(str(path)))
 
     elif mode == "rw":
         db = sqlite3.connect(path, **common_kwargs)
 
         db.execute("PRAGMA journal_mode = TRUNCATE")
         db.execute("PRAGMA synchronous = NORMAL")
-        db.execute("PRAGMA temp_store = MEMORY")
+        _apply_memory_pragmas(db, writable=True, tmpdir=os.path.dirname(str(path)))
 
     else:
         raise ValueError(f"Invalid SQLite mode: {mode!r}")
@@ -454,6 +462,10 @@ def close_db(db: sqlite3.Connection):
    # be drained to run fully (a bare execute frees at most one page).
    db.execute("PRAGMA incremental_vacuum").fetchall()
    db.commit()
+   # Fold the WAL back into the main file and truncate it to 0. Without this, the WAL that the
+   # writes + incremental_vacuum above just produced is left on disk as multi-GB dead weight (bulk
+   # mode disables auto-checkpoint). No-op on non-WAL (rw) connections.
+   db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
    db.close()
 
 
