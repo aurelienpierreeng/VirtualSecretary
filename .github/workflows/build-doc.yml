@@ -43,6 +43,12 @@ jobs:
       - name: Build documentation
         run: mkdocs build --strict
 
+      - name: Publish .well-known (MkDocs skips dot-directories under docs/)
+        run: |
+          mkdir -p site/.well-known
+          cp -r docs/.well-known/. site/.well-known/
+          ls -la site/.well-known/
+
       - name: Inspect sitemap
         run: |
           ls -lah site/
