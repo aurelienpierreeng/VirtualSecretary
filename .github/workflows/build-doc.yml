@@ -43,11 +43,17 @@ jobs:
       - name: Build documentation
         run: mkdocs build --strict
 
-      - name: Publish .well-known (MkDocs skips dot-directories under docs/)
+      - name: Publish the funding provenance file
         run: |
+          # MkDocs skips dot-directories under docs/, AND GitHub Pages refuses to
+          # serve them even when they reach the artifact (verified: both the custom
+          # domain and *.github.io return 404 for /.well-known/...). So publish the
+          # file at the site root, which Pages does serve, and keep the .well-known
+          # copy for any host that would serve it.
           mkdir -p site/.well-known
           cp -r docs/.well-known/. site/.well-known/
-          ls -la site/.well-known/
+          cp docs/.well-known/funding-manifest-urls site/funding-manifest-urls
+          ls -la site/.well-known/ site/funding-manifest-urls
 
       - name: Inspect sitemap
         run: |
