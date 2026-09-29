@@ -45,11 +45,10 @@ jobs:
 
       - name: Publish the funding provenance file
         run: |
-          # MkDocs skips dot-directories under docs/, AND GitHub Pages refuses to
-          # serve them even when they reach the artifact (verified: both the custom
-          # domain and *.github.io return 404 for /.well-known/...). So publish the
-          # file at the site root, which Pages does serve, and keep the .well-known
-          # copy for any host that would serve it.
+          # MkDocs skips dot-directories under docs/, so copy it into site/ by hand.
+          # The root copy is a fallback: if the upload action is ever bumped back to
+          # v4 (which strips dot-directories), /.well-known/ silently disappears and
+          # this one keeps the provenance reachable.
           mkdir -p site/.well-known
           cp -r docs/.well-known/. site/.well-known/
           cp docs/.well-known/funding-manifest-urls site/funding-manifest-urls
@@ -62,7 +61,11 @@ jobs:
           cat site/sitemap.xml
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        # Pinned to v3 deliberately: v4 adds --exclude=".[^/]*" to its tar, which
+        # strips every dot-directory from the artifact — including .well-known,
+        # which then 404s on the published site. ansel.photos serves its
+        # .well-known fine precisely because it is still on v3.
+        uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
